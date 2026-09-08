@@ -1,0 +1,16 @@
+{
+  "name": "usta",
+  "version": "0.1.0",
+  "description": "usta — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
+  "type": "module",
+  "bin": { "usta": "./src/cli.ts" },
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test test/"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

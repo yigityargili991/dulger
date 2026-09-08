@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"01a08342-f1da-7442-84e9-c5e4d28fb4a4"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run `ls` now.\n"}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc ls","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/usr/bin/bash -lc ls","aggregated_output":"codex.err\ncodex.jsonl\nschema.json\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"{\"ok\":true,\"note\":\"hi\"}"}}
+{"type":"turn.completed","usage":{"input_tokens":33771,"cached_input_tokens":16640,"cache_write_input_tokens":0,"output_tokens":61,"reasoning_output_tokens":0}}

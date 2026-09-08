@@ -4,7 +4,8 @@ import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { getAdapter } from '../adapters/index.ts';
 import { type Config, roleConfig, STATE_DIR } from '../config.ts';
-import { appendLearnings, buildCommonContext } from '../context/common.ts';
+import { buildCommonContext, cardFiles } from '../context/common.ts';
+import { extractPaths, openMemory } from '../context/memory.ts';
 import * as store from '../board/store.ts';
 import { allTerminal, blockUnreachable, readyCards, resetTasks } from '../board/scheduler.ts';
 import * as git from '../git/worktree.ts';
@@ -50,7 +51,8 @@ export function createBoard(repoRoot: string, goal: string, runId = newRunId()):
     costUsd: 0,
   };
   if (!git.branchExists(repoRoot, board.runBranch)) git.createBranch(repoRoot, board.runBranch, board.baseRef);
-  git.excludeFromGit(repoRoot, STATE_DIR + '/');
+  // context/ and config.json stay committable.
+  git.excludeFromGit(repoRoot, [`${STATE_DIR}/*`, `!${STATE_DIR}/context`, `!${STATE_DIR}/config.json`], [`${STATE_DIR}/`]);
   store.saveBoard(repoRoot, board);
   return board;
 }
@@ -61,6 +63,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   const log = (msg: string) => hooks.log?.(msg);
   const logs = store.logDir(repoRoot, board.runId);
   mkdirSync(logs, { recursive: true });
+  const memory = openMemory(repoRoot, config.memory);
+  const context = (opts: Parameters<typeof buildCommonContext>[3] = {}) => buildCommonContext(repoRoot, board, memory, opts);
 
   const save = (type: string, extra: Partial<{ cardId: string; taskId: string; message: string; data: unknown }> = {}) => {
     store.saveBoard(repoRoot, board);
@@ -87,9 +91,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   // ---- planner ----
   async function plan(): Promise<void> {
     log('planning…');
-    const context = buildCommonContext(repoRoot, board);
     const r = await agent<PlannerResult>('planner', {
-      prompt: P.plannerPrompt(board.goal, context), systemPrompt: P.plannerSystem(), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
+      prompt: P.plannerPrompt(board.goal, context({ root: repoRoot })), systemPrompt: P.plannerSystem(), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
     }, { logName: 'planner' });
     addCost(undefined, r.costUsd);
     if (!r.ok || !r.output?.cards?.length) throw new Error(`planner failed: ${r.error ?? 'no cards returned'}`);
@@ -104,9 +107,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     task.status = 'running';
     task.attempts++;
     save('task_started', { cardId: card.id, taskId: task.id });
-    const context = buildCommonContext(repoRoot, board);
     const sys = P.workerSystem();
-    let prompt = P.workerPrompt(board, card, task, context);
+    let prompt = P.workerPrompt(board, card, task, context({ files: cardFiles(card, cwd), root: cwd }));
     let sessionId: string | undefined;
     let last: WorkerResult | undefined;
 
@@ -133,7 +135,13 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     task.result = last;
     task.status = last?.done ? 'done' : 'failed';
     save(task.status === 'done' ? 'task_done' : 'task_failed', { cardId: card.id, taskId: task.id, message: last?.summary });
-    if (task.status === 'done' && last) appendLearnings(repoRoot, card.id, last.learnings);
+    if (task.status === 'done' && last) {
+      const added = memory.add(last.learnings.map((text) => ({
+        text, runId: board.runId, cardId: card.id, harness: roleConfig(config, 'worker').harness,
+        files: [...last.filesChanged, ...extractPaths(text, cwd)],
+      })));
+      if (added.length) save('learnings', { cardId: card.id, taskId: task.id, data: added.map((l) => l.id) });
+    }
     return task.status === 'done' ? last : undefined;
   }
 
@@ -163,7 +171,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       save('card_review', { cardId: card.id });
       const diffText = git.diff(cwd, board.runBranch);
       const check = await agent<CheckResult>('checker', {
-        prompt: P.checkerPrompt(board, card, diffText, buildCommonContext(repoRoot, board)),
+        prompt: P.checkerPrompt(board, card, diffText, context({ files: cardFiles(card, cwd), root: cwd })),
         systemPrompt: P.checkerSystem(config.checker.allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
         allowedCommands: config.checker.allowedCommands,
       }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
@@ -218,7 +226,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     git.createWorktree(repoRoot, cwd, branch, board.runBranch);
     const stat = git.diffStat(cwd, board.baseRef);
     const r = await agent<DocsResult>('docs', {
-      prompt: P.docsPrompt(board, stat, buildCommonContext(repoRoot, board)), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',
+      prompt: P.docsPrompt(board, stat, context({ root: cwd })), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',
     }, { cardId: 'docs', logName: 'docs' });
     addCost(undefined, r.costUsd);
     if (r.ok && r.output) {

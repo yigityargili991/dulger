@@ -1,11 +1,9 @@
-// The "common context": what every agent in a run gets to see, regardless of role.
-//   1. user-authored .usta/context/*.md files (conventions, architecture notes, ...)
-//   2. learnings.md, appended by the orchestrator from worker results
-//   3. a generated summary of the run: goal + board state
-import { existsSync, mkdirSync, readdirSync, readFileSync, appendFileSync } from 'node:fs';
+// The common context every agent gets: run summary, board, selected learnings, user .md files.
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR } from '../config.ts';
-import type { Board } from '../types.ts';
+import type { Board, Card } from '../types.ts';
+import { extractPaths, renderLearnings, type MemoryStore } from './memory.ts';
 
 export function contextDir(repoRoot: string): string {
   return join(repoRoot, STATE_DIR, 'context');
@@ -21,15 +19,6 @@ export function readUserContext(repoRoot: string): string {
     .join('\n\n');
 }
 
-export function appendLearnings(repoRoot: string, cardId: string, learnings: string[]): void {
-  const items = learnings.map((l) => l.trim()).filter(Boolean);
-  if (items.length === 0) return;
-  mkdirSync(contextDir(repoRoot), { recursive: true });
-  const file = join(contextDir(repoRoot), 'learnings.md');
-  if (!existsSync(file)) appendFileSync(file, '# Learnings\n\nAppended automatically by usta from worker reports.\n');
-  appendFileSync(file, `\n<!-- card ${cardId} -->\n` + items.map((l) => `- ${l}`).join('\n') + '\n');
-}
-
 export function boardSummary(board: Board): string {
   if (board.cards.length === 0) return '(no cards yet)';
   return board.cards
@@ -41,12 +30,33 @@ export function boardSummary(board: Board): string {
     .join('\n');
 }
 
-export function buildCommonContext(repoRoot: string, board: Board): string {
+/** Files changed by the card's tasks plus existing paths its text mentions. */
+export function cardFiles(card: Card, root: string): string[] {
+  const changed = card.tasks.flatMap((t) => t.result?.filesChanged ?? []);
+  const text = [card.description, ...card.acceptanceCriteria, ...card.tasks.map((t) => `${t.title}\n${t.instructions}`)].join('\n');
+  const mentioned = extractPaths(text, root);
+  return [...new Set([...changed, ...mentioned])];
+}
+
+export interface ContextOptions {
+  files?: string[];
+  root?: string;
+}
+
+const LEARNINGS_NOTE = 'Reported by previous agents on this codebase; verify before relying on them.';
+
+function section(title: string, body: string): string {
+  return `## ${title}\n\n${body}`;
+}
+
+export function buildCommonContext(repoRoot: string, board: Board, memory: MemoryStore, opts: ContextOptions = {}): string {
+  const learnings = memory.select({ runId: board.runId, files: opts.files, root: opts.root ?? repoRoot });
   const user = readUserContext(repoRoot);
-  const parts = [
-    `## Run\n\n- run id: ${board.runId}\n- goal: ${board.goal}\n- result branch: ${board.runBranch}`,
-    `## Board\n\n${boardSummary(board)}`,
+  const sections = [
+    section('Run', `- run id: ${board.runId}\n- goal: ${board.goal}\n- result branch: ${board.runBranch}`),
+    section('Board', boardSummary(board)),
+    learnings.length ? section('Learnings from earlier work', `${LEARNINGS_NOTE}\n\n${renderLearnings(learnings)}`) : '',
+    user ? section('Project context', user) : '',
   ];
-  if (user) parts.push(`## Project context\n\n${user}`);
-  return parts.join('\n\n');
+  return sections.filter(Boolean).join('\n\n');
 }

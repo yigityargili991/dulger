@@ -1,7 +1,7 @@
 // Git plumbing for per-card isolation. Every card works on its own branch in its own worktree;
 // finished cards are merged back onto the run branch, which is never checked out anywhere.
 import { execFileSync } from 'node:child_process';
-import { existsSync, rmSync, readFileSync, appendFileSync, mkdirSync } from 'node:fs';
+import { existsSync, rmSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 export class GitError extends Error {
@@ -108,13 +108,17 @@ export function log(cwd: string, range: string, n = 50): string {
   return git(cwd, ['log', '--oneline', `-n${n}`, range], { allowFail: true });
 }
 
-/** Add a pattern to .git/info/exclude (per-clone ignore that is never committed). */
-export function excludeFromGit(repo: string, pattern: string): void {
+/** Ensure `patterns` are in .git/info/exclude; drop any `remove`d legacy ones. */
+export function excludeFromGit(repo: string, patterns: string[], remove: string[] = []): void {
   const gitDir = git(repo, ['rev-parse', '--git-common-dir']);
   const infoDir = join(repo, gitDir, 'info');
   const file = join(infoDir, 'exclude');
   const current = existsSync(file) ? readFileSync(file, 'utf8') : '';
-  if (current.split('\n').includes(pattern)) return;
+  const lines = current.split('\n');
+  const kept = lines.filter((l) => !remove.includes(l.trim()));
+  const missing = patterns.filter((p) => !kept.some((l) => l.trim() === p));
+  if (missing.length === 0 && kept.length === lines.length) return;
   mkdirSync(infoDir, { recursive: true });
-  appendFileSync(file, (current.endsWith('\n') || current === '' ? '' : '\n') + pattern + '\n');
+  const body = kept.join('\n').replace(/\n*$/, '');
+  writeFileSync(file, (body ? body + '\n' : '') + missing.join('\n') + (missing.length ? '\n' : ''));
 }

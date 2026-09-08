@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
@@ -8,6 +8,9 @@ import { createBoard, createOrchestrator } from '../src/runner/orchestrator.ts';
 import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/adapters/fake.ts';
 import { registerAdapter } from '../src/adapters/index.ts';
+import { openMemory } from '../src/context/memory.ts';
+
+process.env.USTA_DATA_DIR = mkdtempSync(join(tmpdir(), 'usta-data-'));
 
 function tempRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'usta-orch-'));
@@ -21,7 +24,8 @@ function tempRepo(): string {
 const config: Config = { ...DEFAULT_CONFIG, harness: 'fake', concurrency: 2, maxAttempts: 2, stallTimeoutSec: 10 };
 
 test('happy path: parallel cards, retry after checker rejection, dependency, docs', async () => {
-  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 5 }));
+  const worker: FakeScript['worker'] = (o, i) => ({ ...DEFAULT_FAKE_SCRIPT.worker!(o, i), learnings: ['Fake learning: outputs live in out/'] });
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker, delayMs: 5 }));
   const repo = tempRepo();
   const board = createBoard(repo, 'demo', 'run1');
   const events: string[] = [];
@@ -38,7 +42,12 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.equal(wt.currentBranch(repo), 'main');
   assert.equal(wt.git(repo, ['branch', '--list', 'usta-wip/*']), '', 'wip branches cleaned up');
   assert.ok(!existsSync(join(repo, '.usta', 'worktrees', 'c1')));
-  assert.match(readFileSync(join(repo, '.usta', 'context', 'learnings.md'), 'utf8'), /Fake learning/);
+  const learnings = openMemory(repo, config.memory).load();
+  assert.equal(learnings.length, 1);
+  assert.match(learnings[0]!.text, /Fake learning/);
+  assert.ok(learnings[0]!.seen >= 4, `seen ${learnings[0]!.seen}`);
+  assert.ok(learnings[0]!.files.includes('out/c1-t1.txt'));
+  assert.ok(!existsSync(join(repo, '.usta', 'memory.jsonl')), 'memory is not stored in the repo');
   assert.ok(events.some((e) => /c1 rejected/.test(e)));
   // c3 must not start before c1 and c2 are done.
   const idx = (re: RegExp) => events.findIndex((e) => re.test(e));

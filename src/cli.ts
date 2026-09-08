@@ -8,6 +8,7 @@ import { loadConfig, STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
 import * as git from './git/worktree.ts';
 import { createBoard, createOrchestrator } from './runner/orchestrator.ts';
+import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { bold, cyan, dim, green, red, yellow, fmtCost, cursor } from './ui/ansi.ts';
 import type { Board, HarnessName } from './types.ts';
@@ -20,6 +21,11 @@ Usage:
   usta board [runId]              print a run's board (latest when omitted)
   usta runs                       list runs
   usta clean                      remove leftover worktrees and wip branches
+  usta memory [list]              show what agents learned about this repo
+  usta memory add "<text>"        record a learning by hand
+  usta memory rm <id>             delete a learning
+  usta memory compact             drop learnings about files that no longer exist
+  usta memory path                print the memory file's location
 
 Options:
   --harness <claude|codex|fake>   backend for all roles (default: claude)
@@ -105,6 +111,9 @@ async function main(argv: string[]): Promise<void> {
       for (const b of wip) { git.git(repoRoot, ['branch', '-D', b], { allowFail: true }); console.log(`deleted branch ${b}`); }
       break;
     }
+    case 'memory':
+      memoryCommand(repoRoot, config, arg ?? 'list', positionals.slice(2));
+      break;
     default:
       fail(`unknown command "${cmd}"\n\n${USAGE}`);
   }
@@ -162,6 +171,49 @@ async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes
     console.log(`  git merge ${board.runBranch}     # or: git diff ${board.baseBranch}...${board.runBranch}`);
   }
   if (failed.length) console.log(`  usta resume ${board.runId}      # retry after fixing; failed worktrees kept in ${STATE_DIR}/worktrees/`);
+}
+
+function memoryCommand(repoRoot: string, config: Config, sub: string, args: string[]): void {
+  const memory = openMemory(repoRoot, config.memory);
+  switch (sub) {
+    case 'list': {
+      const items = memory.load();
+      if (items.length === 0) { console.log(dim(`no learnings yet (${memory.path})`)); return; }
+      for (const l of items) console.log(formatLearning(l));
+      console.log(dim(`\n${items.length} learning(s) in ${memory.path}`));
+      return;
+    }
+    case 'add': {
+      const text = args[0];
+      if (!text) fail('usta memory add needs a text');
+      const added = memory.add([{ text, files: extractPaths(text, repoRoot), runId: 'manual', cardId: 'manual', harness: config.harness }]);
+      console.log(added.length ? green(`added ${added[0]!.id}`) : yellow('already known'));
+      return;
+    }
+    case 'rm': {
+      const id = args[0];
+      if (!id) fail('usta memory rm needs an id');
+      console.log(memory.remove(id) ? green(`removed ${id}`) : yellow(`no learning with id ${id}`));
+      return;
+    }
+    case 'compact': {
+      const { kept, dropped } = memory.compact(repoRoot);
+      for (const l of dropped) console.log(dim(`dropped ${l.id}: ${l.text}`));
+      console.log(`${kept} kept, ${dropped.length} dropped`);
+      return;
+    }
+    case 'path':
+      console.log(memory.path);
+      return;
+    default:
+      fail(`unknown memory command "${sub}"`);
+  }
+}
+
+function formatLearning(l: Learning): string {
+  const meta = dim(`${l.lastSeenAt.slice(0, 10)} ×${l.seen} ${l.runId}/${l.cardId}`);
+  const files = l.files.slice(0, 3).join(', ') + (l.files.length > 3 ? ', …' : '');
+  return `${cyan(l.id)} ${meta}\n  ${l.text}${files ? dim(`  [${files}]`) : ''}`;
 }
 
 function printBoard(board: Board): void {

@@ -8,6 +8,12 @@ export interface RoleConfig {
   maxBudgetUsd?: number;
 }
 
+export interface MemoryConfig {
+  location: 'user' | 'repo';  // user: ~/.local/share/usta/<project>/, repo: <repo>/.usta/
+  maxItems: number;           // per prompt
+  maxChars: number;
+}
+
 export interface Config {
   harness: HarnessName;
   roles: Partial<Record<AgentRole, RoleConfig>>;
@@ -18,6 +24,7 @@ export interface Config {
   docs: boolean;
   checker: { allowedCommands: string[] };
   codex: { bypassSandbox: boolean };
+  memory: MemoryConfig;
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -30,6 +37,7 @@ export const DEFAULT_CONFIG: Config = {
   docs: true,
   checker: { allowedCommands: ['npm test', 'npm run test', 'pytest', 'cargo test', 'go test'] },
   codex: { bypassSandbox: false },
+  memory: { location: 'user', maxItems: 40, maxChars: 6000 },
 };
 
 export const STATE_DIR = '.usta';
@@ -45,6 +53,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     roles: { ...DEFAULT_CONFIG.roles, ...fromFile.roles, ...overrides.roles },
     checker: { ...DEFAULT_CONFIG.checker, ...fromFile.checker, ...overrides.checker },
     codex: { ...DEFAULT_CONFIG.codex, ...fromFile.codex, ...overrides.codex },
+    memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
   };
 }
 

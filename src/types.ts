@@ -110,9 +110,16 @@ export type AgentEvent =
   | { type: 'result'; costUsd?: number; output?: unknown; text?: string };
 
 // Board-level events appended to events.jsonl.
+export type BoardEventType =
+  | 'planned'
+  | 'card_started' | 'card_review' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
+  | 'task_started' | 'task_done' | 'task_failed' | 'learnings'
+  | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'
+  | 'aborted' | 'finished';
+
 export interface BoardEvent {
   at: string;
-  type: string;
+  type: BoardEventType;
   cardId?: string;
   taskId?: string;
   message?: string;

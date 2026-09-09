@@ -13,15 +13,13 @@ import * as git from '../git/worktree.ts';
 import { CHECK_SCHEMA, DOCS_SCHEMA, PLANNER_SCHEMA, WORKER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
 import { type AgentRegistry, runAgent, markFailed } from './agentProcess.ts';
-import type { Board, Card, CheckResult, DocsResult, PlannerResult, Task, WorkerResult } from '../types.ts';
+import type { Board, BoardEvent, BoardEventType, Card, CheckResult, DocsResult, PlannerResult, Task, WorkerResult } from '../types.ts';
 
 export interface OrchestratorHooks {
   /** Called after every board change. */
   onBoardChange?: (board: Board) => void;
   /** Human-readable progress line. */
   log?: (msg: string) => void;
-  /** Return once the user has approved the (possibly edited) board. */
-  approve?: (board: Board) => Promise<void>;
 }
 
 export interface Orchestrator {
@@ -67,7 +65,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   const memory = openMemory(repoRoot, config.memory);
   const context = (opts: Parameters<typeof buildCommonContext>[3] = {}) => buildCommonContext(repoRoot, board, memory, opts);
 
-  const save = (type: string, extra: Partial<{ cardId: string; taskId: string; message: string; data: unknown }> = {}) => {
+  const save = (type: BoardEventType, extra: Omit<BoardEvent, 'at' | 'type'> = {}) => {
     store.saveBoard(repoRoot, board);
     store.appendEvent(repoRoot, board.runId, { type, ...extra });
     hooks.onBoardChange?.(board);
@@ -251,17 +249,19 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       prompt: P.docsPrompt(board, stat, context({ root: cwd })), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',
     }, { cardId: 'docs', logName: 'docs' });
     addCost(undefined, r.costUsd);
+    let status: 'done' | 'failed' = 'failed';
     if (r.ok && r.output) {
       git.commitAll(cwd, 'usta: update documentation');
       const merged = git.mergeBack(cwd, board.runBranch, branch);
-      board.docs = merged.ok ? { status: 'done', summary: r.output.summary } : { status: 'failed', summary: `merge conflict: ${merged.conflicts?.join(', ')}` };
+      if (merged.ok) status = 'done';
+      board.docs = merged.ok ? { status, summary: r.output.summary } : { status, summary: `merge conflict: ${merged.conflicts?.join(', ')}` };
     } else {
-      board.docs = { status: 'failed', summary: r.error };
+      board.docs = { status, summary: r.error };
       markFailed(registry, 'docs');
     }
-    if (board.docs.status === 'done') git.removeWorktree(repoRoot, cwd, branch);
-    save(`docs_${board.docs.status}`);
-    log(`documentation ${board.docs.status}${board.docs.summary ? `: ${board.docs.summary}` : ''}`);
+    if (status === 'done') git.removeWorktree(repoRoot, cwd, branch);
+    save(`docs_${status}`);
+    log(`documentation ${status}${board.docs.summary ? `: ${board.docs.summary}` : ''}`);
   }
 
   // ---- main loop ----
@@ -271,7 +271,10 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     const inFlight = new Map<string, Promise<void>>();
 
     while (!allTerminal(board) && !ctrl.signal.aborted) {
-      for (const c of blockUnreachable(board)) log(`card ${c.id} blocked: ${c.feedback.at(-1)}`);
+      for (const c of blockUnreachable(board)) {
+        log(`card ${c.id} blocked: ${c.feedback.at(-1)}`);
+        save('card_blocked', { cardId: c.id, message: c.feedback.at(-1) });
+      }
       for (const card of readyCards(board, config.concurrency)) {
         inFlight.set(card.id, runCard(card).catch((err) => {
           card.status = 'failed';
@@ -284,7 +287,6 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
         if (blockUnreachable(board).length === 0) throw new Error('scheduler stuck: no runnable cards and nothing in flight');
         continue;
       }
-      save('tick');
       await Promise.race(inFlight.values());
     }
     await Promise.all(inFlight.values());

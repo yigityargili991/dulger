@@ -16,7 +16,7 @@ dulger run "Add CSV export to the reports page"
 Node 24+, git, and `claude` or `codex` on your PATH.
 
 ```sh
-git clone <this repo> dulger && cd dulger
+git clone <repo-url> dulger && cd dulger
 npm install && npm link      # or: npm pack && npm install -g dulger-*.tgz
 ```
 

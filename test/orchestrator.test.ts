@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
@@ -10,6 +10,7 @@ import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/
 import { registerAdapter } from '../src/adapters/index.ts';
 import { openMemory } from '../src/context/memory.ts';
 import * as store from '../src/board/store.ts';
+import type { PlannerResult } from '../src/types.ts';
 
 process.env.USTA_DATA_DIR = mkdtempSync(join(tmpdir(), 'usta-data-'));
 
@@ -88,6 +89,45 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   assert.equal(board.docs?.status, 'done');
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run2']).split('\n').sort();
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c2-t1.txt', 'out/c2-t2.txt']);
+});
+
+test('a merge conflict after a passed review is resolved by a fix task and does not cost an attempt', async () => {
+  const plan: PlannerResult = {
+    cards: ['c1', 'c2'].map((id) => ({ id, title: id, description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: 'write', instructions: '' }] })),
+  };
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 5,
+    planner: plan,
+    checker: () => ({ pass: true, feedback: [], summary: 'ok' }),
+    worker: (o) => {
+      const [, taskId, cardId] = o.prompt.match(/Task id: (\S+)\s+Card id: (\S+)/)!;
+      const file = join(o.cwd, 'shared.txt');
+      if (taskId!.startsWith('fix')) {
+        assert.match(o.prompt, /conflict markers/);
+        const merged = readFileSync(file, 'utf8').split('\n').filter((l) => l && !/^(<{7}|={7}|>{7})/.test(l)).sort().join('\n') + '\n';
+        writeFileSync(file, merged);
+        return { summary: 'resolved', filesChanged: ['shared.txt'], done: true, remaining: [], learnings: [] };
+      }
+      writeFileSync(file, `line from ${cardId}\n`);
+      return { summary: `wrote ${cardId}`, filesChanged: ['shared.txt'], done: true, remaining: [], learnings: [] };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run4');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+
+  assert.deepEqual(board.cards.map((c) => c.status), ['done', 'done']);
+  assert.deepEqual(board.cards.map((c) => c.attempts), [0, 0], 'conflicts do not count as review attempts');
+  const conflicted = board.cards.filter((c) => c.tasks.some((t) => t.kind === 'fix'));
+  assert.equal(conflicted.length, 1);
+  assert.deepEqual(conflicted[0]!.tasks.map((t) => t.title), ['write', 'Resolve merge conflicts']);
+  assert.ok(events.some((e) => /conflicts with merged work in shared.txt/.test(e)));
+  assert.equal(wt.git(repo, ['show', 'usta/run4:shared.txt']), 'line from c1\nline from c2');
 });
 
 test('abort stops dispatching and leaves the board resumable', async () => {

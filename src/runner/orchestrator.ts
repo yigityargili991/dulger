@@ -155,6 +155,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     save('card_started', { cardId: card.id });
     log(`card ${card.id} started (${card.tasks.length} task${card.tasks.length === 1 ? '' : 's'})`);
 
+    let conflicts = 0;
     while (true) {
       if (ctrl.signal.aborted) return;
       // Tasks run sequentially in the card's worktree.
@@ -180,33 +181,38 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       if (ctrl.signal.aborted) return;
 
       const verdict: CheckResult = check.ok && check.output ? check.output : { pass: false, feedback: [`checker failed to run: ${check.error}`], summary: '' };
-      let fix: { title: string; feedback: string[] };
-      if (verdict.pass) {
-        const merged = git.mergeBack(cwd, board.runBranch, card.branch, { keepConflicts: true });
-        if (merged.ok) {
-          card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
-          return finishCard(card, cwd, 'done');
-        }
-        fix = {
-          title: 'Resolve merge conflicts',
-          feedback: [`Merging the result branch (other cards' work) into this card produced conflicts in: ${merged.conflicts?.join(', ')}. The files now contain conflict markers (<<<<<<< / >>>>>>>). Resolve them keeping the intent of both sides, remove the markers, and make sure everything still works.`],
-        };
-      } else {
-        fix = {
-          title: 'Address review feedback',
-          feedback: verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'],
-        };
+      if (!verdict.pass) {
+        const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
+        card.feedback.push(...feedback);
+        card.attempts++;
+        if (card.attempts >= config.maxAttempts) return finishCard(card, cwd, 'failed');
+        log(`card ${card.id} rejected (attempt ${card.attempts}/${config.maxAttempts}): ${feedback.at(-1)}`);
+        // Retry: keep the worktree and the finished tasks; append one fix task that addresses the feedback.
+        retry(card, 'Address review feedback', feedback);
+        save('card_retry', { cardId: card.id, message: feedback.at(-1) });
+        continue;
       }
 
-      card.feedback.push(...fix.feedback);
-      card.attempts++;
-      if (card.attempts >= config.maxAttempts) return finishCard(card, cwd, 'failed');
-      log(`card ${card.id} rejected (attempt ${card.attempts}/${config.maxAttempts}): ${card.feedback.at(-1)}`);
-      // Retry: keep the worktree and the finished tasks; append one fix task that addresses the feedback.
-      card.tasks.push(fixTask(card, fix.title, fix.feedback));
-      card.status = 'in_progress';
-      save('card_retry', { cardId: card.id, message: card.feedback.at(-1) });
+      const merged = git.mergeBack(cwd, board.runBranch, card.branch, { keepConflicts: true });
+      if (merged.ok) {
+        card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
+        return finishCard(card, cwd, 'done');
+      }
+      // The review passed but another card's work landed meanwhile and conflicts with this one.
+      // That is not a review failure: resolve it with a fix task without spending an attempt.
+      // Each round means the result branch moved, so the number of rounds is bounded by the number of cards.
+      const files = merged.conflicts?.join(', ') ?? '';
+      if (++conflicts > board.cards.length) return finishCard(card, cwd, 'failed', [`merge conflicts could not be resolved in ${files}`]);
+      log(`card ${card.id} conflicts with merged work in ${files}; resolving`);
+      retry(card, 'Resolve merge conflicts', [`Merging the result branch (other cards' work) into this card produced conflicts in: ${files}. The files now contain conflict markers (<<<<<<< / >>>>>>>). Resolve them keeping the intent of both sides, remove the markers, and make sure everything still works.`]);
+      save('card_conflict', { cardId: card.id, message: files });
     }
+  }
+
+  /** Put the card back to work with one fix task that carries `feedback`. */
+  function retry(card: Card, title: string, feedback: string[]): void {
+    card.tasks.push(fixTask(card, title, feedback));
+    card.status = 'in_progress';
   }
 
   function fixTask(card: Card, title: string, feedback: string[]): Task {

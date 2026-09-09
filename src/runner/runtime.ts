@@ -10,6 +10,7 @@ import { openMemory, type MemoryStore } from '../context/memory.ts';
 import * as store from '../board/store.ts';
 import { type AgentRegistry, runAgent } from './agentProcess.ts';
 import type { AgentRole, Board, BoardEvent, BoardEventType, Card } from '../types.ts';
+import { yellow } from '../ui/ansi.ts';
 
 export interface RunHooks {
   /** Called after every board change. */
@@ -63,6 +64,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       stallTimeoutSec: config.stallTimeoutSec, parentSignal: signal,
       run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
+    for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
     return { ...r, output: r.output as T | undefined };
   }
 

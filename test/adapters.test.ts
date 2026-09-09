@@ -1,19 +1,21 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseClaudeLine, buildClaudeArgs } from '../src/adapters/claude.ts';
-import { parseCodexLine, buildCodexArgs, codexTurnTokens } from '../src/adapters/codex.ts';
+import { createClaudeParser, buildClaudeArgs } from '../src/adapters/claude.ts';
+import { createCodexParser, buildCodexArgs } from '../src/adapters/codex.ts';
 import { extractJson } from '../src/adapters/process.ts';
 import type { AgentEvent } from '../src/types.ts';
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8').trim().split('\n');
 
 test('claude stream-json parses into normalised events', () => {
-  const events: AgentEvent[] = fixture('claude-stream.jsonl').flatMap(parseClaudeLine);
+  const events: AgentEvent[] = fixture('claude-stream.jsonl').flatMap(createClaudeParser());
   const types = events.map((e) => e.type);
   assert.equal(types[0], 'init');
   assert.ok(types.includes('tool'));
-  assert.ok(types.includes('tool_result'));
+  assert.equal(types.filter((t) => t === 'turn').length, 2, 'one turn per message id, not per content block line');
+  assert.equal(types.filter((t) => t === 'tool_result').length, 2);
+  assert.ok(!types.includes('warning'));
   const tools = events.filter((e) => e.type === 'tool').map((e) => e.name);
   assert.deepEqual(tools, ['Bash', 'StructuredOutput']);
   const result = events.at(-1);
@@ -22,16 +24,46 @@ test('claude stream-json parses into normalised events', () => {
     assert.deepEqual(result.output, { ok: true, note: 'hi' });
     assert.ok(result.costUsd! > 0);
     assert.equal(result.tokens, 66 + 22370 + 43700 + 828);
+    assert.equal(result.isError, false);
   }
 });
 
+test('claude parser reports format drift and errors instead of hiding them', () => {
+  const parse = createClaudeParser();
+  const noSession = parse('{"type":"system","subtype":"init"}');
+  assert.equal(noSession[0]?.type, 'warning');
+  const noSpend = parse('{"type":"result","subtype":"success","result":"ok"}');
+  assert.deepEqual(noSpend.map((e) => e.type), ['warning', 'result']);
+  const failed = parse('{"type":"result","subtype":"error_max_turns","is_error":true,"result":"Reached max turns","total_cost_usd":0.5}').at(-1);
+  assert.equal(failed?.type, 'result');
+  if (failed?.type === 'result') { assert.equal(failed.isError, true); assert.equal(failed.error, 'Reached max turns'); }
+  const parallel = parse('{"type":"user","message":{"content":[{"type":"tool_result"},{"type":"tool_result"}]}}');
+  assert.equal(parallel.length, 2, 'one tool_result per block');
+  assert.deepEqual(parse('{"type":"user","message":{"content":"the echoed prompt"}}'), []);
+  assert.deepEqual(parse('{"type":"rate_limit_event"}'), []);
+});
+
 test('codex jsonl parses into normalised events', () => {
-  const events = fixture('codex-stream.jsonl').flatMap(parseCodexLine);
+  const parser = createCodexParser();
+  const events = fixture('codex-stream.jsonl').flatMap((l) => parser.parse(l));
   const types = events.map((e) => e.type);
-  assert.deepEqual(types, ['init', 'text', 'tool', 'tool_result', 'text', 'turn']);
+  assert.deepEqual(types, ['init', 'text', 'turn', 'tool', 'tool_result', 'turn', 'text', 'turn'], 'a turn per completed item');
   const init = events[0];
   if (init?.type === 'init') assert.match(init.sessionId, /^[0-9a-f-]{36}$/);
-  assert.equal(fixture('codex-stream.jsonl').reduce((n, l) => n + codexTurnTokens(l), 0), 33771 + 61);
+  assert.equal(parser.tokens, 33771 + 61);
+  assert.equal(parser.error, undefined);
+});
+
+test('codex parser reports format drift, advisory errors and failed turns', () => {
+  const p = createCodexParser();
+  assert.equal(p.parse('{"type":"thread.started"}')[0]?.type, 'warning');
+  assert.equal(p.parse('{"type":"turn.completed"}')[0]?.type, 'warning');
+  const advisory = p.parse('{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Skill descriptions were shortened"}}');
+  assert.equal(advisory[0]?.type, 'warning');
+  assert.equal(p.error, undefined, 'an error item is advisory');
+  assert.deepEqual(p.parse('{"type":"item.completed","item":{"id":"i","type":"reasoning","text":"…"}}'), [], 'unknown items are ignored');
+  p.parse('{"type":"turn.failed","error":{"message":"stream disconnected"}}');
+  assert.equal(p.error, 'stream disconnected');
 });
 
 test('extractJson tolerates fences and prose', () => {

@@ -31,6 +31,8 @@ export interface AdapterResult {
   costUsd?: number;
   /** Total tokens (input incl. cache + output); the only spend figure some harnesses report. */
   tokens?: number;
+  /** Format drift noticed while parsing the harness output; logged, never fatal. */
+  warnings?: string[];
   exitCode: number;
   error?: string;
 }

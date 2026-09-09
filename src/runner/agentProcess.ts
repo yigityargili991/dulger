@@ -58,6 +58,7 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
       case 'tool': status.currentTool = e.name; status.lastMessage = describeTool(e); break;
       case 'tool_result': status.currentTool = undefined; break;
       case 'turn': status.turns++; break;
+      case 'warning': status.lastMessage = `warning: ${e.text}`; break;
       case 'result': if (e.costUsd !== undefined) status.costUsd = e.costUsd; break;
     }
     o.registry.onChange(status, e);

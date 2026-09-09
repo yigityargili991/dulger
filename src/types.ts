@@ -123,7 +123,9 @@ export type AgentEvent =
   | { type: 'tool'; name: string; input?: unknown }
   | { type: 'tool_result' }
   | { type: 'turn' }
-  | { type: 'result'; costUsd?: number; tokens?: number; output?: unknown; text?: string };
+  /** The harness output something dulger did not expect (format drift); the run goes on. */
+  | { type: 'warning'; text: string }
+  | { type: 'result'; costUsd?: number; tokens?: number; output?: unknown; text?: string; isError?: boolean; error?: string };
 
 // Board-level events appended to events.jsonl.
 export type BoardEventType =

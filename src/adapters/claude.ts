@@ -26,42 +26,79 @@ export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   return args;
 }
 
-/** Convert one stream-json line into zero or more normalised events. Exported for tests. */
-export function parseClaudeLine(line: string): AgentEvent[] {
-  const o = tryParseJson(line);
-  if (!o) return [];
-  const events: AgentEvent[] = [];
-  switch (o.type) {
-    case 'system':
-      if (o.subtype === 'init' && typeof o.session_id === 'string') events.push({ type: 'init', sessionId: o.session_id });
-      break;
-    case 'assistant': {
-      const msg = o.message as { content?: Array<Record<string, unknown>> } | undefined;
-      for (const block of msg?.content ?? []) {
-        if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) events.push({ type: 'text', text: block.text });
-        else if (block.type === 'tool_use' && typeof block.name === 'string') events.push({ type: 'tool', name: block.name, input: block.input });
+/**
+ * A parser for one Claude Code stream-json session. It keeps state because Claude Code emits one
+ * `assistant` line per content block: a turn is counted when the message id changes, not per line.
+ */
+export function createClaudeParser(): (line: string) => AgentEvent[] {
+  let lastMessageId: string | undefined;
+  return (line) => {
+    const o = tryParseJson(line);
+    if (!o) return [];
+    switch (o.type) {
+      case 'system':
+        return initEvents(o);
+      case 'assistant': {
+        const id = (o.message as { id?: unknown } | undefined)?.id;
+        const newMessage = typeof id !== 'string' || id !== lastMessageId;
+        if (typeof id === 'string') lastMessageId = id;
+        return assistantEvents(o, newMessage);
       }
-      events.push({ type: 'turn' });
-      break;
+      case 'user':
+        return toolResultEvents(o);
+      case 'result':
+        return resultEvents(o);
+      default:
+        return [];
     }
-    case 'user':
-      events.push({ type: 'tool_result' });
-      break;
-    case 'result': {
-      const u = (o.usage ?? {}) as Record<string, unknown>;
-      const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens']
-        .reduce((n, k) => n + (typeof u[k] === 'number' ? (u[k] as number) : 0), 0);
-      events.push({
-        type: 'result',
-        costUsd: typeof o.total_cost_usd === 'number' ? o.total_cost_usd : undefined,
-        tokens: tokens || undefined,
-        output: o.structured_output,
-        text: typeof o.result === 'string' ? o.result : '',
-      });
-      break;
-    }
+  };
+}
+
+function initEvents(o: Record<string, unknown>): AgentEvent[] {
+  if (o.subtype !== 'init') return [];
+  if (typeof o.session_id !== 'string') return [{ type: 'warning', text: 'init event has no session_id; this session cannot be resumed (stream-json format changed?)' }];
+  return [{ type: 'init', sessionId: o.session_id }];
+}
+
+function assistantEvents(o: Record<string, unknown>, newMessage: boolean): AgentEvent[] {
+  const events: AgentEvent[] = [];
+  for (const block of contentBlocks(o)) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) events.push({ type: 'text', text: block.text });
+    else if (block.type === 'tool_use' && typeof block.name === 'string') events.push({ type: 'tool', name: block.name, input: block.input });
   }
+  if (newMessage) events.push({ type: 'turn' });
   return events;
+}
+
+/** One event per tool result; a `user` line that echoes a prompt has none. */
+function toolResultEvents(o: Record<string, unknown>): AgentEvent[] {
+  return contentBlocks(o).filter((b) => b.type === 'tool_result').map(() => ({ type: 'tool_result' }));
+}
+
+function resultEvents(o: Record<string, unknown>): AgentEvent[] {
+  const events: AgentEvent[] = [];
+  const usage = o.usage && typeof o.usage === 'object' ? (o.usage as Record<string, unknown>) : undefined;
+  const costUsd = typeof o.total_cost_usd === 'number' ? o.total_cost_usd : undefined;
+  if (costUsd === undefined && !usage) events.push({ type: 'warning', text: 'result event has neither total_cost_usd nor usage; spend will read as unknown (stream-json format changed?)' });
+  const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens']
+    .reduce((n, k) => n + (typeof usage?.[k] === 'number' ? (usage[k] as number) : 0), 0);
+  const text = typeof o.result === 'string' ? o.result : '';
+  const isError = o.is_error === true;
+  events.push({
+    type: 'result',
+    costUsd,
+    tokens: tokens || undefined,
+    output: o.structured_output,
+    text,
+    isError,
+    error: isError ? text || JSON.stringify(o.errors ?? o.subtype ?? 'unknown error') : undefined,
+  });
+  return events;
+}
+
+function contentBlocks(o: Record<string, unknown>): Array<Record<string, unknown>> {
+  const content = (o.message as { content?: unknown } | undefined)?.content;
+  return Array.isArray(content) ? content.filter((b): b is Record<string, unknown> => Boolean(b) && typeof b === 'object') : [];
 }
 
 export const claudeAdapter: Adapter = {
@@ -69,8 +106,8 @@ export const claudeAdapter: Adapter = {
   async run(opts): Promise<AdapterResult> {
     let sessionId: string | undefined = opts.resumeSessionId;
     let final: Extract<AgentEvent, { type: 'result' }> | undefined;
-    let isError = false;
-    let errorText = '';
+    const warnings: string[] = [];
+    const parse = createClaudeParser();
 
     const { exitCode, stderr } = await spawnLines({
       bin: process.env.DULGER_CLAUDE_BIN ?? 'claude',
@@ -79,14 +116,10 @@ export const claudeAdapter: Adapter = {
       logFile: opts.logFile,
       signal: opts.signal,
       onLine(line) {
-        const raw = tryParseJson(line);
-        if (raw?.type === 'result' && raw.is_error === true) {
-          isError = true;
-          errorText = typeof raw.result === 'string' ? raw.result : JSON.stringify(raw.errors ?? raw);
-        }
-        for (const ev of parseClaudeLine(line)) {
+        for (const ev of parse(line)) {
           if (ev.type === 'init') sessionId = ev.sessionId;
           if (ev.type === 'result') final = ev;
+          if (ev.type === 'warning') warnings.push(ev.text);
           opts.onEvent(ev);
         }
       },
@@ -94,7 +127,7 @@ export const claudeAdapter: Adapter = {
 
     const text = final?.text ?? '';
     const output = final?.output ?? (opts.schema ? extractJson(text) : undefined);
-    const ok = exitCode === 0 && !isError && (!opts.schema || output !== undefined);
+    const ok = exitCode === 0 && !final?.isError && (!opts.schema || output !== undefined);
     return {
       ok,
       output,
@@ -102,8 +135,9 @@ export const claudeAdapter: Adapter = {
       sessionId,
       costUsd: final?.costUsd,
       tokens: final?.tokens,
+      warnings: warnings.length ? warnings : undefined,
       exitCode,
-      error: ok ? undefined : errorText || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
+      error: ok ? undefined : final?.error || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
     };
   },
 };

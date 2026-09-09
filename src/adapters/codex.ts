@@ -26,37 +26,69 @@ export function buildCodexArgs(opts: AdapterRunOptions, files: { schema?: string
   return args;
 }
 
-/** Convert one JSONL event line into normalised events. Exported for tests. */
-export function parseCodexLine(line: string): AgentEvent[] {
-  const o = tryParseJson(line);
-  if (!o) return [];
-  const item = o.item as Record<string, unknown> | undefined;
-  switch (o.type) {
-    case 'thread.started':
-      return typeof o.thread_id === 'string' ? [{ type: 'init', sessionId: o.thread_id }] : [];
-    case 'item.started':
-      if (item?.type === 'command_execution') return [{ type: 'tool', name: 'shell', input: item.command }];
-      if (item?.type === 'file_change') return [{ type: 'tool', name: 'edit', input: item.changes }];
-      if (item?.type === 'mcp_tool_call') return [{ type: 'tool', name: String(item.tool ?? 'mcp') }];
-      if (item?.type === 'web_search') return [{ type: 'tool', name: 'web_search' }];
-      return [];
-    case 'item.completed':
-      if (item?.type === 'agent_message' && typeof item.text === 'string') return [{ type: 'text', text: item.text }];
-      if (item?.type === 'command_execution' || item?.type === 'file_change' || item?.type === 'mcp_tool_call') return [{ type: 'tool_result' }];
-      return [];
-    case 'turn.completed':
-      return [{ type: 'turn' }];
-    default:
-      return [];
-  }
+export interface CodexParser {
+  parse(line: string): AgentEvent[];
+  /** Tokens across all turns so far (Codex reports usage, never dollars). */
+  readonly tokens: number;
+  /** Set when the turn failed or Codex reported a top-level error. */
+  readonly error: string | undefined;
 }
 
-/** Tokens used by one `turn.completed` line (Codex reports usage, never dollars). */
-export function codexTurnTokens(line: string): number {
-  const o = tryParseJson(line);
-  if (o?.type !== 'turn.completed') return 0;
-  const u = (o.usage ?? {}) as Record<string, unknown>;
-  return (typeof u.input_tokens === 'number' ? u.input_tokens : 0) + (typeof u.output_tokens === 'number' ? u.output_tokens : 0);
+/**
+ * A parser for one `codex exec --json` session. Codex has no per-call "turn": the whole exec is one
+ * turn made of items, so a turn is counted per completed item (a message or a tool call), which
+ * lines up with what Claude Code calls a turn. Advisory `error` items (e.g. skill descriptions
+ * truncated) become warnings; only `turn.failed` and top-level errors fail the run.
+ */
+export function createCodexParser(): CodexParser {
+  let tokens = 0;
+  let error: string | undefined;
+  const TOOL_ITEMS = new Set(['command_execution', 'file_change', 'mcp_tool_call', 'web_search']);
+
+  function parse(line: string): AgentEvent[] {
+    const o = tryParseJson(line);
+    if (!o) return [];
+    const item = o.item && typeof o.item === 'object' ? (o.item as Record<string, unknown>) : undefined;
+    switch (o.type) {
+      case 'thread.started':
+        if (typeof o.thread_id !== 'string') return [{ type: 'warning', text: 'thread.started has no thread_id; this session cannot be resumed (codex JSONL format changed?)' }];
+        return [{ type: 'init', sessionId: o.thread_id }];
+      case 'item.started':
+        return toolStarted(item);
+      case 'item.completed':
+        if (!item) return [];
+        if (item.type === 'agent_message' && typeof item.text === 'string') return [{ type: 'text', text: item.text }, { type: 'turn' }];
+        if (item.type === 'error') return [{ type: 'warning', text: `codex reported: ${String(item.message ?? 'error')}` }];
+        if (typeof item.type === 'string' && TOOL_ITEMS.has(item.type)) return [{ type: 'tool_result' }, { type: 'turn' }];
+        return [];
+      case 'turn.completed': {
+        const usage = o.usage && typeof o.usage === 'object' ? (o.usage as Record<string, unknown>) : undefined;
+        if (!usage) return [{ type: 'warning', text: 'turn.completed has no usage; spend will read as unknown (codex JSONL format changed?)' }];
+        tokens += (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0) + (typeof usage.output_tokens === 'number' ? usage.output_tokens : 0);
+        return [];
+      }
+      case 'turn.failed':
+      case 'error': {
+        const err = o.error && typeof o.error === 'object' ? (o.error as Record<string, unknown>).message : (o.message ?? o.error);
+        error = typeof err === 'string' ? err : JSON.stringify(err ?? o);
+        return [];
+      }
+      default:
+        return [];
+    }
+  }
+
+  return { parse, get tokens() { return tokens; }, get error() { return error; } };
+}
+
+function toolStarted(item: Record<string, unknown> | undefined): AgentEvent[] {
+  switch (item?.type) {
+    case 'command_execution': return [{ type: 'tool', name: 'shell', input: item.command }];
+    case 'file_change': return [{ type: 'tool', name: 'edit', input: item.changes }];
+    case 'mcp_tool_call': return [{ type: 'tool', name: String(item.tool ?? 'mcp') }];
+    case 'web_search': return [{ type: 'tool', name: 'web_search' }];
+    default: return [];
+  }
 }
 
 export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
@@ -69,8 +101,8 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
 
       let sessionId: string | undefined = opts.resumeSessionId;
       let lastText = '';
-      let errorText = '';
-      let tokens = 0;
+      const warnings: string[] = [];
+      const parser = createCodexParser();
       try {
         const { exitCode, stderr } = await spawnLines({
           bin: process.env.DULGER_CODEX_BIN ?? 'codex',
@@ -81,12 +113,10 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
           logFile: opts.logFile,
           signal: opts.signal,
           onLine(line) {
-            const raw = tryParseJson(line);
-            if (raw?.type === 'error' || raw?.type === 'turn.failed') errorText = JSON.stringify(raw.error ?? raw.message ?? raw);
-            tokens += codexTurnTokens(line);
-            for (const ev of parseCodexLine(line)) {
+            for (const ev of parser.parse(line)) {
               if (ev.type === 'init') sessionId = ev.sessionId;
               if (ev.type === 'text') lastText = ev.text;
+              if (ev.type === 'warning') warnings.push(ev.text);
               opts.onEvent(ev);
             }
           },
@@ -94,16 +124,18 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
 
         const text = existsSync(files.lastMessage) ? readFileSync(files.lastMessage, 'utf8') : lastText;
         const output = opts.schema ? extractJson(text) : undefined;
-        opts.onEvent({ type: 'result', output, text, tokens: tokens || undefined });
-        const ok = exitCode === 0 && !errorText && (!opts.schema || output !== undefined);
+        const tokens = parser.tokens || undefined;
+        opts.onEvent({ type: 'result', output, text, tokens, isError: Boolean(parser.error), error: parser.error });
+        const ok = exitCode === 0 && !parser.error && (!opts.schema || output !== undefined);
         return {
           ok,
           output,
           text,
           sessionId,
-          tokens: tokens || undefined,
+          tokens,
+          warnings: warnings.length ? warnings : undefined,
           exitCode,
-          error: ok ? undefined : errorText || stderr.trim().split('\n').slice(-5).join('\n') || `codex exited with ${exitCode}`,
+          error: ok ? undefined : parser.error || stderr.trim().split('\n').slice(-5).join('\n') || `codex exited with ${exitCode}`,
         };
       } finally {
         rmSync(dir, { recursive: true, force: true });

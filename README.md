@@ -41,11 +41,17 @@ Your checkout is never modified: the result lands on `usta/<runId>` for you to r
 
 ## Install
 
+From a checkout:
+
 ```sh
 git clone <this repo> usta && cd usta
 npm install          # only installs typescript for `npm run typecheck`
 npm link             # puts `usta` on your PATH (or run `node src/cli.ts`)
 ```
+
+Or from a tarball: `npm pack` produces `usta-<version>.tgz`, and `npm install -g usta-<version>.tgz`
+installs the `usta` command. There is no build step either way: `bin/usta.js` strips the types of
+usta's own files at load time, because Node refuses to do that for packages under `node_modules`.
 
 ## Usage
 
@@ -68,6 +74,7 @@ usta memory [list|add|rm|compact|path]   inspect and curate what agents learned 
 --allow-dirty                   run even with uncommitted changes
 --repo <path>                   repository to work in (default: cwd)
 --quiet                         no live table, log lines only
+--version                       print usta's version
 ```
 
 Try it without spending tokens: `usta run --harness fake --yes "demo"` in any git repo.

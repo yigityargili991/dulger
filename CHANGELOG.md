@@ -1,0 +1,16 @@
+# Changelog
+
+## 0.1.0 — 2026-09-09
+
+First release.
+
+- `usta run` turns a goal into a kanban board planned by a Claude Code or Codex agent, then executes it
+  with parallel workers in per-card git worktrees.
+- A checker reviews every card against its acceptance criteria; rejections become fix tasks.
+- Review and merge form a merge queue: cards land on `usta/<runId>` by fast-forward in the state the
+  checker approved.
+- The planner replans the remaining work when a card fails.
+- A documentation agent updates README / docs / CHANGELOG for the merged work.
+- Interrupted runs are resumable with `usta resume`.
+- Workers' learnings are stored as structured memory outside the repository and selected per prompt.
+- `--harness fake` runs the whole pipeline without spending tokens.

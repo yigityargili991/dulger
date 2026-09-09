@@ -2,12 +2,16 @@
   "name": "usta",
   "version": "0.1.0",
   "description": "usta — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
+  "license": "MIT",
+  "author": "Yigit Yargili",
   "type": "module",
-  "bin": { "usta": "./src/cli.ts" },
+  "bin": { "usta": "./bin/usta.js" },
+  "files": ["bin/", "src/"],
   "engines": { "node": ">=24" },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "prepublishOnly": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

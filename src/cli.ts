@@ -2,7 +2,7 @@
 // usta — command line entry point.
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
-import { existsSync, rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
@@ -42,9 +42,14 @@ Options:
   --allow-dirty                   run even with uncommitted changes
   --repo <path>                   repository to work in (default: cwd)
   --quiet                         no live table, log lines only
+  --version                       print usta's version
 
 Per-role overrides live in <repo>/.usta/config.json, e.g.
   { "roles": { "planner": { "harness": "claude", "model": "opus" }, "worker": { "harness": "codex" } } }`;
+
+function packageVersion(): string {
+  return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+}
 
 function fail(msg: string): never {
   console.error(red('error: ') + msg);
@@ -58,10 +63,11 @@ async function main(argv: string[]): Promise<void> {
     options: {
       harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
-      repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
   });
   const [cmd, arg] = positionals;
+  if (v.version) { console.log(packageVersion()); return; }
   if (v.help || !cmd) { console.log(USAGE); return; }
 
   const repoRoot = git.repoRoot(v.repo ?? process.cwd());

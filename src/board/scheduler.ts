@@ -1,6 +1,6 @@
 import type { Board, Card, CardStatus } from '../types.ts';
 
-const TERMINAL: ReadonlySet<CardStatus> = new Set(['done', 'failed', 'blocked']);
+const TERMINAL: ReadonlySet<CardStatus> = new Set(['done', 'failed', 'blocked', 'replaced']);
 
 export function isTerminal(card: Card): boolean {
   return TERMINAL.has(card.status);
@@ -28,7 +28,7 @@ export function blockUnreachable(board: Board): Card[] {
       if (card.status !== 'backlog') continue;
       const deadDep = card.dependsOn.find((d) => {
         const dep = byId.get(d);
-        return dep && (dep.status === 'failed' || dep.status === 'blocked');
+        return dep && (dep.status === 'failed' || dep.status === 'blocked' || dep.status === 'replaced');
       });
       if (deadDep) {
         card.status = 'blocked';

@@ -12,7 +12,7 @@ import type { AgentRegistry } from './agentProcess.ts';
 import { runCard } from './card.ts';
 import { runDocs } from './docs.ts';
 import { createRuntime, type RunHooks } from './runtime.ts';
-import type { Board, PlannerResult } from '../types.ts';
+import type { Board, Card, PlannerResult } from '../types.ts';
 
 export type OrchestratorHooks = RunHooks;
 
@@ -44,12 +44,41 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     log(`planned ${board.cards.length} cards`);
   }
 
+  /** Ask the planner for a new set of remaining cards after `failed` cards gave up. Leaves the board as is when it cannot. */
+  async function replan(failed: Card[]): Promise<void> {
+    const n = (board.replans ?? 0) + 1;
+    const waiting = board.cards.filter((c) => c.status === 'backlog' || c.status === 'blocked');
+    log(`card${failed.length === 1 ? '' : 's'} ${failed.map((c) => c.id).join(', ')} failed; replanning (${n}/${config.maxReplans})…`);
+    const r = await rt.agent<PlannerResult>('planner', {
+      prompt: P.replanPrompt(board, failed, waiting, rt.context({ root: repoRoot })),
+      systemPrompt: P.replanSystem(board.cards.map((c) => c.id)), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
+    }, { logName: `replan${n}` });
+    rt.addCost(undefined, r.costUsd);
+    if (ctrl.signal.aborted) return;
+    try {
+      if (!r.ok || !r.output) throw new Error(r.error ?? 'no output');
+      const { replaced, added } = store.applyReplan(board, r.output);
+      save('replanned', { data: { replaced: replaced.map((c) => c.id), added: added.map((c) => c.id) } });
+      log(`replanned: ${added.length} new card${added.length === 1 ? '' : 's'}${added.length ? ` (${added.map((c) => c.id).join(', ')})` : ''}, ${replaced.length} replaced`);
+    } catch (err) {
+      board.replans = n;
+      save('replan_failed', { message: (err as Error).message });
+      log(`replan failed: ${(err as Error).message}`);
+    }
+  }
+
   async function execute(): Promise<void> {
     if (board.cards.length === 0) throw new Error('board has no cards; run plan() first');
     mkdirSync(join(worktreesDir(repoRoot), board.runId), { recursive: true });
     const inFlight = new Map<string, Promise<void>>();
+    // Failures present at the start (a resumed run) were dealt with before; only new ones trigger a replan.
+    const handledFailures = new Set(board.cards.filter((c) => c.status === 'failed').map((c) => c.id));
 
     while (!allTerminal(board) && !ctrl.signal.aborted) {
+      const failed = board.cards.filter((c) => c.status === 'failed' && !handledFailures.has(c.id));
+      for (const c of failed) handledFailures.add(c.id);
+      if (failed.length && (board.replans ?? 0) < config.maxReplans) await replan(failed);
+      if (ctrl.signal.aborted) break;
       for (const c of blockUnreachable(board)) {
         log(`card ${c.id} blocked: ${c.feedback.at(-1)}`);
         save('card_blocked', { cardId: c.id, message: c.feedback.at(-1) });

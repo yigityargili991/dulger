@@ -71,6 +71,37 @@ export function cardsFromPlan(plan: PlannerResult): Card[] {
   }));
 }
 
+/**
+ * Apply a replan: the planner's cards replace every card that is still waiting (backlog or blocked).
+ * Done, running and failed cards stay. New cards get fresh ids when the planner reused one, and
+ * references between the new cards follow the rename. Throws (and changes nothing) when the
+ * result would not be a valid board.
+ */
+export function applyReplan(board: Board, plan: PlannerResult): { replaced: Card[]; added: Card[] } {
+  const n = (board.replans ?? 0) + 1;
+  const taken = new Set(board.cards.map((c) => c.id));
+  const rename = new Map<string, string>();
+  for (const c of plan.cards) {
+    if (!taken.has(c.id)) { taken.add(c.id); continue; }
+    let id = `${c.id}-r${n}`;
+    for (let k = 2; taken.has(id); k++) id = `${c.id}-r${n}.${k}`;
+    rename.set(c.id, id);
+    taken.add(id);
+  }
+  const added = cardsFromPlan({
+    cards: plan.cards.map((c) => ({ ...c, id: rename.get(c.id) ?? c.id, dependsOn: (c.dependsOn ?? []).map((d) => rename.get(d) ?? d) })),
+  });
+  const replaced = board.cards.filter((c) => c.status === 'backlog' || c.status === 'blocked');
+  validateBoard({ ...board, cards: [...board.cards, ...added] });
+  for (const c of replaced) {
+    c.status = 'replaced';
+    c.feedback.push(`replaced by replan ${n}`);
+  }
+  board.cards.push(...added);
+  board.replans = n;
+  return { replaced, added };
+}
+
 /** Throws with a readable message when the board is structurally broken (e.g. after hand edits). */
 export function validateBoard(board: Board): void {
   const ids = new Set<string>();

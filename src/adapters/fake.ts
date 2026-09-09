@@ -6,7 +6,7 @@ import type { AgentRole, CheckResult, DocsResult, PlannerResult, WorkerResult } 
 import type { Adapter, AdapterRunOptions, AdapterResult } from './types.ts';
 
 export type FakeScript = {
-  planner?: PlannerResult;
+  planner?: PlannerResult | ((opts: AdapterRunOptions, callIndex: number) => PlannerResult);
   /** Called per worker run; may write files into cwd to exercise the git path. */
   worker?: (opts: AdapterRunOptions, callIndex: number) => WorkerResult;
   checker?: (opts: AdapterRunOptions, callIndex: number) => CheckResult;
@@ -73,7 +73,7 @@ export function createFakeAdapter(script: FakeScript = DEFAULT_FAKE_SCRIPT): Ada
       if (opts.signal.aborted) return { ok: false, text: '', exitCode: 130, error: 'aborted' };
 
       let output: unknown;
-      if (role === 'planner') output = script.planner ?? DEFAULT_FAKE_SCRIPT.planner;
+      if (role === 'planner') { const p = script.planner ?? DEFAULT_FAKE_SCRIPT.planner!; output = typeof p === 'function' ? p(opts, i) : p; }
       else if (role === 'worker') output = (script.worker ?? DEFAULT_FAKE_SCRIPT.worker!)(opts, i);
       else if (role === 'checker') output = (script.checker ?? DEFAULT_FAKE_SCRIPT.checker!)(opts, i);
       else output = (script.docs ?? DEFAULT_FAKE_SCRIPT.docs!)(opts, i);

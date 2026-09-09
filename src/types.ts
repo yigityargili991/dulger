@@ -1,7 +1,7 @@
 // Core data model for usta. Everything here is plain JSON so the board can be
 // written to disk, edited by hand, and reloaded.
 
-export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked';
+export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked' | 'replaced';
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
 export type AgentRole = 'planner' | 'worker' | 'checker' | 'docs';
 export type HarnessName = 'claude' | 'codex' | 'fake';
@@ -79,6 +79,8 @@ export interface Board {
   cards: Card[];
   docs?: { status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; summary?: string };
   costUsd: number;
+  /** Times the planner was asked to replan after a card failed. */
+  replans?: number;
 }
 
 // ---- Live agent status (derived from adapter events, shown in the TUI) ----
@@ -111,7 +113,7 @@ export type AgentEvent =
 
 // Board-level events appended to events.jsonl.
 export type BoardEventType =
-  | 'planned'
+  | 'planned' | 'replanned' | 'replan_failed'
   | 'card_started' | 'card_review' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
   | 'task_started' | 'task_done' | 'task_failed' | 'learnings'
   | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'

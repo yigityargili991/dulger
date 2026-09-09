@@ -77,7 +77,7 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   registerAdapter('fake', createFakeAdapter(script));
   const repo = tempRepo();
   const board = createBoard(repo, 'demo', 'run2');
-  const orch = createOrchestrator(repo, board, config, {});
+  const orch = createOrchestrator(repo, board, { ...config, maxReplans: 0 }, {});
   await orch.plan();
   await orch.execute();
 
@@ -133,6 +133,48 @@ test('a merge conflict with landed work is resolved by a fix task and does not c
   assert.deepEqual(conflicted[0]!.tasks.map((t) => t.title), ['write', 'Resolve merge conflicts']);
   assert.ok(events.some((e) => /conflicts with merged work in shared.txt/.test(e)));
   assert.equal(wt.git(repo, ['show', 'usta/run4:shared.txt']), 'line from c1\nline from c2');
+});
+
+test('a failed card triggers a replan that replaces the waiting cards', async () => {
+  const prompts: string[] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 5,
+    checker: (opts) => (/Card under review: c1 /.test(opts.prompt) ? { pass: false, feedback: ['never good enough'], summary: '' } : { pass: true, feedback: [], summary: 'ok' }),
+    planner: (opts, i) => {
+      if (i === 0) return DEFAULT_FAKE_SCRIPT.planner as PlannerResult;
+      prompts.push(opts.prompt);
+      // Reuses the id c3 on purpose: it must be renamed, and c4's dependency must follow the rename.
+      return { cards: [
+        { id: 'c3', title: 'Wire CLI without greeting', description: '', acceptanceCriteria: [], dependsOn: ['c2'], tasks: [{ id: 't1', title: 'write cli', instructions: '' }] },
+        { id: 'c4', title: 'Smoke test', description: '', acceptanceCriteria: [], dependsOn: ['c3'], tasks: [{ id: 't1', title: 'test', instructions: '' }] },
+      ] };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run5');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+
+  const byId = Object.fromEntries(board.cards.map((c) => [c.id, c]));
+  assert.deepEqual(Object.keys(byId), ['c1', 'c2', 'c3', 'c3-r1', 'c4']);
+  assert.equal(byId.c1!.status, 'failed');
+  assert.equal(byId.c2!.status, 'done');
+  assert.equal(byId.c3!.status, 'replaced');
+  assert.match(byId.c3!.feedback.at(-1)!, /replaced by replan 1/);
+  assert.equal(byId['c3-r1']!.status, 'done');
+  assert.deepEqual(byId.c4!.dependsOn, ['c3-r1']);
+  assert.equal(byId.c4!.status, 'done');
+  assert.equal(board.replans, 1);
+  assert.equal(prompts.length, 1, 'planner asked to replan once');
+  assert.match(prompts[0]!, /## Failed cards[\s\S]*### c1: Create greeting module \[failed\][\s\S]*never good enough/);
+  assert.match(prompts[0]!, /## Waiting cards[\s\S]*### c3: Wire CLI \[backlog\]/);
+  assert.ok(events.some((e) => /replanned: 2 new cards \(c3-r1, c4\), 1 replaced/.test(e)), events.join('\n'));
+  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run5']).split('\n').sort();
+  assert.deepEqual(files, ['README.md', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-r1-t1.txt', 'out/c4-t1.txt']);
 });
 
 test('abort stops dispatching and leaves the board resumable', async () => {

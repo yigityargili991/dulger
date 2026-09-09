@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readyCards, blockUnreachable, allTerminal, resetInterrupted } from '../src/board/scheduler.ts';
-import { cardsFromPlan, validateBoard } from '../src/board/store.ts';
+import { applyReplan, cardsFromPlan, validateBoard } from '../src/board/store.ts';
 import type { Board } from '../src/types.ts';
 
 function board(): Board {
@@ -63,4 +63,24 @@ test('resetInterrupted sends interrupted cards back to the backlog and keeps fin
   assert.equal(c.tasks[0]!.status, 'done', 'a card interrupted in review keeps its work and is reviewed again');
   assert.equal(d.tasks[0]!.status, 'failed', 'terminal cards are untouched');
   assert.deepEqual(b.docs, { status: 'pending' });
+});
+
+test('applyReplan replaces waiting cards, renames reused ids and rejects broken plans', () => {
+  const b = board();
+  const [a, bb, c, d] = b.cards;
+  a!.status = 'failed'; c!.status = 'in_progress'; d!.status = 'blocked';
+  assert.throws(() => applyReplan(b, { cards: [{ id: 'x', title: '', description: '', acceptanceCriteria: [], dependsOn: ['nope'], tasks: [{ id: 't1', title: '', instructions: '' }] }] }), /unknown card/);
+  assert.deepEqual(b.cards.map((x) => x.status), ['failed', 'backlog', 'in_progress', 'blocked'], 'a rejected plan changes nothing');
+  assert.equal(b.replans, undefined);
+
+  const { replaced, added } = applyReplan(b, { cards: [
+    { id: 'b', title: 'B again', description: '', acceptanceCriteria: [], dependsOn: ['c'], tasks: [{ id: 't1', title: '', instructions: '' }] },
+    { id: 'e', title: 'E', description: '', acceptanceCriteria: [], dependsOn: ['b'], tasks: [{ id: 't1', title: '', instructions: '' }] },
+  ] });
+  assert.deepEqual(replaced.map((x) => x.id), ['b', 'd']);
+  assert.deepEqual(added.map((x) => [x.id, x.dependsOn]), [['b-r1', ['c']], ['e', ['b-r1']]]);
+  assert.deepEqual(b.cards.map((x) => `${x.id}:${x.status}`), ['a:failed', 'b:replaced', 'c:in_progress', 'd:replaced', 'b-r1:backlog', 'e:backlog']);
+  assert.equal(b.replans, 1);
+  assert.equal(allTerminal(b), false);
+  assert.deepEqual(readyCards(b, 5).map((x) => x.id), [], 'b-r1 waits for c');
 });

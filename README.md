@@ -23,9 +23,13 @@ usta run "Add CSV export to the reports page"
    a review round.
 5. Review and merge form a *merge queue*: one card at a time syncs the result branch into its
    worktree, is reviewed in that combined state, and lands on `usta/<runId>` by fast-forward. What
-   the checker approves is exactly what lands. Failed cards block their dependents.
-6. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
-7. A live terminal table shows the board and every agent's state, current tool and last message.
+   the checker approves is exactly what lands.
+6. When a card fails, the **planner replans**: it sees what merged, what is still running, what failed
+   and why, and the cards that were waiting, and returns a new set of cards for the remaining work.
+   Waiting cards are replaced; done and running cards are never touched. After `maxReplans`
+   replans, a failed card simply blocks its dependents.
+7. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
+8. A live terminal table shows the board and every agent's state, current tool and last message.
 
 Your checkout is never modified: the result lands on `usta/<runId>` for you to review and merge.
 
@@ -56,6 +60,7 @@ usta memory [list|add|rm|compact|path]   inspect and curate what agents learned 
 --harness <claude|codex|fake>   backend for all roles (default: claude)
 --concurrency <n>               parallel cards (default: 3)
 --max-attempts <n>              review rounds per card (default: 2)
+--max-replans <n>               replans after a card failed (default: 1)
 --model <name>                  model for all roles
 --yes                           skip the board approval pause
 --no-docs                       skip the documentation agent
@@ -76,6 +81,7 @@ Optional `<repo>/.usta/config.json`; CLI flags override it.
   "harness": "claude",
   "concurrency": 3,
   "maxAttempts": 2,
+  "maxReplans": 1,
   "maxContinuations": 2,
   "stallTimeoutSec": 600,
   "docs": true,

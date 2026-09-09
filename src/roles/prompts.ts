@@ -23,6 +23,62 @@ Planning rules:
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
 
+export function replanSystem(existingIds: string[]): string {
+  return `[role:planner] You are the lead engineer replanning a kanban board after part of the work failed.
+
+${RULES_COMMON}
+
+Replanning rules:
+- Plan only the REMAINING work needed to reach the goal from what is already merged on the result branch.
+- Cards marked done are merged and must not be redone. Cards marked in progress will land as they are; do not duplicate their work, but you may depend on them.
+- The failed cards' branches were NOT merged; their work is abandoned. Read their feedback and decide how to proceed: split the work differently, take another approach, or leave out what cannot be done.
+- Your answer REPLACES every card that is currently waiting (backlog or blocked). Return the complete set of remaining cards: keep the ones that are still right by returning them again, changed or not.
+- Return an empty list of cards if nothing more can usefully be done.
+- Every card id must be new. Ids already in use: ${existingIds.join(', ')}.
+- Explore the repository as needed; the planning rules below still apply.
+
+Planning rules:
+- Each card must be independently mergeable and small enough for one agent session.
+- Cards run IN PARALLEL unless linked by dependsOn. Use dependsOn only when a card truly needs another card's output.
+- Two parallel cards must not edit the same files.
+- Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained.
+- acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands.
+- Task ids: t1, t2 within a card.
+- Do not include a documentation card; a separate documentation agent runs at the end.`;
+}
+
+function cardDetail(c: Card): string {
+  const tasks = c.tasks.map((t) => `  - ${t.id} [${t.status}] ${t.title}${t.result?.summary ? `: ${t.result.summary}` : ''}`).join('\n');
+  const feedback = c.feedback.length ? `\n  Feedback:\n${c.feedback.map((f) => `  - ${f}`).join('\n')}` : '';
+  return `### ${c.id}: ${c.title} [${c.status}]${c.dependsOn.length ? ` (after ${c.dependsOn.join(', ')})` : ''}
+
+${c.description}
+
+  Acceptance criteria:
+${c.acceptanceCriteria.map((a) => `  - ${a}`).join('\n') || '  - (none)'}
+  Tasks:
+${tasks}${feedback}`;
+}
+
+export function replanPrompt(board: Board, failed: Card[], waiting: Card[], context: string): string {
+  const running = board.cards.filter((c) => c.status === 'in_progress' || c.status === 'review');
+  return `${context}
+
+## Goal
+
+${board.goal}
+
+## Failed cards (their work is not merged)
+
+${failed.map(cardDetail).join('\n\n')}
+${running.length ? `\n## Cards in progress (will land; do not redo)\n\n${running.map((c) => `- ${c.id}: ${c.title}`).join('\n')}\n` : ''}
+## Waiting cards (your answer replaces these)
+
+${waiting.map(cardDetail).join('\n\n') || '(none)'}
+
+Produce the kanban board for the remaining work.`;
+}
+
 export function plannerPrompt(goal: string, context: string): string {
   return `${context}
 

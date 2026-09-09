@@ -34,6 +34,7 @@ Options:
   --harness <claude|codex|fake>   backend for all roles (default: claude)
   --concurrency <n>               parallel cards (default: 3)
   --max-attempts <n>              review rounds per card (default: 2)
+  --max-replans <n>               replans after a card failed (default: 1)
   --model <name>                  model for all roles
   --yes                           skip the board approval pause
   --no-docs                       skip the documentation agent
@@ -55,7 +56,7 @@ async function main(argv: string[]): Promise<void> {
     args: argv,
     allowPositionals: true,
     options: {
-      harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, model: { type: 'string' },
+      harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
@@ -68,6 +69,7 @@ async function main(argv: string[]): Promise<void> {
   if (v.harness) overrides.harness = v.harness as HarnessName;
   if (v.concurrency) overrides.concurrency = Number(v.concurrency);
   if (v['max-attempts']) overrides.maxAttempts = Number(v['max-attempts']);
+  if (v['max-replans']) overrides.maxReplans = Number(v['max-replans']);
   if (v['no-docs']) overrides.docs = false;
   const config = loadConfig(repoRoot, overrides);
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
@@ -164,8 +166,9 @@ async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes
   console.log();
   printBoard(board);
   const done = board.cards.filter((c) => c.status === 'done').length;
-  console.log(`\n${done}/${board.cards.length} cards merged, docs: ${board.docs?.status ?? 'n/a'}, cost ${fmtCost(board.costUsd)}`);
-  const failed = board.cards.filter((c) => c.status !== 'done');
+  const total = board.cards.filter((c) => c.status !== 'replaced').length;
+  console.log(`\n${done}/${total} cards merged, docs: ${board.docs?.status ?? 'n/a'}, cost ${fmtCost(board.costUsd)}`);
+  const failed = board.cards.filter((c) => c.status !== 'done' && c.status !== 'replaced');
   for (const c of failed) console.log(red(`  ${c.id} ${c.status}: ${c.feedback.at(-1) ?? ''}`));
   console.log(`\nResult branch: ${green(board.runBranch)}`);
   if (o.merge && done > 0) {

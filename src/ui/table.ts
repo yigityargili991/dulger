@@ -8,11 +8,11 @@ const COLUMNS: Array<{ title: string; statuses: CardStatus[] }> = [
   { title: 'IN PROGRESS', statuses: ['in_progress'] },
   { title: 'REVIEW', statuses: ['review'] },
   { title: 'DONE', statuses: ['done'] },
-  { title: 'FAILED / BLOCKED', statuses: ['failed', 'blocked'] },
+  { title: 'FAILED / BLOCKED', statuses: ['failed', 'blocked', 'replaced'] },
 ];
 
 const colour: Record<CardStatus, (s: string) => string> = {
-  backlog: dim, in_progress: yellow, review: magenta, done: green, failed: red, blocked: red,
+  backlog: dim, in_progress: yellow, review: magenta, done: green, failed: red, blocked: red, replaced: dim,
 };
 
 function cardLabel(c: Card): string {

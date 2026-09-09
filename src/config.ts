@@ -19,6 +19,7 @@ export interface Config {
   roles: Partial<Record<AgentRole, RoleConfig>>;
   concurrency: number;
   maxAttempts: number;       // review rounds per card (each rejection adds a fix task)
+  maxReplans: number;        // planner reruns after a card failed
   maxContinuations: number;  // "done:false" resumes per task
   stallTimeoutSec: number;
   docs: boolean;
@@ -32,6 +33,7 @@ export const DEFAULT_CONFIG: Config = {
   roles: {},
   concurrency: 3,
   maxAttempts: 2,
+  maxReplans: 1,
   maxContinuations: 2,
   stallTimeoutSec: 600,
   docs: true,

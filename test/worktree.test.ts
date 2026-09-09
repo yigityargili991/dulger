@@ -32,15 +32,18 @@ test('worktree lifecycle: create, commit, merge-back, remove', () => {
   assert.equal(wt.commitAll(w1, 'usta: c1'), true);
   assert.equal(wt.commitAll(w1, 'nothing'), false);
   assert.match(wt.diff(w1, 'usta/run1'), /\+a/);
-  assert.deepEqual(wt.mergeBack(w1, 'usta/run1', 'usta-wip/run1/c1'), { ok: true });
+  assert.deepEqual(wt.mergeFrom(w1, 'usta/run1'), { ok: true });
+  assert.equal(wt.land(w1, 'usta/run1'), true);
   wt.removeWorktree(repo, w1, 'usta-wip/run1/c1');
   assert.ok(!existsSync(w1));
   assert.equal(wt.branchExists(repo, 'usta-wip/run1/c1'), false);
 
-  // c2 started before c1 merged; merge-back must pick up c1's commit.
+  // c2 started before c1 landed: it cannot land until c1's commit is merged in.
   writeFileSync(join(w2, 'b.txt'), 'b\n');
   wt.commitAll(w2, 'usta: c2');
-  assert.deepEqual(wt.mergeBack(w2, 'usta/run1', 'usta-wip/run1/c2'), { ok: true });
+  assert.equal(wt.land(w2, 'usta/run1'), false, 'run branch moved');
+  assert.deepEqual(wt.mergeFrom(w2, 'usta/run1'), { ok: true });
+  assert.equal(wt.land(w2, 'usta/run1'), true);
   wt.removeWorktree(repo, w2, 'usta-wip/run1/c2');
 
   const files = wt.git(repo, ['ls-tree', '--name-only', 'usta/run1']).split('\n');
@@ -49,7 +52,7 @@ test('worktree lifecycle: create, commit, merge-back, remove', () => {
   assert.equal(readFileSync(join(repo, 'README.md'), 'utf8'), 'hello\n');
 });
 
-test('mergeBack reports conflicts and aborts cleanly', () => {
+test('mergeFrom reports conflicts and aborts cleanly', () => {
   const repo = tempRepo();
   wt.createBranch(repo, 'usta/run2', wt.headRef(repo));
   const w1 = join(worktrees, 'c1');
@@ -60,14 +63,14 @@ test('mergeBack reports conflicts and aborts cleanly', () => {
   writeFileSync(join(w2, 'README.md'), 'from c2\n');
   wt.commitAll(w1, 'c1');
   wt.commitAll(w2, 'c2');
-  assert.equal(wt.mergeBack(w1, 'usta/run2', 'usta-wip/run2/c1').ok, true);
-  const r = wt.mergeBack(w2, 'usta/run2', 'usta-wip/run2/c2');
+  assert.equal(wt.mergeFrom(w1, 'usta/run2').ok && wt.land(w1, 'usta/run2'), true);
+  const r = wt.mergeFrom(w2, 'usta/run2');
   assert.equal(r.ok, false);
   assert.deepEqual(r.conflicts, ['README.md']);
   assert.equal(wt.git(w2, ['status', '--porcelain']), '');
 });
 
-test('mergeBack with keepConflicts leaves markers that commitAll can resolve', () => {
+test('mergeFrom with keepConflicts leaves markers that commitAll can resolve', () => {
   const repo = tempRepo();
   wt.createBranch(repo, 'usta/run3', wt.headRef(repo));
   const w1 = join(worktrees, 'c1');
@@ -78,13 +81,13 @@ test('mergeBack with keepConflicts leaves markers that commitAll can resolve', (
   writeFileSync(join(w2, 'README.md'), 'from c2\n');
   wt.commitAll(w1, 'c1');
   wt.commitAll(w2, 'c2');
-  wt.mergeBack(w1, 'usta/run3', 'usta-wip/run3/c1');
-  const r = wt.mergeBack(w2, 'usta/run3', 'usta-wip/run3/c2', { keepConflicts: true });
+  wt.mergeFrom(w1, 'usta/run3'); wt.land(w1, 'usta/run3');
+  const r = wt.mergeFrom(w2, 'usta/run3', { keepConflicts: true });
   assert.equal(r.ok, false);
   assert.match(readFileSync(join(w2, 'README.md'), 'utf8'), /<<<<<<<[\s\S]*>>>>>>>/);
   // An agent resolves the conflict; the next commit completes the merge and merge-back succeeds.
   writeFileSync(join(w2, 'README.md'), 'from c1 and c2\n');
   assert.equal(wt.commitAll(w2, 'resolved'), true);
-  assert.deepEqual(wt.mergeBack(w2, 'usta/run3', 'usta-wip/run3/c2'), { ok: true });
+  assert.equal(wt.land(w2, 'usta/run3'), true);
   assert.equal(wt.git(repo, ['show', 'usta/run3:README.md']), 'from c1 and c2');
 });

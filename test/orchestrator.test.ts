@@ -38,6 +38,10 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   await orch.execute();
 
   assert.deepEqual(board.cards.map((c) => c.status), ['done', 'done', 'done']);
+  // The merge queue: no two checkers ran at the same time.
+  const checks = [...orch.registry.statuses.values()].filter((s) => s.role === 'checker').sort((a, b) => a.startedAt - b.startedAt);
+  assert.equal(checks.length, 4, 'c1 twice, c2, c3');
+  for (let i = 1; i < checks.length; i++) assert.ok(checks[i]!.startedAt >= checks[i - 1]!.endedAt!, `checker ${i} started before ${i - 1} ended`);
   const c1 = board.cards[0]!;
   assert.equal(c1.attempts, 1, 'c1 was rejected once');
   // The rejection appends a fix task instead of rerunning the finished ones.
@@ -92,7 +96,7 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c2-t1.txt', 'out/c2-t2.txt']);
 });
 
-test('a merge conflict after a passed review is resolved by a fix task and does not cost an attempt', async () => {
+test('a merge conflict with landed work is resolved by a fix task and does not cost an attempt', async () => {
   const plan: PlannerResult = {
     cards: ['c1', 'c2'].map((id) => ({ id, title: id, description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: 'write', instructions: '' }] })),
   };

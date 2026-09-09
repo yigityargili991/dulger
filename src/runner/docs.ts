@@ -25,8 +25,8 @@ export async function runDocs(rt: Runtime): Promise<void> {
   let status: 'done' | 'failed' = 'failed';
   if (r.ok && r.output) {
     git.commitAll(cwd, 'usta: update documentation');
-    const merged = git.mergeBack(cwd, board.runBranch, branch);
-    if (merged.ok) status = 'done';
+    const merged = git.mergeFrom(cwd, board.runBranch);
+    if (merged.ok && git.land(cwd, board.runBranch)) status = 'done';
     board.docs = merged.ok ? { status, summary: r.output.summary } : { status, summary: `merge conflict: ${merged.conflicts?.join(', ')}` };
   } else {
     board.docs = { status, summary: r.error };

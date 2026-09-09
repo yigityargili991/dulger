@@ -37,6 +37,13 @@ export interface Runtime {
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
   context(opts?: ContextOptions): string;
   agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>>;
+  /**
+   * The merge queue: run `fn` while no other card is syncing, reviewing or landing. Only one card
+   * at a time may hold it, so what the checker reviews is exactly what lands on the result branch.
+   */
+  integrate<T>(fn: () => Promise<T>): Promise<T>;
+  /** True when another card currently holds the merge queue. */
+  integrating(): boolean;
 }
 
 export function createRuntime(repoRoot: string, board: Board, config: Config, hooks: RunHooks, signal: AbortSignal): Runtime {
@@ -56,8 +63,16 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
     return { ...r, output: r.output as T | undefined };
   }
 
+  let queue: Promise<unknown> = Promise.resolve();
+  let holders = 0;
+  function integrate<T>(fn: () => Promise<T>): Promise<T> {
+    const run = queue.then(async () => { holders++; try { return await fn(); } finally { holders--; } });
+    queue = run.catch(() => {});
+    return run;
+  }
+
   return {
-    repoRoot, board, config, registry, memory, signal, agent,
+    repoRoot, board, config, registry, memory, signal, agent, integrate, integrating: () => holders > 0,
     log: (msg) => hooks.log?.(msg),
     save(type, extra = {}) {
       store.saveBoard(repoRoot, board);

@@ -18,10 +18,12 @@ usta run "Add CSV export to the reports page"
 4. A **checker** reviews each finished card against its acceptance criteria (it can run the tests).
    A rejection appends a *fix task* to the card: one worker session that addresses the reviewer's
    points in the same worktree, without redoing the finished tasks. The card is then reviewed again,
-   up to `maxAttempts` rounds. If the review passes but merging conflicts with work other cards landed
-   meanwhile, a fix task resolves the conflicts and the card is reviewed once more; that does not count
-   as a review round.
-5. Passed cards are merged onto the result branch `usta/<runId>`. Failed cards block their dependents.
+   up to `maxAttempts` rounds. If syncing the result branch into the card conflicts with work other
+   cards landed meanwhile, a fix task resolves the conflicts before the review; that does not count as
+   a review round.
+5. Review and merge form a *merge queue*: one card at a time syncs the result branch into its
+   worktree, is reviewed in that combined state, and lands on `usta/<runId>` by fast-forward. What
+   the checker approves is exactly what lands. Failed cards block their dependents.
 6. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
 7. A live terminal table shows the board and every agent's state, current tool and last message.
 

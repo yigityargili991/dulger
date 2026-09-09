@@ -97,27 +97,39 @@ export function diffStat(cwd: string, from: string, to = 'HEAD'): string {
   return git(cwd, ['diff', '--stat', `${from}...${to}`]);
 }
 
-export interface MergeBackResult {
+export interface MergeResult {
   ok: boolean;
   conflicts?: string[];
 }
 
 /**
- * Bring the run branch's latest state into the card worktree, then fast-forward the run
- * branch to the card branch. The run branch must not be checked out anywhere.
+ * Merge `branch` into the worktree's HEAD. With keepConflicts the conflict markers are left in
+ * place so an agent can resolve them; the next commitAll() then completes the merge.
  */
-export function mergeBack(worktree: string, runBranch: string, cardBranch: string, opts: { keepConflicts?: boolean } = {}): MergeBackResult {
+export function mergeFrom(worktree: string, branch: string, opts: { keepConflicts?: boolean } = {}): MergeResult {
   try {
-    git(worktree, ['-c', 'user.name=usta', '-c', 'user.email=usta@localhost', 'merge', '--quiet', '--no-edit', runBranch]);
+    git(worktree, ['-c', 'user.name=usta', '-c', 'user.email=usta@localhost', 'merge', '--quiet', '--no-edit', branch]);
+    return { ok: true };
   } catch (e) {
     const conflicts = git(worktree, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true }).split('\n').filter(Boolean);
-    // keepConflicts leaves the conflict markers in place so an agent can resolve them;
-    // the next commitAll() then completes the merge.
     if (!opts.keepConflicts || conflicts.length === 0) git(worktree, ['merge', '--abort'], { allowFail: true });
     return { ok: false, conflicts: conflicts.length ? conflicts : [(e as Error).message] };
   }
-  git(worktree, ['branch', '-f', runBranch, cardBranch]);
-  return { ok: true };
+}
+
+export function isAncestor(cwd: string, ancestor: string, ref: string): boolean {
+  try { git(cwd, ['merge-base', '--is-ancestor', ancestor, ref]); return true; } catch { return false; }
+}
+
+/**
+ * Fast-forward `runBranch` to the worktree's HEAD. Returns false (and does nothing) when the run
+ * branch has moved since it was last merged in, i.e. HEAD does not contain it. The run branch
+ * must not be checked out anywhere.
+ */
+export function land(worktree: string, runBranch: string): boolean {
+  if (!isAncestor(worktree, runBranch, 'HEAD')) return false;
+  git(worktree, ['branch', '-f', runBranch, 'HEAD']);
+  return true;
 }
 
 export function log(cwd: string, range: string, n = 50): string {

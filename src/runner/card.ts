@@ -1,5 +1,6 @@
-// One card's life: worktree -> tasks (sequential, with continuations) -> commit -> check -> merge back.
-// Review rejections and merge conflicts append fix tasks; the card fails after maxAttempts rejections.
+// One card's life: worktree -> tasks (sequential, with continuations) -> commit -> sync with the
+// result branch -> check -> land. Review rejections and merge conflicts append fix tasks; the card
+// fails after maxAttempts rejections.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { roleConfig } from '../config.ts';
@@ -41,36 +42,55 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
     card.status = 'review';
     git.commitAll(cwd, `usta: ${card.id} ${card.title}`);
     save('card_review', { cardId: card.id });
-    const verdict = await check(rt, card, cwd);
-    if (signal.aborted) return;
+    if (rt.integrating()) log(`card ${card.id} waiting for the merge queue`);
+    // Sync, review and land as one unit: the reviewer sees the integrated state, and nothing lands in between.
+    const outcome = await rt.integrate(async (): Promise<Outcome> => {
+      const merged = git.mergeFrom(cwd, board.runBranch, { keepConflicts: true });
+      if (!merged.ok) return { kind: 'conflict', files: merged.conflicts?.join(', ') ?? '' };
+      const verdict = await check(rt, card, cwd);
+      if (signal.aborted) return { kind: 'aborted' };
+      if (!verdict.pass) return { kind: 'rejected', verdict };
+      if (!git.land(cwd, board.runBranch)) throw new Error(`result branch ${board.runBranch} moved while ${card.id} held the merge queue`);
+      return { kind: 'landed' };
+    });
 
-    if (!verdict.pass) {
-      const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
-      card.feedback.push(...feedback);
-      card.attempts++;
-      if (card.attempts >= config.maxAttempts) return finishCard(rt, card, cwd, 'failed');
-      log(`card ${card.id} rejected (attempt ${card.attempts}/${config.maxAttempts}): ${feedback.at(-1)}`);
-      // Retry: keep the worktree and the finished tasks; append one fix task that addresses the feedback.
-      retry(card, 'Address review feedback', feedback);
-      save('card_retry', { cardId: card.id, message: feedback.at(-1) });
-      continue;
+    switch (outcome.kind) {
+      case 'aborted':
+        return;
+      case 'landed':
+        card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
+        return finishCard(rt, card, cwd, 'done');
+      case 'rejected': {
+        const { verdict } = outcome;
+        const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
+        card.feedback.push(...feedback);
+        card.attempts++;
+        if (card.attempts >= config.maxAttempts) return finishCard(rt, card, cwd, 'failed');
+        log(`card ${card.id} rejected (attempt ${card.attempts}/${config.maxAttempts}): ${feedback.at(-1)}`);
+        // Retry: keep the worktree and the finished tasks; append one fix task that addresses the feedback.
+        retry(card, 'Address review feedback', feedback);
+        save('card_retry', { cardId: card.id, message: feedback.at(-1) });
+        break;
+      }
+      case 'conflict': {
+        // Another card's work conflicts with this one. That is not a review failure: resolve it with a
+        // fix task without spending an attempt. Each round means the result branch moved, so the number
+        // of rounds is bounded by the number of cards.
+        if (++conflicts > board.cards.length) return finishCard(rt, card, cwd, 'failed', [`merge conflicts could not be resolved in ${outcome.files}`]);
+        log(`card ${card.id} conflicts with merged work in ${outcome.files}; resolving`);
+        retry(card, 'Resolve merge conflicts', [CONFLICT_FEEDBACK(outcome.files)]);
+        save('card_conflict', { cardId: card.id, message: outcome.files });
+        break;
+      }
     }
-
-    const merged = git.mergeBack(cwd, board.runBranch, card.branch, { keepConflicts: true });
-    if (merged.ok) {
-      card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
-      return finishCard(rt, card, cwd, 'done');
-    }
-    // The review passed but another card's work landed meanwhile and conflicts with this one.
-    // That is not a review failure: resolve it with a fix task without spending an attempt.
-    // Each round means the result branch moved, so the number of rounds is bounded by the number of cards.
-    const files = merged.conflicts?.join(', ') ?? '';
-    if (++conflicts > board.cards.length) return finishCard(rt, card, cwd, 'failed', [`merge conflicts could not be resolved in ${files}`]);
-    log(`card ${card.id} conflicts with merged work in ${files}; resolving`);
-    retry(card, 'Resolve merge conflicts', [CONFLICT_FEEDBACK(files)]);
-    save('card_conflict', { cardId: card.id, message: files });
   }
 }
+
+type Outcome =
+  | { kind: 'landed' }
+  | { kind: 'aborted' }
+  | { kind: 'rejected'; verdict: CheckResult }
+  | { kind: 'conflict'; files: string };
 
 /** One worker task, resuming the same session while the worker reports done=false (up to maxContinuations). */
 async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promise<WorkerResult | undefined> {
@@ -115,7 +135,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
   return task.status === 'done' ? last : undefined;
 }
 
-/** Ask the checker to review the card's diff against the result branch. A checker that fails to run counts as a rejection. */
+/** Ask the checker to review the card's diff on top of the synced result branch. A checker that fails to run counts as a rejection. */
 async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult> {
   const { board, config } = rt;
   const diffText = git.diff(cwd, board.runBranch);

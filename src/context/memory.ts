@@ -1,10 +1,9 @@
-// Learnings reported by workers, stored as JSONL outside the repo (see memoryPath).
+// Learnings reported by workers, stored as JSONL in the project data dir (see paths.ts).
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, isAbsolute, join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { STATE_DIR, type MemoryConfig } from '../config.ts';
-import * as git from '../git/worktree.ts';
+import { projectDataDir } from '../paths.ts';
 import type { HarnessName } from '../types.ts';
 
 export interface Learning {
@@ -42,31 +41,9 @@ export interface MemoryStore {
   select(opts?: SelectOptions): Learning[];
 }
 
-// ---- location ----
-
-export function userDataDir(): string {
-  if (process.env.USTA_DATA_DIR) return process.env.USTA_DATA_DIR;
-  const xdg = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
-  return join(xdg, 'usta');
-}
-
-function originUrl(repoRoot: string): string | undefined {
-  const url = git.git(repoRoot, ['remote', 'get-url', 'origin'], { allowFail: true }).trim();
-  if (!url) return undefined;
-  return url.toLowerCase().replace(/^[a-z+]+:\/\//, '').replace(/^[^@/]+@/, '').replace(/:/, '/').replace(/\.git$/, '').replace(/\/+$/, '');
-}
-
-/** Origin URL when there is one (shared by clones), otherwise this checkout's path. */
-export function repoKey(repoRoot: string): string {
-  const origin = originUrl(repoRoot);
-  if (origin) return origin.replace(/[^\w.-]+/g, '-').slice(0, 100);
-  const name = basename(repoRoot).replace(/[^\w.-]+/g, '-').slice(0, 40) || 'repo';
-  return `${name}-${createHash('sha1').update(repoRoot).digest('hex').slice(0, 12)}`;
-}
-
 export function memoryPath(repoRoot: string, cfg: MemoryConfig): string {
   if (cfg.location === 'repo') return join(repoRoot, STATE_DIR, 'memory.jsonl');
-  return join(userDataDir(), repoKey(repoRoot), 'memory.jsonl');
+  return join(projectDataDir(repoRoot), 'memory.jsonl');
 }
 
 // ---- helpers ----

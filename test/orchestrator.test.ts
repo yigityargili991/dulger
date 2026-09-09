@@ -9,6 +9,7 @@ import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/adapters/fake.ts';
 import { registerAdapter } from '../src/adapters/index.ts';
 import { openMemory } from '../src/context/memory.ts';
+import * as store from '../src/board/store.ts';
 
 process.env.USTA_DATA_DIR = mkdtempSync(join(tmpdir(), 'usta-data-'));
 
@@ -41,7 +42,8 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c1-t1.txt', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-t1.txt']);
   assert.equal(wt.currentBranch(repo), 'main');
   assert.equal(wt.git(repo, ['branch', '--list', 'usta-wip/*']), '', 'wip branches cleaned up');
-  assert.ok(!existsSync(join(repo, '.usta', 'worktrees', 'c1')));
+  assert.ok(!existsSync(store.worktreeDir(repo, 'run1', 'c1')));
+  assert.ok(!existsSync(join(repo, '.usta', 'worktrees')), 'worktrees are not nested in the repo');
   const learnings = openMemory(repo, config.memory).load();
   assert.equal(learnings.length, 1);
   assert.match(learnings[0]!.text, /Fake learning/);
@@ -73,7 +75,8 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   assert.equal(byId.c2!.status, 'done');
   assert.equal(byId.c3!.status, 'blocked');
   assert.match(byId.c3!.feedback.at(-1)!, /dependency c1/);
-  assert.ok(existsSync(join(repo, '.usta', 'worktrees', 'c1')), 'failed worktree is kept for inspection');
+  const kept = store.worktreeDir(repo, 'run2', 'c1');
+  assert.ok(existsSync(kept) && !kept.startsWith(repo), 'failed worktree is kept for inspection, outside the repo');
   assert.equal(board.docs?.status, 'done');
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run2']).split('\n').sort();
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c2-t1.txt', 'out/c2-t2.txt']);

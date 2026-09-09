@@ -2,13 +2,14 @@
 // usta — command line entry point.
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
 import * as git from './git/worktree.ts';
 import { createBoard, createOrchestrator } from './runner/orchestrator.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
+import { worktreesDir } from './paths.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { bold, cyan, dim, green, red, yellow, fmtCost, cursor } from './ui/ansi.ts';
 import type { Board, HarnessName } from './types.ts';
@@ -105,8 +106,13 @@ async function main(argv: string[]): Promise<void> {
       break;
     }
     case 'clean': {
-      const dir = join(repoRoot, STATE_DIR, 'worktrees');
-      if (existsSync(dir)) for (const d of readdirSync(dir)) { git.removeWorktree(repoRoot, join(dir, d)); console.log(`removed worktree ${d}`); }
+      for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('usta-wip/'))) {
+        git.removeWorktree(repoRoot, w.path);
+        console.log(`removed worktree ${w.path} (${w.branch})`);
+      }
+      for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees')]) {
+        if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); console.log(`removed ${dir}`); }
+      }
       const wip = git.git(repoRoot, ['branch', '--list', 'usta-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);
       for (const b of wip) { git.git(repoRoot, ['branch', '-D', b], { allowFail: true }); console.log(`deleted branch ${b}`); }
       break;
@@ -170,7 +176,7 @@ async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes
   } else if (done > 0) {
     console.log(`  git merge ${board.runBranch}     # or: git diff ${board.baseBranch}...${board.runBranch}`);
   }
-  if (failed.length) console.log(`  usta resume ${board.runId}      # retry after fixing; failed worktrees kept in ${STATE_DIR}/worktrees/`);
+  if (failed.length) console.log(`  usta resume ${board.runId}      # retry after fixing; failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`);
 }
 
 function memoryCommand(repoRoot: string, config: Config, sub: string, args: string[]): void {

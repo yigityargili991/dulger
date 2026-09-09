@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
 
+const worktrees = mkdtempSync(join(tmpdir(), 'usta-wt-'));
+
 function tempRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'usta-git-'));
   wt.git(dir, ['init', '-q', '-b', 'main']);
@@ -19,11 +21,12 @@ test('worktree lifecycle: create, commit, merge-back, remove', () => {
   const base = wt.headRef(repo);
   wt.createBranch(repo, 'usta/run1', base);
 
-  const w1 = join(repo, '.usta', 'worktrees', 'c1');
-  const w2 = join(repo, '.usta', 'worktrees', 'c2');
+  const w1 = join(worktrees, 'c1');
+  const w2 = join(worktrees, 'c2');
   wt.createWorktree(repo, w1, 'usta-wip/run1/c1', 'usta/run1');
   wt.createWorktree(repo, w2, 'usta-wip/run1/c2', 'usta/run1');
   assert.ok(existsSync(join(w1, 'README.md')));
+  assert.deepEqual(wt.listWorktrees(repo).map((w) => w.branch), ['main', 'usta-wip/run1/c1', 'usta-wip/run1/c2']);
 
   writeFileSync(join(w1, 'a.txt'), 'a\n');
   assert.equal(wt.commitAll(w1, 'usta: c1'), true);
@@ -49,8 +52,8 @@ test('worktree lifecycle: create, commit, merge-back, remove', () => {
 test('mergeBack reports conflicts and aborts cleanly', () => {
   const repo = tempRepo();
   wt.createBranch(repo, 'usta/run2', wt.headRef(repo));
-  const w1 = join(repo, '.usta', 'worktrees', 'c1');
-  const w2 = join(repo, '.usta', 'worktrees', 'c2');
+  const w1 = join(worktrees, 'c1');
+  const w2 = join(worktrees, 'c2');
   wt.createWorktree(repo, w1, 'usta-wip/run2/c1', 'usta/run2');
   wt.createWorktree(repo, w2, 'usta-wip/run2/c2', 'usta/run2');
   writeFileSync(join(w1, 'README.md'), 'from c1\n');
@@ -67,8 +70,8 @@ test('mergeBack reports conflicts and aborts cleanly', () => {
 test('mergeBack with keepConflicts leaves markers that commitAll can resolve', () => {
   const repo = tempRepo();
   wt.createBranch(repo, 'usta/run3', wt.headRef(repo));
-  const w1 = join(repo, '.usta', 'worktrees', 'c1');
-  const w2 = join(repo, '.usta', 'worktrees', 'c2');
+  const w1 = join(worktrees, 'c1');
+  const w2 = join(worktrees, 'c2');
   wt.createWorktree(repo, w1, 'usta-wip/run3/c1', 'usta/run3');
   wt.createWorktree(repo, w2, 'usta-wip/run3/c2', 'usta/run3');
   writeFileSync(join(w1, 'README.md'), 'from c1\n');

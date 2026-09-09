@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
-import { extractPaths, learningId, memoryPath, openMemory, renderLearnings, repoKey } from '../src/context/memory.ts';
+import { extractPaths, learningId, memoryPath, openMemory, renderLearnings } from '../src/context/memory.ts';
+import { repoKey } from '../src/paths.ts';
 import { buildCommonContext, cardFiles } from '../src/context/common.ts';
 import { createBoard } from '../src/runner/orchestrator.ts';
 import type { Card } from '../src/types.ts';

@@ -1,11 +1,12 @@
 // The main loop: plan -> approve -> dispatch cards (parallel) -> check -> merge back -> docs.
-import { existsSync, mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, rmdirSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { getAdapter } from '../adapters/index.ts';
 import { type Config, roleConfig, STATE_DIR } from '../config.ts';
 import { buildCommonContext, cardFiles } from '../context/common.ts';
 import { extractPaths, openMemory } from '../context/memory.ts';
+import { worktreesDir } from '../paths.ts';
 import * as store from '../board/store.ts';
 import { allTerminal, blockUnreachable, readyCards, resetTasks } from '../board/scheduler.ts';
 import * as git from '../git/worktree.ts';
@@ -147,7 +148,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
 
   // ---- one card: worktree -> tasks -> commit -> check -> merge ----
   async function runCard(card: Card): Promise<void> {
-    const cwd = store.worktreeDir(repoRoot, card.id);
+    const cwd = store.worktreeDir(repoRoot, board.runId, card.id);
     card.branch = `usta-wip/${board.runId}/${card.id}`;
     card.status = 'in_progress';
     if (!existsSync(join(cwd, '.git'))) git.createWorktree(repoRoot, cwd, card.branch, board.runBranch);
@@ -218,7 +219,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   async function runDocs(): Promise<void> {
     if (!config.docs) { board.docs = { status: 'skipped' }; save('docs_skipped'); return; }
     if (!board.cards.some((c) => c.status === 'done')) { board.docs = { status: 'skipped', summary: 'nothing merged' }; save('docs_skipped'); return; }
-    const cwd = store.worktreeDir(repoRoot, 'docs');
+    const cwd = store.worktreeDir(repoRoot, board.runId, 'docs');
     const branch = `usta-wip/${board.runId}/docs`;
     board.docs = { status: 'running' };
     save('docs_started');
@@ -245,7 +246,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   // ---- main loop ----
   async function execute(): Promise<void> {
     if (board.cards.length === 0) throw new Error('board has no cards; run plan() first');
-    mkdirSync(join(repoRoot, STATE_DIR, 'worktrees'), { recursive: true });
+    mkdirSync(join(worktreesDir(repoRoot), board.runId), { recursive: true });
     const inFlight = new Map<string, Promise<void>>();
 
     while (!allTerminal(board) && !ctrl.signal.aborted) {
@@ -268,6 +269,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     await Promise.all(inFlight.values());
     if (ctrl.signal.aborted) { save('aborted'); return; }
     await runDocs();
+    try { rmdirSync(join(worktreesDir(repoRoot), board.runId)); } catch { /* not empty: failed worktrees are kept */ }
     save('finished');
   }
 

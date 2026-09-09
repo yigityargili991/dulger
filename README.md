@@ -118,15 +118,19 @@ or `USTA_DATA_DIR` to move the whole data directory. `usta memory` lists the lea
   runs/<runId>/board.json     the kanban — source of truth, editable, resumable
   runs/<runId>/events.jsonl   every state transition
   runs/<runId>/logs/*.jsonl   raw event stream of every agent process
-  worktrees/<cardId>/         per-card git worktrees (removed when the card merges; kept on failure)
 
-~/.local/share/usta/<project>/
-  memory.jsonl                learnings reported by workers; <project> = origin URL or checkout path
+~/.local/share/usta/<project>/          <project> = origin URL or checkout path ($XDG_DATA_HOME, USTA_DATA_DIR)
+  memory.jsonl                          learnings reported by workers
+  worktrees/<runId>/<cardId>/           per-card git worktrees (removed when the card merges; kept on failure)
 ```
 
+Worktrees live outside the checkout so tools that walk the repository (test runners, linters, type
+checkers, the agents' own searches) never see other cards' copies of the code.
+
 Git branches: `usta/<runId>` is the result; `usta-wip/<runId>/<cardId>` are per-card work branches
-that disappear when the card merges. `.usta/*` is added to `.git/info/exclude` automatically, with
-`context/` and `config.json` re-included so they can be committed.
+that disappear when the card merges. `usta clean` removes leftover worktrees and wip branches.
+`.usta/*` is added to `.git/info/exclude` automatically, with `context/` and `config.json`
+re-included so they can be committed.
 
 ## Permissions and safety
 

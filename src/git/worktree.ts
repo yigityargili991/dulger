@@ -55,6 +55,22 @@ export function createWorktree(repo: string, path: string, branch: string, from:
   git(path, ['checkout', '--quiet']);
 }
 
+export interface WorktreeInfo {
+  path: string;
+  branch?: string;
+}
+
+/** Worktrees git knows about (from `git worktree list --porcelain`), the main checkout included. */
+export function listWorktrees(repo: string): WorktreeInfo[] {
+  const out: WorktreeInfo[] = [];
+  for (const block of git(repo, ['worktree', 'list', '--porcelain']).split('\n\n')) {
+    const path = block.match(/^worktree (.+)$/m)?.[1];
+    if (!path) continue;
+    out.push({ path, branch: block.match(/^branch refs\/heads\/(.+)$/m)?.[1] });
+  }
+  return out;
+}
+
 export function removeWorktree(repo: string, path: string, branch?: string): void {
   if (existsSync(path)) {
     git(repo, ['worktree', 'remove', '--force', path], { allowFail: true });

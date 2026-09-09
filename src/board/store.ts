@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR } from '../config.ts';
+import { worktreesDir } from '../paths.ts';
 import type { Board, BoardEvent, Card, PlannerResult, Task } from '../types.ts';
 
 export function runDir(repoRoot: string, runId: string): string {
@@ -15,8 +16,8 @@ export function logDir(repoRoot: string, runId: string): string {
   return join(runDir(repoRoot, runId), 'logs');
 }
 
-export function worktreeDir(repoRoot: string, cardId: string): string {
-  return join(repoRoot, STATE_DIR, 'worktrees', cardId);
+export function worktreeDir(repoRoot: string, runId: string, cardId: string): string {
+  return join(worktreesDir(repoRoot), runId, cardId);
 }
 
 /** Atomic write: write to a temp file, then rename over the target. */

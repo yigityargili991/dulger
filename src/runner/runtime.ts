@@ -33,7 +33,7 @@ export interface Runtime {
   log(msg: string): void;
   /** Persist the board, append a board event, and notify the UI. Every state change goes through here. */
   save(type: BoardEventType, extra?: Omit<BoardEvent, 'at' | 'type'>): void;
-  addCost(card: Card | undefined, cost?: number): void;
+  addCost(card: Card | undefined, cost?: number, tokens?: number): void;
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
   context(opts?: ContextOptions): string;
   agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>>;
@@ -58,7 +58,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       registry, adapter: getAdapter(rc.harness, config), role, harness: rc.harness,
       cardId: ids.cardId, taskId: ids.taskId, logDir, logName: ids.logName,
       stallTimeoutSec: config.stallTimeoutSec, parentSignal: signal,
-      run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd },
+      run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
     return { ...r, output: r.output as T | undefined };
   }
@@ -79,10 +79,15 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       store.appendEvent(repoRoot, board.runId, { type, ...extra });
       hooks.onBoardChange?.(board);
     },
-    addCost(card, cost) {
-      if (!cost) return;
-      board.costUsd += cost;
-      if (card) card.costUsd += cost;
+    addCost(card, cost, tokens) {
+      if (cost) {
+        board.costUsd += cost;
+        if (card) card.costUsd += cost;
+      }
+      if (tokens) {
+        board.tokens = (board.tokens ?? 0) + tokens;
+        if (card) card.tokens = (card.tokens ?? 0) + tokens;
+      }
     },
     context: (opts = {}) => buildCommonContext(repoRoot, board, memory, opts),
   };

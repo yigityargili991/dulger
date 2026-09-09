@@ -14,3 +14,6 @@ First release.
 - Interrupted runs are resumable with `dulger resume`.
 - Workers' learnings are stored as structured memory outside the repository and selected per prompt.
 - `--harness fake` runs the whole pipeline without spending tokens.
+- Runs report dollars when the harness does (Claude Code) and tokens for every harness (Codex reports
+  no prices).
+- Claude Code agents skip the user's MCP servers unless `claude.mcp` is set.

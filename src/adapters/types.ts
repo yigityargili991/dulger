@@ -17,6 +17,8 @@ export interface AdapterRunOptions {
   signal: AbortSignal;
   /** Bash command prefixes a readonly agent may run (checker running tests). */
   allowedCommands?: string[];
+  /** Claude only: load the user's MCP servers. Off by default (see config.claude.mcp). */
+  mcp?: boolean;
 }
 
 export interface AdapterResult {
@@ -27,6 +29,8 @@ export interface AdapterResult {
   text: string;
   sessionId?: string;
   costUsd?: number;
+  /** Total tokens (input incl. cache + output); the only spend figure some harnesses report. */
+  tokens?: number;
   exitCode: number;
   error?: string;
 }

@@ -21,7 +21,7 @@ export async function runDocs(rt: Runtime): Promise<void> {
   const r = await rt.agent<DocsResult>('docs', {
     prompt: P.docsPrompt(board, stat, rt.context({ root: cwd })), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',
   }, { cardId: 'docs', logName: 'docs' });
-  rt.addCost(undefined, r.costUsd);
+  rt.addCost(undefined, r.costUsd, r.tokens);
   let status: 'done' | 'failed' = 'failed';
   if (r.ok && r.output) {
     git.commitAll(cwd, 'dulger: update documentation');

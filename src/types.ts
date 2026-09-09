@@ -67,6 +67,7 @@ export interface Card {
   feedback: string[];
   summary?: string;
   costUsd: number;
+  tokens?: number;
 }
 
 export interface Board {
@@ -79,6 +80,7 @@ export interface Board {
   cards: Card[];
   docs?: { status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; summary?: string };
   costUsd: number;
+  tokens?: number;
   /** Times the planner was asked to replan after a card failed. */
   replans?: number;
 }
@@ -109,7 +111,7 @@ export type AgentEvent =
   | { type: 'tool'; name: string; input?: unknown }
   | { type: 'tool_result' }
   | { type: 'turn' }
-  | { type: 'result'; costUsd?: number; output?: unknown; text?: string };
+  | { type: 'result'; costUsd?: number; tokens?: number; output?: unknown; text?: string };
 
 // Board-level events appended to events.jsonl.
 export type BoardEventType =

@@ -51,6 +51,14 @@ export function parseCodexLine(line: string): AgentEvent[] {
   }
 }
 
+/** Tokens used by one `turn.completed` line (Codex reports usage, never dollars). */
+export function codexTurnTokens(line: string): number {
+  const o = tryParseJson(line);
+  if (o?.type !== 'turn.completed') return 0;
+  const u = (o.usage ?? {}) as Record<string, unknown>;
+  return (typeof u.input_tokens === 'number' ? u.input_tokens : 0) + (typeof u.output_tokens === 'number' ? u.output_tokens : 0);
+}
+
 export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
   return {
     name: 'codex',
@@ -62,6 +70,7 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
       let sessionId: string | undefined = opts.resumeSessionId;
       let lastText = '';
       let errorText = '';
+      let tokens = 0;
       try {
         const { exitCode, stderr } = await spawnLines({
           bin: process.env.DULGER_CODEX_BIN ?? 'codex',
@@ -74,6 +83,7 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
           onLine(line) {
             const raw = tryParseJson(line);
             if (raw?.type === 'error' || raw?.type === 'turn.failed') errorText = JSON.stringify(raw.error ?? raw.message ?? raw);
+            tokens += codexTurnTokens(line);
             for (const ev of parseCodexLine(line)) {
               if (ev.type === 'init') sessionId = ev.sessionId;
               if (ev.type === 'text') lastText = ev.text;
@@ -84,13 +94,14 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
 
         const text = existsSync(files.lastMessage) ? readFileSync(files.lastMessage, 'utf8') : lastText;
         const output = opts.schema ? extractJson(text) : undefined;
-        opts.onEvent({ type: 'result', output, text });
+        opts.onEvent({ type: 'result', output, text, tokens: tokens || undefined });
         const ok = exitCode === 0 && !errorText && (!opts.schema || output !== undefined);
         return {
           ok,
           output,
           text,
           sessionId,
+          tokens: tokens || undefined,
           exitCode,
           error: ok ? undefined : errorText || stderr.trim().split('\n').slice(-5).join('\n') || `codex exited with ${exitCode}`,
         };

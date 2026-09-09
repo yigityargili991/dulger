@@ -56,3 +56,15 @@ export function fmtDuration(ms: number): string {
 export function fmtCost(usd: number | undefined): string {
   return usd === undefined ? '-' : `$${usd.toFixed(2)}`;
 }
+
+export function fmtTokens(n: number): string {
+  return n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
+}
+
+/** "$1.23 · 45k tokens"; dollars only when a harness reported them, tokens whenever known. */
+export function fmtSpend(x: { costUsd: number; tokens?: number }): string {
+  const parts: string[] = [];
+  if (x.costUsd > 0) parts.push(fmtCost(x.costUsd));
+  if (x.tokens) parts.push(`${fmtTokens(x.tokens)} tokens`);
+  return parts.join(' · ') || '-';
+}

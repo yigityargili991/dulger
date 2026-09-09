@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parseClaudeLine, buildClaudeArgs } from '../src/adapters/claude.ts';
-import { parseCodexLine, buildCodexArgs } from '../src/adapters/codex.ts';
+import { parseCodexLine, buildCodexArgs, codexTurnTokens } from '../src/adapters/codex.ts';
 import { extractJson } from '../src/adapters/process.ts';
 import type { AgentEvent } from '../src/types.ts';
 
@@ -21,6 +21,7 @@ test('claude stream-json parses into normalised events', () => {
   if (result?.type === 'result') {
     assert.deepEqual(result.output, { ok: true, note: 'hi' });
     assert.ok(result.costUsd! > 0);
+    assert.equal(result.tokens, 66 + 22370 + 43700 + 828);
   }
 });
 
@@ -30,6 +31,7 @@ test('codex jsonl parses into normalised events', () => {
   assert.deepEqual(types, ['init', 'text', 'tool', 'tool_result', 'text', 'turn']);
   const init = events[0];
   if (init?.type === 'init') assert.match(init.sessionId, /^[0-9a-f-]{36}$/);
+  assert.equal(fixture('codex-stream.jsonl').reduce((n, l) => n + codexTurnTokens(l), 0), 33771 + 61);
 });
 
 test('extractJson tolerates fences and prose', () => {
@@ -42,6 +44,8 @@ test('arg builders encode access mode', () => {
   const base = { prompt: 'p', systemPrompt: 's', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal } as const;
   const ro = buildClaudeArgs({ ...base, access: 'readonly', allowedCommands: ['npm test'] });
   assert.ok(ro.includes('dontAsk'));
+  assert.ok(ro.includes('--strict-mcp-config'), 'MCP servers are skipped by default');
+  assert.ok(!buildClaudeArgs({ ...base, access: 'readonly', mcp: true }).includes('--strict-mcp-config'));
   assert.ok(ro.join(' ').includes('Bash(npm test)'));
   const rw = buildClaudeArgs({ ...base, access: 'write', schema: { type: 'object' } });
   assert.ok(rw.includes('bypassPermissions') && rw.includes('--json-schema'));

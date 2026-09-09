@@ -24,6 +24,7 @@ export interface Config {
   stallTimeoutSec: number;
   docs: boolean;
   checker: { allowedCommands: string[] };
+  claude: { mcp: boolean };  // inherit the user's MCP servers (off: far smaller prompts, no late-connect cache misses)
   codex: { bypassSandbox: boolean };
   memory: MemoryConfig;
 }
@@ -38,6 +39,7 @@ export const DEFAULT_CONFIG: Config = {
   stallTimeoutSec: 600,
   docs: true,
   checker: { allowedCommands: ['npm test', 'npm run test', 'pytest', 'cargo test', 'go test'] },
+  claude: { mcp: false },
   codex: { bypassSandbox: false },
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },
 };
@@ -54,6 +56,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     ...overrides,
     roles: { ...DEFAULT_CONFIG.roles, ...fromFile.roles, ...overrides.roles },
     checker: { ...DEFAULT_CONFIG.checker, ...fromFile.checker, ...overrides.checker },
+    claude: { ...DEFAULT_CONFIG.claude, ...fromFile.claude, ...overrides.claude },
     codex: { ...DEFAULT_CONFIG.codex, ...fromFile.codex, ...overrides.codex },
     memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
   };

@@ -79,8 +79,8 @@ export function createFakeAdapter(script: FakeScript = DEFAULT_FAKE_SCRIPT): Ada
       else output = (script.docs ?? DEFAULT_FAKE_SCRIPT.docs!)(opts, i);
 
       const text = JSON.stringify(output);
-      opts.onEvent({ type: 'result', output, text, costUsd: 0.01 });
-      return { ok: true, output, text, sessionId, costUsd: 0.01, exitCode: 0 };
+      opts.onEvent({ type: 'result', output, text, costUsd: 0.01, tokens: 1000 });
+      return { ok: true, output, text, sessionId, costUsd: 0.01, tokens: 1000, exitCode: 0 };
     },
   };
 }

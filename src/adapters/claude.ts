@@ -8,6 +8,9 @@ const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git 
 
 export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   const args = ['-p', opts.prompt, '--output-format', 'stream-json', '--verbose'];
+  // The user's MCP servers would be inlined as tool schemas (tens of thousands of tokens per agent when
+  // ToolSearch is not available) and attach mid-session, invalidating the prompt cache. Skip them unless asked.
+  if (!opts.mcp) args.push('--strict-mcp-config');
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
   else args.push('--append-system-prompt', opts.systemPrompt);
   if (opts.schema) args.push('--json-schema', JSON.stringify(opts.schema));
@@ -44,14 +47,19 @@ export function parseClaudeLine(line: string): AgentEvent[] {
     case 'user':
       events.push({ type: 'tool_result' });
       break;
-    case 'result':
+    case 'result': {
+      const u = (o.usage ?? {}) as Record<string, unknown>;
+      const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens']
+        .reduce((n, k) => n + (typeof u[k] === 'number' ? (u[k] as number) : 0), 0);
       events.push({
         type: 'result',
         costUsd: typeof o.total_cost_usd === 'number' ? o.total_cost_usd : undefined,
+        tokens: tokens || undefined,
         output: o.structured_output,
         text: typeof o.result === 'string' ? o.result : '',
       });
       break;
+    }
   }
   return events;
 }
@@ -93,6 +101,7 @@ export const claudeAdapter: Adapter = {
       text,
       sessionId,
       costUsd: final?.costUsd,
+      tokens: final?.tokens,
       exitCode,
       error: ok ? undefined : errorText || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
     };

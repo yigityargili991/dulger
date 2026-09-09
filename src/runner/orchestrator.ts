@@ -36,7 +36,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     const r = await rt.agent<PlannerResult>('planner', {
       prompt: P.plannerPrompt(board.goal, rt.context({ root: repoRoot })), systemPrompt: P.plannerSystem(), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
     }, { logName: 'planner' });
-    rt.addCost(undefined, r.costUsd);
+    rt.addCost(undefined, r.costUsd, r.tokens);
     if (!r.ok || !r.output?.cards?.length) throw new Error(`planner failed: ${r.error ?? 'no cards returned'}`);
     board.cards = store.cardsFromPlan(r.output);
     store.validateBoard(board);
@@ -53,7 +53,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       prompt: P.replanPrompt(board, failed, waiting, rt.context({ root: repoRoot })),
       systemPrompt: P.replanSystem(board.cards.map((c) => c.id)), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
     }, { logName: `replan${n}` });
-    rt.addCost(undefined, r.costUsd);
+    rt.addCost(undefined, r.costUsd, r.tokens);
     if (ctrl.signal.aborted) return;
     try {
       if (!r.ok || !r.output) throw new Error(r.error ?? 'no output');

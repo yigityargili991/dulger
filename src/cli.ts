@@ -13,7 +13,7 @@ import { createBoard } from './board/create.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { worktreesDir } from './paths.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
-import { bold, cyan, dim, green, red, yellow, fmtCost, cursor } from './ui/ansi.ts';
+import { bold, cyan, dim, green, red, yellow, fmtSpend, cursor } from './ui/ansi.ts';
 import type { Board, HarnessName } from './types.ts';
 
 const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / Codex)
@@ -107,7 +107,7 @@ async function main(argv: string[]): Promise<void> {
       for (const id of store.listRuns(repoRoot)) {
         const b = store.loadBoard(repoRoot, id);
         const done = b.cards.filter((c) => c.status === 'done').length;
-        console.log(`${id}  ${done}/${b.cards.length} done  ${fmtCost(b.costUsd)}  ${dim(b.goal)}`);
+        console.log(`${id}  ${done}/${b.cards.length} done  ${fmtSpend(b)}  ${dim(b.goal)}`);
       }
       break;
     }
@@ -173,7 +173,7 @@ async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes
   printBoard(board);
   const done = board.cards.filter((c) => c.status === 'done').length;
   const total = board.cards.filter((c) => c.status !== 'replaced').length;
-  console.log(`\n${done}/${total} cards merged, docs: ${board.docs?.status ?? 'n/a'}, cost ${fmtCost(board.costUsd)}`);
+  console.log(`\n${done}/${total} cards merged, docs: ${board.docs?.status ?? 'n/a'}, spent ${fmtSpend(board)}`);
   const failed = board.cards.filter((c) => c.status !== 'done' && c.status !== 'replaced');
   for (const c of failed) console.log(red(`  ${c.id} ${c.status}: ${c.feedback.at(-1) ?? ''}`));
   console.log(`\nResult branch: ${green(board.runBranch)}`);

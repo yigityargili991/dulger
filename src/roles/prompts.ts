@@ -166,7 +166,7 @@ ${RULES_COMMON}
 Review rules:
 - You are in the card's worktree. Read the diff and the surrounding code; do not edit anything.
 - The worktree already contains the other cards' merged work; what you approve lands on the result branch as is. Verify the card works in this combined state, not just on its own.
-- You may run these commands to verify: ${allowedCommands.join(', ') || '(none)'}.
+- The only shell commands you may run are: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). Run one command per Bash call, with no pipes, && or other commands; anything else is denied without being executed.
 - Check every acceptance criterion. pass=true only if all are met and the change is sound (no obvious bugs, no leftover debug code, tests updated where relevant).
 - On pass=false, give specific, actionable feedback the implementing agent can act on: file, problem, what to do. Do not nitpick style.`;
 }

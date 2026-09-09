@@ -1,13 +1,13 @@
-// Where usta keeps per-project state outside the repository: $XDG_DATA_HOME/usta/<project>/.
+// Where dulger keeps per-project state outside the repository: $XDG_DATA_HOME/dulger/<project>/.
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import * as git from './git/worktree.ts';
 
 export function userDataDir(): string {
-  if (process.env.USTA_DATA_DIR) return process.env.USTA_DATA_DIR;
+  if (process.env.DULGER_DATA_DIR) return process.env.DULGER_DATA_DIR;
   const xdg = process.env.XDG_DATA_HOME || join(homedir(), '.local', 'share');
-  return join(xdg, 'usta');
+  return join(xdg, 'dulger');
 }
 
 function originUrl(repoRoot: string): string | undefined {

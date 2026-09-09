@@ -1,4 +1,4 @@
-// Starting a run: a fresh board with its result branch, and the git exclude entries usta needs.
+// Starting a run: a fresh board with its result branch, and the git exclude entries dulger needs.
 import { randomBytes } from 'node:crypto';
 import { STATE_DIR } from '../config.ts';
 import * as git from '../git/worktree.ts';
@@ -16,7 +16,7 @@ export function createBoard(repoRoot: string, goal: string, runId = newRunId()):
     runId, goal,
     baseRef: git.headRef(repoRoot),
     baseBranch: git.currentBranch(repoRoot),
-    runBranch: `usta/${runId}`,
+    runBranch: `dulger/${runId}`,
     createdAt: new Date().toISOString(),
     cards: [],
     docs: { status: 'pending' },

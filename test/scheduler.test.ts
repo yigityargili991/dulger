@@ -6,7 +6,7 @@ import type { Board } from '../src/types.ts';
 
 function board(): Board {
   return {
-    runId: 'r', goal: 'g', baseRef: 'x', baseBranch: 'main', runBranch: 'usta/r', createdAt: '', costUsd: 0,
+    runId: 'r', goal: 'g', baseRef: 'x', baseBranch: 'main', runBranch: 'dulger/r', createdAt: '', costUsd: 0,
     cards: cardsFromPlan({
       cards: [
         { id: 'a', title: 'A', description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: '', instructions: '' }] },

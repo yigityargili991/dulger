@@ -12,7 +12,7 @@ export async function runDocs(rt: Runtime): Promise<void> {
   if (!config.docs) { board.docs = { status: 'skipped' }; save('docs_skipped'); return; }
   if (!board.cards.some((c) => c.status === 'done')) { board.docs = { status: 'skipped', summary: 'nothing merged' }; save('docs_skipped'); return; }
   const cwd = store.worktreeDir(rt.repoRoot, board.runId, 'docs');
-  const branch = `usta-wip/${board.runId}/docs`;
+  const branch = `dulger-wip/${board.runId}/docs`;
   board.docs = { status: 'running' };
   save('docs_started');
   log('documentation agent started');
@@ -24,7 +24,7 @@ export async function runDocs(rt: Runtime): Promise<void> {
   rt.addCost(undefined, r.costUsd);
   let status: 'done' | 'failed' = 'failed';
   if (r.ok && r.output) {
-    git.commitAll(cwd, 'usta: update documentation');
+    git.commitAll(cwd, 'dulger: update documentation');
     const merged = git.mergeFrom(cwd, board.runBranch);
     if (merged.ok && git.land(cwd, board.runBranch)) status = 'done';
     board.docs = merged.ok ? { status, summary: r.output.summary } : { status, summary: `merge conflict: ${merged.conflicts?.join(', ')}` };

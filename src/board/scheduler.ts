@@ -52,7 +52,7 @@ export function readyCards(board: Board, concurrency: number): Card[] {
 }
 
 /**
- * Prepare a board loaded from disk for `usta resume`: cards that were being worked on or reviewed
+ * Prepare a board loaded from disk for `dulger resume`: cards that were being worked on or reviewed
  * when the run stopped go back to the backlog with their unfinished tasks pending (finished tasks
  * and their worktrees are kept), and a docs agent that was running is scheduled again.
  * Returns the cards that were reset.

@@ -13,10 +13,10 @@ import { openMemory } from '../src/context/memory.ts';
 import * as store from '../src/board/store.ts';
 import type { PlannerResult } from '../src/types.ts';
 
-process.env.USTA_DATA_DIR = mkdtempSync(join(tmpdir(), 'usta-data-'));
+process.env.DULGER_DATA_DIR = mkdtempSync(join(tmpdir(), 'dulger-data-'));
 
 function tempRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'usta-orch-'));
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-orch-'));
   wt.git(dir, ['init', '-q', '-b', 'main']);
   writeFileSync(join(dir, 'README.md'), 'hello\n');
   wt.git(dir, ['add', '.']);
@@ -50,18 +50,18 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.equal(c1.tasks[1]!.title, 'Address review feedback');
   assert.match(c1.summary!, /Wrote c1-t1\.txt Wrote c1-fix1\.txt/);
   assert.equal(board.docs?.status, 'done');
-  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run1']).split('\n').sort();
+  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run1']).split('\n').sort();
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c1-fix1.txt', 'out/c1-t1.txt', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-t1.txt']);
   assert.equal(wt.currentBranch(repo), 'main');
-  assert.equal(wt.git(repo, ['branch', '--list', 'usta-wip/*']), '', 'wip branches cleaned up');
+  assert.equal(wt.git(repo, ['branch', '--list', 'dulger-wip/*']), '', 'wip branches cleaned up');
   assert.ok(!existsSync(store.worktreeDir(repo, 'run1', 'c1')));
-  assert.ok(!existsSync(join(repo, '.usta', 'worktrees')), 'worktrees are not nested in the repo');
+  assert.ok(!existsSync(join(repo, '.dulger', 'worktrees')), 'worktrees are not nested in the repo');
   const learnings = openMemory(repo, config.memory).load();
   assert.equal(learnings.length, 1);
   assert.match(learnings[0]!.text, /Fake learning/);
   assert.ok(learnings[0]!.seen >= 4, `seen ${learnings[0]!.seen}`);
   assert.ok(learnings[0]!.files.includes('out/c1-t1.txt'));
-  assert.ok(!existsSync(join(repo, '.usta', 'memory.jsonl')), 'memory is not stored in the repo');
+  assert.ok(!existsSync(join(repo, '.dulger', 'memory.jsonl')), 'memory is not stored in the repo');
   assert.ok(events.some((e) => /c1 rejected/.test(e)));
   // c3 must not start before c1 and c2 are done.
   const idx = (re: RegExp) => events.findIndex((e) => re.test(e));
@@ -92,7 +92,7 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   const kept = store.worktreeDir(repo, 'run2', 'c1');
   assert.ok(existsSync(kept) && !kept.startsWith(repo), 'failed worktree is kept for inspection, outside the repo');
   assert.equal(board.docs?.status, 'done');
-  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run2']).split('\n').sort();
+  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run2']).split('\n').sort();
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c2-t1.txt', 'out/c2-t2.txt']);
 });
 
@@ -132,7 +132,7 @@ test('a merge conflict with landed work is resolved by a fix task and does not c
   assert.equal(conflicted.length, 1);
   assert.deepEqual(conflicted[0]!.tasks.map((t) => t.title), ['write', 'Resolve merge conflicts']);
   assert.ok(events.some((e) => /conflicts with merged work in shared.txt/.test(e)));
-  assert.equal(wt.git(repo, ['show', 'usta/run4:shared.txt']), 'line from c1\nline from c2');
+  assert.equal(wt.git(repo, ['show', 'dulger/run4:shared.txt']), 'line from c1\nline from c2');
 });
 
 test('a failed card triggers a replan that replaces the waiting cards', async () => {
@@ -173,7 +173,7 @@ test('a failed card triggers a replan that replaces the waiting cards', async ()
   assert.match(prompts[0]!, /## Failed cards[\s\S]*### c1: Create greeting module \[failed\][\s\S]*never good enough/);
   assert.match(prompts[0]!, /## Waiting cards[\s\S]*### c3: Wire CLI \[backlog\]/);
   assert.ok(events.some((e) => /replanned: 2 new cards \(c3-r1, c4\), 1 replaced/.test(e)), events.join('\n'));
-  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run5']).split('\n').sort();
+  const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run5']).split('\n').sort();
   assert.deepEqual(files, ['README.md', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-r1-t1.txt', 'out/c4-t1.txt']);
 });
 

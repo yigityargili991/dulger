@@ -1,4 +1,4 @@
-// Core data model for usta. Everything here is plain JSON so the board can be
+// Core data model for dulger. Everything here is plain JSON so the board can be
 // written to disk, edited by hand, and reloaded.
 
 export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked' | 'replaced';
@@ -49,7 +49,7 @@ export interface Task {
   attempts: number;
   sessionId?: string;
   result?: WorkerResult;
-  /** Set on tasks usta appends after a rejection: they address `feedback` instead of implementing new work. */
+  /** Set on tasks dulger appends after a rejection: they address `feedback` instead of implementing new work. */
   kind?: 'fix';
   feedback?: string[];
 }

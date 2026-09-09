@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// usta — command line entry point.
+// dulger — command line entry point.
 import { parseArgs } from 'node:util';
 import { createInterface } from 'node:readline';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
@@ -16,19 +16,19 @@ import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { bold, cyan, dim, green, red, yellow, fmtCost, cursor } from './ui/ansi.ts';
 import type { Board, HarnessName } from './types.ts';
 
-const USAGE = `usta — multi-agent kanban orchestrator (wraps Claude Code / Codex)
+const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / Codex)
 
 Usage:
-  usta run "<goal>" [options]     plan a board for the goal, then execute it
-  usta resume <runId> [options]   continue an interrupted run
-  usta board [runId]              print a run's board (latest when omitted)
-  usta runs                       list runs
-  usta clean                      remove leftover worktrees and wip branches
-  usta memory [list]              show what agents learned about this repo
-  usta memory add "<text>"        record a learning by hand
-  usta memory rm <id>             delete a learning
-  usta memory compact             drop learnings about files that no longer exist
-  usta memory path                print the memory file's location
+  dulger run "<goal>" [options]     plan a board for the goal, then execute it
+  dulger resume <runId> [options]   continue an interrupted run
+  dulger board [runId]              print a run's board (latest when omitted)
+  dulger runs                       list runs
+  dulger clean                      remove leftover worktrees and wip branches
+  dulger memory [list]              show what agents learned about this repo
+  dulger memory add "<text>"        record a learning by hand
+  dulger memory rm <id>             delete a learning
+  dulger memory compact             drop learnings about files that no longer exist
+  dulger memory path                print the memory file's location
 
 Options:
   --harness <claude|codex|fake>   backend for all roles (default: claude)
@@ -42,9 +42,9 @@ Options:
   --allow-dirty                   run even with uncommitted changes
   --repo <path>                   repository to work in (default: cwd)
   --quiet                         no live table, log lines only
-  --version                       print usta's version
+  --version                       print dulger's version
 
-Per-role overrides live in <repo>/.usta/config.json, e.g.
+Per-role overrides live in <repo>/.dulger/config.json, e.g.
   { "roles": { "planner": { "harness": "claude", "model": "opus" }, "worker": { "harness": "codex" } } }`;
 
 function packageVersion(): string {
@@ -82,7 +82,7 @@ async function main(argv: string[]): Promise<void> {
 
   switch (cmd) {
     case 'run': {
-      if (!arg) fail('usta run needs a goal, e.g. usta run "add a /health endpoint"');
+      if (!arg) fail('dulger run needs a goal, e.g. dulger run "add a /health endpoint"');
       if (!v['allow-dirty'] && !git.isClean(repoRoot)) fail('working tree has uncommitted changes (commit them or pass --allow-dirty)');
       const board = createBoard(repoRoot, arg);
       await runBoard(repoRoot, board, config, { yes: Boolean(v.yes), quiet: Boolean(v.quiet), merge: Boolean(v.merge), fresh: true });
@@ -112,14 +112,14 @@ async function main(argv: string[]): Promise<void> {
       break;
     }
     case 'clean': {
-      for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('usta-wip/'))) {
+      for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('dulger-wip/'))) {
         git.removeWorktree(repoRoot, w.path);
         console.log(`removed worktree ${w.path} (${w.branch})`);
       }
       for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees')]) {
         if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); console.log(`removed ${dir}`); }
       }
-      const wip = git.git(repoRoot, ['branch', '--list', 'usta-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);
+      const wip = git.git(repoRoot, ['branch', '--list', 'dulger-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);
       for (const b of wip) { git.git(repoRoot, ['branch', '-D', b], { allowFail: true }); console.log(`deleted branch ${b}`); }
       break;
     }
@@ -132,7 +132,7 @@ async function main(argv: string[]): Promise<void> {
 }
 
 async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes: boolean; quiet: boolean; merge: boolean; fresh: boolean }): Promise<void> {
-  console.log(`${bold(cyan('usta'))} run ${board.runId} on ${dim(repoRoot)} (harness: ${config.harness}, concurrency: ${config.concurrency})`);
+  console.log(`${bold(cyan('dulger'))} run ${board.runId} on ${dim(repoRoot)} (harness: ${config.harness}, concurrency: ${config.concurrency})`);
   const quiet = o.quiet || !process.stdout.isTTY;
   let view: LiveView | undefined;
   const log = (msg: string) => (view ? view.note(msg) : console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`));
@@ -183,7 +183,7 @@ async function runBoard(repoRoot: string, board: Board, config: Config, o: { yes
   } else if (done > 0) {
     console.log(`  git merge ${board.runBranch}     # or: git diff ${board.baseBranch}...${board.runBranch}`);
   }
-  if (failed.length) console.log(`  usta resume ${board.runId}      # retry after fixing; failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`);
+  if (failed.length) console.log(`  dulger resume ${board.runId}      # retry after fixing; failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`);
 }
 
 function memoryCommand(repoRoot: string, config: Config, sub: string, args: string[]): void {
@@ -198,14 +198,14 @@ function memoryCommand(repoRoot: string, config: Config, sub: string, args: stri
     }
     case 'add': {
       const text = args[0];
-      if (!text) fail('usta memory add needs a text');
+      if (!text) fail('dulger memory add needs a text');
       const added = memory.add([{ text, files: extractPaths(text, repoRoot), runId: 'manual', cardId: 'manual', harness: config.harness }]);
       console.log(added.length ? green(`added ${added[0]!.id}`) : yellow('already known'));
       return;
     }
     case 'rm': {
       const id = args[0];
-      if (!id) fail('usta memory rm needs an id');
+      if (!id) fail('dulger memory rm needs an id');
       console.log(memory.remove(id) ? green(`removed ${id}`) : yellow(`no learning with id ${id}`));
       return;
     }

@@ -20,7 +20,7 @@ const CONFLICT_FEEDBACK = (files: string) =>
 export async function runCard(rt: Runtime, card: Card): Promise<void> {
   const { board, config, log, save, signal } = rt;
   const cwd = store.worktreeDir(rt.repoRoot, board.runId, card.id);
-  card.branch = `usta-wip/${board.runId}/${card.id}`;
+  card.branch = `dulger-wip/${board.runId}/${card.id}`;
   card.status = 'in_progress';
   if (!existsSync(join(cwd, '.git'))) git.createWorktree(rt.repoRoot, cwd, card.branch, board.runBranch);
   save('card_started', { cardId: card.id });
@@ -40,7 +40,7 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
     if (failed) return finishCard(rt, card, cwd, 'failed', ['a task failed; see logs']);
 
     card.status = 'review';
-    git.commitAll(cwd, `usta: ${card.id} ${card.title}`);
+    git.commitAll(cwd, `dulger: ${card.id} ${card.title}`);
     save('card_review', { cardId: card.id });
     if (rt.integrating()) log(`card ${card.id} waiting for the merge queue`);
     // Sync, review and land as one unit: the reviewer sees the integrated state, and nothing lands in between.

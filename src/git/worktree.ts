@@ -80,11 +80,11 @@ export function removeWorktree(repo: string, path: string, branch?: string): voi
   if (branch && branchExists(repo, branch)) git(repo, ['branch', '-D', branch], { allowFail: true });
 }
 
-/** Stage everything (except .usta/) and commit. Returns false when there was nothing to commit. */
+/** Stage everything (except .dulger/) and commit. Returns false when there was nothing to commit. */
 export function commitAll(cwd: string, message: string): boolean {
-  git(cwd, ['add', '-A', '--', '.', ':(exclude).usta']);
+  git(cwd, ['add', '-A', '--', '.', ':(exclude).dulger']);
   if (git(cwd, ['diff', '--cached', '--quiet'], { allowFail: true }) === '' && git(cwd, ['diff', '--cached', '--name-only']) === '') return false;
-  git(cwd, ['-c', 'user.name=usta', '-c', 'user.email=usta@localhost', 'commit', '--quiet', '--no-verify', '-m', message]);
+  git(cwd, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'commit', '--quiet', '--no-verify', '-m', message]);
   return true;
 }
 
@@ -108,7 +108,7 @@ export interface MergeResult {
  */
 export function mergeFrom(worktree: string, branch: string, opts: { keepConflicts?: boolean } = {}): MergeResult {
   try {
-    git(worktree, ['-c', 'user.name=usta', '-c', 'user.email=usta@localhost', 'merge', '--quiet', '--no-edit', branch]);
+    git(worktree, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'merge', '--quiet', '--no-edit', branch]);
     return { ok: true };
   } catch (e) {
     const conflicts = git(worktree, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true }).split('\n').filter(Boolean);

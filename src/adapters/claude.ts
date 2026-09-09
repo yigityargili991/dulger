@@ -65,7 +65,7 @@ export const claudeAdapter: Adapter = {
     let errorText = '';
 
     const { exitCode, stderr } = await spawnLines({
-      bin: process.env.USTA_CLAUDE_BIN ?? 'claude',
+      bin: process.env.DULGER_CLAUDE_BIN ?? 'claude',
       args: buildClaudeArgs(opts),
       cwd: opts.cwd,
       logFile: opts.logFile,

@@ -1,5 +1,5 @@
 // A scripted adapter for tests and demos: no tokens, deterministic, fast.
-// Responses are looked up by role marker in the system prompt (usta puts `[role:<name>]` there).
+// Responses are looked up by role marker in the system prompt (dulger puts `[role:<name>]` there).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import type { AgentRole, CheckResult, DocsResult, PlannerResult, WorkerResult } from '../types.ts';

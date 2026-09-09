@@ -10,11 +10,11 @@ import { buildCommonContext, cardFiles } from '../src/context/common.ts';
 import { createBoard } from '../src/board/create.ts';
 import type { Card } from '../src/types.ts';
 
-const dataDir = mkdtempSync(join(tmpdir(), 'usta-data-'));
-process.env.USTA_DATA_DIR = dataDir;
+const dataDir = mkdtempSync(join(tmpdir(), 'dulger-data-'));
+process.env.DULGER_DATA_DIR = dataDir;
 
 function tempRepo(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'usta-mem-'));
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-mem-'));
   wt.git(dir, ['init', '-q', '-b', 'main']);
   mkdirSync(join(dir, 'src'));
   writeFileSync(join(dir, 'src', 'app.ts'), 'export {}\n');
@@ -31,7 +31,7 @@ test('memory lives outside the repo; clones of one origin share it, other projec
   const path = memoryPath(repo, cfg);
   assert.ok(path.startsWith(dataDir), path);
   assert.ok(!path.startsWith(repo));
-  assert.equal(memoryPath(repo, { ...cfg, location: 'repo' }), join(repo, '.usta', 'memory.jsonl'));
+  assert.equal(memoryPath(repo, { ...cfg, location: 'repo' }), join(repo, '.dulger', 'memory.jsonl'));
   openMemory(repo, cfg).add([{ text: 'only here', files: [], runId: 'r', cardId: 'c', harness: 'fake' }]);
 
   // Same tree, same message, same second: identical root commit. Still a different project.
@@ -41,7 +41,7 @@ test('memory lives outside the repo; clones of one origin share it, other projec
 
   wt.git(repo, ['remote', 'add', 'origin', 'git@github.com:me/Proj.git']);
   assert.equal(repoKey(repo), 'github.com-me-proj');
-  const clone = join(mkdtempSync(join(tmpdir(), 'usta-clone-')), 'renamed');
+  const clone = join(mkdtempSync(join(tmpdir(), 'dulger-clone-')), 'renamed');
   wt.git(tmpdir(), ['clone', '-q', repo, clone]);
   wt.git(clone, ['remote', 'set-url', 'origin', 'https://github.com/me/proj.git']);
   assert.equal(memoryPath(clone, cfg), memoryPath(repo, cfg), 'normalised origin URL is the key');
@@ -101,11 +101,11 @@ test('extractPaths / cardFiles only return paths that exist', () => {
   assert.deepEqual(cardFiles(card, repo).sort(), ['README.md', 'src/app.ts', 'src/new.ts']);
 });
 
-test('buildCommonContext renders learnings and user context; .usta/context stays committable', () => {
+test('buildCommonContext renders learnings and user context; .dulger/context stays committable', () => {
   const repo = tempRepo();
   const board = createBoard(repo, 'goal', 'run1');
-  mkdirSync(join(repo, '.usta', 'context'), { recursive: true });
-  writeFileSync(join(repo, '.usta', 'context', 'conventions.md'), 'Use tabs.\n');
+  mkdirSync(join(repo, '.dulger', 'context'), { recursive: true });
+  writeFileSync(join(repo, '.dulger', 'context', 'conventions.md'), 'Use tabs.\n');
   const m = openMemory(repo, cfg);
   m.add([{ text: 'Run make first', files: ['src/app.ts'], runId: 'run0', cardId: 'c1', harness: 'fake' }]);
   const ctx = buildCommonContext(repo, board, m);
@@ -115,20 +115,20 @@ test('buildCommonContext renders learnings and user context; .usta/context stays
   assert.equal(renderLearnings(m.select()), '- Run make first (src/app.ts)');
 
   const exclude = readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8');
-  assert.match(exclude, /^\.usta\/\*$/m);
-  assert.match(exclude, /^!\.usta\/context$/m);
+  assert.match(exclude, /^\.dulger\/\*$/m);
+  assert.match(exclude, /^!\.dulger\/context$/m);
   const status = wt.git(repo, ['status', '--porcelain', '--untracked-files=all']);
-  assert.match(status, /\.usta\/context\/conventions\.md/, 'context is visible to git');
+  assert.match(status, /\.dulger\/context\/conventions\.md/, 'context is visible to git');
   assert.doesNotMatch(status, /runs\//, 'run state is not');
-  assert.ok(!existsSync(join(repo, '.usta', 'memory.jsonl')));
+  assert.ok(!existsSync(join(repo, '.dulger', 'memory.jsonl')));
 });
 
 test('excludeFromGit migrates the legacy blanket pattern', () => {
   const repo = tempRepo();
   mkdirSync(join(repo, '.git', 'info'), { recursive: true });
-  writeFileSync(join(repo, '.git', 'info', 'exclude'), 'foo\n.usta/\n');
-  wt.excludeFromGit(repo, ['.usta/*', '!.usta/context'], ['.usta/']);
-  assert.equal(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8'), 'foo\n.usta/*\n!.usta/context\n');
-  wt.excludeFromGit(repo, ['.usta/*', '!.usta/context'], ['.usta/']);
-  assert.equal(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8'), 'foo\n.usta/*\n!.usta/context\n', 'idempotent');
+  writeFileSync(join(repo, '.git', 'info', 'exclude'), 'foo\n.dulger/\n');
+  wt.excludeFromGit(repo, ['.dulger/*', '!.dulger/context'], ['.dulger/']);
+  assert.equal(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8'), 'foo\n.dulger/*\n!.dulger/context\n');
+  wt.excludeFromGit(repo, ['.dulger/*', '!.dulger/context'], ['.dulger/']);
+  assert.equal(readFileSync(join(repo, '.git', 'info', 'exclude'), 'utf8'), 'foo\n.dulger/*\n!.dulger/context\n', 'idempotent');
 });

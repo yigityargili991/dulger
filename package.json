@@ -1,11 +1,11 @@
 {
-  "name": "usta",
+  "name": "dulger",
   "version": "0.1.0",
-  "description": "usta — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
+  "description": "dulger — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
   "license": "MIT",
   "author": "Yigit Yargili",
   "type": "module",
-  "bin": { "usta": "./bin/usta.js" },
+  "bin": { "dulger": "./bin/dulger.js" },
   "files": ["bin/", "src/"],
   "engines": { "node": ">=24" },
   "scripts": {

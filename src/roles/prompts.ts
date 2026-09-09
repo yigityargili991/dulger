@@ -2,9 +2,9 @@
 // (and humans reading logs) can tell roles apart.
 import type { Board, Card, Task } from '../types.ts';
 
-const RULES_COMMON = `You are one agent in "usta", a multi-agent system working on a shared repository.
+const RULES_COMMON = `You are one agent in "dulger", a multi-agent system working on a shared repository.
 Other agents may work in parallel on other cards in separate git worktrees.
-Never touch the .usta/ directory. Do not run git commit, git push, git checkout or git branch; usta manages git.
+Never touch the .dulger/ directory. Do not run git commit, git push, git checkout or git branch; dulger manages git.
 When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
 
 export function plannerSystem(): string {
@@ -201,7 +201,7 @@ ${RULES_COMMON}
 
 Documentation rules:
 - Update README / docs / CHANGELOG (create a CHANGELOG.md if the project has none) so they reflect the merged work. Keep the project's existing tone and structure.
-- Document behaviour, usage and configuration, not the process. Do not mention usta, agents or cards.
+- Document behaviour, usage and configuration, not the process. Do not mention dulger, agents or cards.
 - Do not change code.`;
 }
 

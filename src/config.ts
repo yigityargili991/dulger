@@ -9,7 +9,7 @@ export interface RoleConfig {
 }
 
 export interface MemoryConfig {
-  location: 'user' | 'repo';  // user: ~/.local/share/usta/<project>/, repo: <repo>/.usta/
+  location: 'user' | 'repo';  // user: ~/.local/share/dulger/<project>/, repo: <repo>/.dulger/
   maxItems: number;           // per prompt
   maxChars: number;
 }
@@ -42,9 +42,9 @@ export const DEFAULT_CONFIG: Config = {
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },
 };
 
-export const STATE_DIR = '.usta';
+export const STATE_DIR = '.dulger';
 
-/** Defaults <- <repo>/.usta/config.json <- CLI overrides. */
+/** Defaults <- <repo>/.dulger/config.json <- CLI overrides. */
 export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): Config {
   const file = join(repoRoot, STATE_DIR, 'config.json');
   const fromFile: Partial<Config> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};

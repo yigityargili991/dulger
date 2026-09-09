@@ -2,7 +2,7 @@
 // Launcher for the TypeScript entry point.
 //
 // Node runs .ts files directly, but refuses to strip types for anything under node_modules,
-// which is where an installed package lives. This hook strips the types of usta's own files
+// which is where an installed package lives. This hook strips the types of dulger's own files
 // (and only those) before Node sees them, so there is still no build step.
 import { registerHooks, stripTypeScriptTypes } from 'node:module';
 import { readFileSync } from 'node:fs';

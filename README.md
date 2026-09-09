@@ -1,13 +1,13 @@
-# usta
+# dulger
 
-**usta** (Turkish: master craftsman) is a small, dependency-free TypeScript framework that turns one
+**dulger** (Turkish *dülger*: carpenter) is a small, dependency-free TypeScript framework that turns one
 goal into a kanban board and has a crew of coding agents work through it. It is a *wrapper*: every agent
 is a headless [Claude Code](https://claude.com/claude-code) or [Codex](https://github.com/openai/codex)
-process spawned with a prompt, a working directory and a JSON schema for its answer. usta itself never
+process spawned with a prompt, a working directory and a JSON schema for its answer. dulger itself never
 calls an LLM API.
 
 ```
-usta run "Add CSV export to the reports page"
+dulger run "Add CSV export to the reports page"
 ```
 
 1. **Planner** (the main agent) explores the repo and writes a kanban board: cards with acceptance
@@ -22,7 +22,7 @@ usta run "Add CSV export to the reports page"
    cards landed meanwhile, a fix task resolves the conflicts before the review; that does not count as
    a review round.
 5. Review and merge form a *merge queue*: one card at a time syncs the result branch into its
-   worktree, is reviewed in that combined state, and lands on `usta/<runId>` by fast-forward. What
+   worktree, is reviewed in that combined state, and lands on `dulger/<runId>` by fast-forward. What
    the checker approves is exactly what lands.
 6. When a card fails, the **planner replans**: it sees what merged, what is still running, what failed
    and why, and the cards that were waiting, and returns a new set of cards for the remaining work.
@@ -31,7 +31,7 @@ usta run "Add CSV export to the reports page"
 7. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
 8. A live terminal table shows the board and every agent's state, current tool and last message.
 
-Your checkout is never modified: the result lands on `usta/<runId>` for you to review and merge.
+Your checkout is never modified: the result lands on `dulger/<runId>` for you to review and merge.
 
 ## Requirements
 
@@ -44,24 +44,24 @@ Your checkout is never modified: the result lands on `usta/<runId>` for you to r
 From a checkout:
 
 ```sh
-git clone <this repo> usta && cd usta
+git clone <this repo> dulger && cd dulger
 npm install          # only installs typescript for `npm run typecheck`
-npm link             # puts `usta` on your PATH (or run `node src/cli.ts`)
+npm link             # puts `dulger` on your PATH (or run `node src/cli.ts`)
 ```
 
-Or from a tarball: `npm pack` produces `usta-<version>.tgz`, and `npm install -g usta-<version>.tgz`
-installs the `usta` command. There is no build step either way: `bin/usta.js` strips the types of
-usta's own files at load time, because Node refuses to do that for packages under `node_modules`.
+Or from a tarball: `npm pack` produces `dulger-<version>.tgz`, and `npm install -g dulger-<version>.tgz`
+installs the `dulger` command. There is no build step either way: `bin/dulger.js` strips the types of
+dulger's own files at load time, because Node refuses to do that for packages under `node_modules`.
 
 ## Usage
 
 ```
-usta run "<goal>" [options]     plan a board for the goal, then execute it
-usta resume [runId]             continue an interrupted run
-usta board [runId]              print a run's board
-usta runs                       list runs
-usta clean                      remove leftover worktrees and wip branches
-usta memory [list|add|rm|compact|path]   inspect and curate what agents learned about the repo
+dulger run "<goal>" [options]     plan a board for the goal, then execute it
+dulger resume [runId]             continue an interrupted run
+dulger board [runId]              print a run's board
+dulger runs                       list runs
+dulger clean                      remove leftover worktrees and wip branches
+dulger memory [list|add|rm|compact|path]   inspect and curate what agents learned about the repo
 
 --harness <claude|codex|fake>   backend for all roles (default: claude)
 --concurrency <n>               parallel cards (default: 3)
@@ -74,14 +74,14 @@ usta memory [list|add|rm|compact|path]   inspect and curate what agents learned 
 --allow-dirty                   run even with uncommitted changes
 --repo <path>                   repository to work in (default: cwd)
 --quiet                         no live table, log lines only
---version                       print usta's version
+--version                       print dulger's version
 ```
 
-Try it without spending tokens: `usta run --harness fake --yes "demo"` in any git repo.
+Try it without spending tokens: `dulger run --harness fake --yes "demo"` in any git repo.
 
 ## Configuration
 
-Optional `<repo>/.usta/config.json`; CLI flags override it.
+Optional `<repo>/.dulger/config.json`; CLI flags override it.
 
 ```json
 {
@@ -109,36 +109,36 @@ Roles can mix harnesses: plan with Claude, implement with Codex, review with Cla
 
 Every agent's prompt starts with the run summary and the board, followed by two kinds of context:
 
-**Project context you write.** Everything in `<repo>/.usta/context/*.md` is included verbatim:
+**Project context you write.** Everything in `<repo>/.dulger/context/*.md` is included verbatim:
 conventions, architecture notes, "how to run the tests", anything you would tell a new teammate.
-This directory is meant to be committed so the whole team shares it (usta excludes the rest of
-`.usta/` from git but leaves `context/` and `config.json` visible).
+This directory is meant to be committed so the whole team shares it (dulger excludes the rest of
+`.dulger/` from git but leaves `context/` and `config.json` visible).
 
 **Memory the agents build.** Workers report `learnings` (non-obvious facts about the codebase) and
-usta stores them as one JSON record per line, with the run, card, harness, and the files each
-learning is about. Identical learnings are merged rather than repeated. When a prompt is built, usta
+dulger stores them as one JSON record per line, with the run, card, harness, and the files each
+learning is about. Identical learnings are merged rather than repeated. When a prompt is built, dulger
 picks the learnings worth including instead of dumping all of them: learnings from the current run
 first, then learnings about the files the card touches, then the most reported ones, within
 `memory.maxItems` / `memory.maxChars`. Learnings whose files no longer exist are skipped.
 
-By default the memory file lives outside the repository in `$XDG_DATA_HOME/usta/<project>/memory.jsonl`
-(`~/.local/share/usta/…`). `<project>` is the normalised `origin` URL (so every clone of a repository
+By default the memory file lives outside the repository in `$XDG_DATA_HOME/dulger/<project>/memory.jsonl`
+(`~/.local/share/dulger/…`). `<project>` is the normalised `origin` URL (so every clone of a repository
 shares one memory and forks get their own) or, without a remote, the checkout path. Memory is never
-shared between different projects. Set `"memory": { "location": "repo" }` to keep it at `.usta/memory.jsonl` instead,
-or `USTA_DATA_DIR` to move the whole data directory. `usta memory` lists the learnings with their ids;
+shared between different projects. Set `"memory": { "location": "repo" }` to keep it at `.dulger/memory.jsonl` instead,
+or `DULGER_DATA_DIR` to move the whole data directory. `dulger memory` lists the learnings with their ids;
 `rm` deletes one, `add` records one by hand, `compact` drops the stale ones, `path` prints the file.
 
 ## What lives where
 
 ```
-<repo>/.usta/
+<repo>/.dulger/
   config.json                 optional configuration (committable)
   context/*.md                project context you write (committable)
   runs/<runId>/board.json     the kanban — source of truth, editable, resumable
   runs/<runId>/events.jsonl   every state transition
   runs/<runId>/logs/*.jsonl   raw event stream of every agent process
 
-~/.local/share/usta/<project>/          <project> = origin URL or checkout path ($XDG_DATA_HOME, USTA_DATA_DIR)
+~/.local/share/dulger/<project>/          <project> = origin URL or checkout path ($XDG_DATA_HOME, DULGER_DATA_DIR)
   memory.jsonl                          learnings reported by workers
   worktrees/<runId>/<cardId>/           per-card git worktrees (removed when the card merges; kept on failure)
 ```
@@ -146,9 +146,9 @@ or `USTA_DATA_DIR` to move the whole data directory. `usta memory` lists the lea
 Worktrees live outside the checkout so tools that walk the repository (test runners, linters, type
 checkers, the agents' own searches) never see other cards' copies of the code.
 
-Git branches: `usta/<runId>` is the result; `usta-wip/<runId>/<cardId>` are per-card work branches
-that disappear when the card merges. `usta clean` removes leftover worktrees and wip branches.
-`.usta/*` is added to `.git/info/exclude` automatically, with `context/` and `config.json`
+Git branches: `dulger/<runId>` is the result; `dulger-wip/<runId>/<cardId>` are per-card work branches
+that disappear when the card merges. `dulger clean` removes leftover worktrees and wip branches.
+`.dulger/*` is added to `.git/info/exclude` automatically, with `context/` and `config.json`
 re-included so they can be committed.
 
 ## Permissions and safety
@@ -157,9 +157,9 @@ re-included so they can be committed.
   `--permission-mode bypassPermissions`, Codex with `--sandbox workspace-write`.
 - Planner and checker are read-only: Claude Code gets only Read/Grep/Glob and a short allow-list of
   Bash commands (plus `checker.allowedCommands`); Codex gets `--sandbox read-only`.
-- Agents are told never to run git commands; usta commits, merges and cleans up.
+- Agents are told never to run git commands; dulger commits, merges and cleans up.
 - An agent that produces no events for `stallTimeoutSec` is killed and counted as a failed attempt.
-- `Ctrl-C` stops all agents, saves the board, and prints the `usta resume` command.
+- `Ctrl-C` stops all agents, saves the board, and prints the `dulger resume` command.
 
 ## Adding a harness
 

@@ -68,7 +68,7 @@ export function renderAgents(statuses: Iterable<AgentStatus>, width: number, now
 }
 
 export function renderHeader(board: Board, startedAt: number, width: number, now = Date.now()): string {
-  const left = `${bold(cyan('usta'))}  run ${board.runId}   goal: `;
+  const left = `${bold(cyan('dulger'))}  run ${board.runId}   goal: `;
   const right = `   elapsed ${fmtDuration(now - startedAt)}   cost ${fmtCost(board.costUsd)}`;
   const goalWidth = Math.max(10, width - (left.length - 12) - right.length);
   return left + truncate(board.goal, goalWidth) + right;

@@ -55,7 +55,7 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
   return {
     name: 'codex',
     async run(opts): Promise<AdapterResult> {
-      const dir = mkdtempSync(join(tmpdir(), 'usta-codex-'));
+      const dir = mkdtempSync(join(tmpdir(), 'dulger-codex-'));
       const files = { schema: opts.schema ? join(dir, 'schema.json') : undefined, lastMessage: join(dir, 'last.txt') };
       if (files.schema) writeFileSync(files.schema, JSON.stringify(opts.schema));
 
@@ -64,7 +64,7 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
       let errorText = '';
       try {
         const { exitCode, stderr } = await spawnLines({
-          bin: process.env.USTA_CODEX_BIN ?? 'codex',
+          bin: process.env.DULGER_CODEX_BIN ?? 'codex',
           args: buildCodexArgs(opts, files, extra),
           cwd: opts.cwd,
           // Codex has no system-prompt flag: prepend it to the prompt on first run.

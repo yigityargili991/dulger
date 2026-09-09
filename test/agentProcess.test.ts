@@ -17,7 +17,7 @@ function adapter(result: Partial<AdapterResult>): Adapter {
 
 async function run(reg: AgentRegistry, a: Adapter, ids: { cardId?: string; taskId?: string }): Promise<AgentStatus> {
   await runAgent({
-    registry: reg, adapter: a, role: 'worker', harness: 'fake', ...ids, logDir: mkdtempSync(join(tmpdir(), 'usta-agent-')), logName: 'x',
+    registry: reg, adapter: a, role: 'worker', harness: 'fake', ...ids, logDir: mkdtempSync(join(tmpdir(), 'dulger-agent-')), logName: 'x',
     stallTimeoutSec: 10, parentSignal: new AbortController().signal,
     run: { prompt: '', systemPrompt: '', cwd: '.', access: 'write' },
   });

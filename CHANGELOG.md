@@ -19,6 +19,8 @@ First release.
 - Claude Code agents skip the user's MCP servers unless `claude.mcp` is set.
 - The checker reviews like a senior engineer: tests are read, not just run; design fit and failure modes
   count; non-blocking notes are recorded on the board instead of costing a rework round.
+- Every run ends with a report of what landed (per card summary, files, review verdict and notes,
+  failures, docs, diff stat, next steps), saved as `report.md` and printed again by `dulger report`.
 - `worktreeSetup` runs a command (e.g. `npm ci`) once in every new worktree.
 - The planner is told which commands the checker may run, and the default allow-list includes typecheck,
   lint and build scripts.

@@ -69,6 +69,8 @@ export interface Card {
   feedback: string[];
   /** Non-blocking observations from reviews, shown on the board. */
   reviewNotes?: string[];
+  /** The final reviewer's summary of what the card does and why it passed or failed. */
+  review?: string;
   summary?: string;
   costUsd: number;
   tokens?: number;

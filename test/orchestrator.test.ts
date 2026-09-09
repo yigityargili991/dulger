@@ -10,6 +10,7 @@ import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/adapters/fake.ts';
 import { registerAdapter } from '../src/adapters/index.ts';
 import { openMemory } from '../src/context/memory.ts';
+import { buildReport } from '../src/ui/report.ts';
 import * as store from '../src/board/store.ts';
 import type { PlannerResult } from '../src/types.ts';
 
@@ -59,6 +60,19 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.ok(!existsSync(join(repo, '.dulger', 'worktrees')), 'worktrees are not nested in the repo');
   const learnings = openMemory(repo, config.memory).load();
   assert.equal(learnings.length, 1);
+
+  assert.equal(c1.review, 'looks good', 'the final review summary is kept on the card');
+  const report = buildReport(board, { diffStat: ' 3 files changed' }).replace(/\x1b\[[0-9;]*m/g, '');
+  assert.match(report, /^Run run1  main @ [0-9a-f]{7} → dulger\/run1\nGoal: demo\nLanded 3 of 3 cards, docs updated · spent \$/);
+  assert.match(report, /\nLanded\n  c1 .*\n     t1 .*Wrote c1-t1\.txt/);
+  assert.match(report, /files: out\/c1-fix1\.txt, out\/c1-t1\.txt/);
+  assert.match(report, /review rounds: 2 \(fix tasks: Address review feedback\)/);
+  assert.match(report, /review: looks good/);
+  assert.match(report, /note: Fake note: consider a helper/);
+  assert.match(report, /\nDocumentation\n  Wrote DOCS\.md/);
+  assert.match(report, /\nChanges\n  3 files changed/);
+  assert.match(report, /\nNext\n  git merge dulger\/run1/);
+  assert.ok(!report.includes('Not landed'));
   assert.match(learnings[0]!.text, /Fake learning/);
   assert.ok(learnings[0]!.seen >= 4, `seen ${learnings[0]!.seen}`);
   assert.ok(learnings[0]!.files.includes('out/c1-t1.txt'));

@@ -61,12 +61,12 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
       case 'aborted':
         return;
       case 'landed':
-        recordNotes(card, outcome.verdict);
+        recordReview(card, outcome.verdict);
         card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
         return finishCard(rt, card, cwd, 'done');
       case 'rejected': {
         const { verdict } = outcome;
-        recordNotes(card, verdict);
+        recordReview(card, verdict);
         const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
         card.feedback.push(...feedback);
         card.attempts++;
@@ -153,8 +153,9 @@ async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult>
   return r.ok && r.output ? r.output : { pass: false, feedback: [`checker failed to run: ${r.error}`], summary: '' };
 }
 
-/** Keep the reviewer's non-blocking observations on the card; they are shown on the board, never sent back as work. */
-function recordNotes(card: Card, verdict: CheckResult): void {
+/** Keep the reviewer's verdict on the card: the latest summary, and every non-blocking note (shown on the board, never sent back as work). */
+function recordReview(card: Card, verdict: CheckResult): void {
+  if (verdict.summary) card.review = verdict.summary;
   if (verdict.notes?.length) card.reviewNotes = [...(card.reviewNotes ?? []), ...verdict.notes];
 }
 

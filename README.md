@@ -32,6 +32,9 @@ dulger run "Add CSV export to the reports page"
    replans, a failed card simply blocks its dependents.
 7. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
 8. A live terminal table shows the board and every agent's state, current tool and last message.
+9. When the run ends, a **report** of what landed is printed: per card what was built, which files
+   changed, the reviewer's verdict and notes, what did not land and why, the documentation summary,
+   the diff stat, and what to do next. `dulger report` prints it again later.
 
 Your checkout is never modified: the result lands on `dulger/<runId>` for you to review and merge.
 
@@ -57,10 +60,18 @@ dulger's own files at load time, because Node refuses to do that for packages un
 
 ## Usage
 
+`dulger` on its own opens an interactive prompt in the current repository. Type a goal to plan and run
+it, exactly as `dulger run` would; when it lands you are asked whether to merge the result into your
+branch, so the next goal builds on it. Slash-commands cover the rest: `/board`, `/report`, `/runs`,
+`/resume`, `/merge`, `/memory`, `/clean`, `/set` (harness, concurrency, attempts, model, …), `/status`,
+`/help`, `/quit`. Ctrl-C during a run stops the agents and returns to the prompt with the board saved.
+
 ```
+dulger                           interactive prompt
 dulger run "<goal>" [options]     plan a board for the goal, then execute it
 dulger resume [runId]             continue an interrupted run
 dulger board [runId]              print a run's board
+dulger report [runId]             print what a run landed
 dulger runs                       list runs
 dulger clean                      remove leftover worktrees and wip branches
 dulger memory [list|add|rm|compact|path]   inspect and curate what agents learned about the repo

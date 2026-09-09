@@ -50,10 +50,11 @@ export const CHECK_SCHEMA = {
   type: 'object',
   properties: {
     pass: { type: 'boolean' },
-    feedback: { ...strArray, description: 'concrete, actionable problems (empty when pass=true)' },
-    summary: { type: 'string' },
+    feedback: { ...strArray, description: 'blocking problems, concrete and actionable (empty when pass=true)' },
+    notes: { ...strArray, description: 'non-blocking observations worth recording (style, alternatives, pre-existing issues)' },
+    summary: { type: 'string', description: 'what the card does and why it passes or fails, for humans reading the board' },
   },
-  required: ['pass', 'feedback', 'summary'],
+  required: ['pass', 'feedback', 'notes', 'summary'],
   additionalProperties: false,
 } as const;
 

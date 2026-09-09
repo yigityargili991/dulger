@@ -44,7 +44,7 @@ export const DEFAULT_FAKE_SCRIPT: FakeScript = {
   },
   checker(_opts, i) {
     // Fail the very first check to exercise the retry path.
-    return i === 0 ? { pass: false, feedback: ['Fake checker: please retry once'], summary: 'first check fails' } : { pass: true, feedback: [], summary: 'looks good' };
+    return i === 0 ? { pass: false, feedback: ['Fake checker: please retry once'], notes: ['Fake note: consider a helper'], summary: 'first check fails' } : { pass: true, feedback: [], notes: [], summary: 'looks good' };
   },
   docs(opts) {
     writeFileSync(join(opts.cwd, 'DOCS.md'), '# Docs\n\nWritten by the fake docs agent.\n');

@@ -17,6 +17,7 @@ export async function runDocs(rt: Runtime): Promise<void> {
   save('docs_started');
   log('documentation agent started');
   git.createWorktree(rt.repoRoot, cwd, branch, board.runBranch);
+  rt.setupWorktree(cwd);
   const stat = git.diffStat(cwd, board.baseRef);
   const r = await rt.agent<DocsResult>('docs', {
     prompt: P.docsPrompt(board, stat, rt.context({ root: cwd })), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',

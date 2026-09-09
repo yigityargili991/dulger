@@ -48,6 +48,7 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.deepEqual(c1.tasks.map((t) => [t.id, t.kind, t.status, t.attempts]), [['t1', undefined, 'done', 1], ['fix1', 'fix', 'done', 1]]);
   assert.deepEqual(c1.tasks[1]!.feedback, ['Fake checker: please retry once']);
   assert.equal(c1.tasks[1]!.title, 'Address review feedback');
+  assert.deepEqual(c1.reviewNotes, ['Fake note: consider a helper'], 'non-blocking notes are kept on the card, not turned into work');
   assert.match(c1.summary!, /Wrote c1-t1\.txt Wrote c1-fix1\.txt/);
   assert.equal(board.docs?.status, 'done');
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run1']).split('\n').sort();
@@ -175,6 +176,30 @@ test('a failed card triggers a replan that replaces the waiting cards', async ()
   assert.ok(events.some((e) => /replanned: 2 new cards \(c3-r1, c4\), 1 replaced/.test(e)), events.join('\n'));
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run5']).split('\n').sort();
   assert.deepEqual(files, ['README.md', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-r1-t1.txt', 'out/c4-t1.txt']);
+});
+
+test('worktreeSetup runs once in every new worktree, before its first agent', async () => {
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 5 }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-setup');
+  const events: string[] = [];
+  const setupLog = join(mkdtempSync(join(tmpdir(), 'dulger-setup-')), 'setup.log'); // outside the worktrees, so it is not committed
+  const orch = createOrchestrator(repo, board, { ...config, worktreeSetup: `echo "$PWD" >> ${setupLog}` }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(board.cards.map((c) => c.status), ['done', 'done', 'done']);
+  const ran = readFileSync(setupLog, 'utf8').trim().split('\n');
+  assert.equal(ran.length, 4, 'three cards and the docs worktree');
+  assert.equal(new Set(ran).size, 4, 'each worktree was set up exactly once');
+  for (const id of ['c1', 'c2', 'c3', 'docs']) assert.ok(ran.includes(store.worktreeDir(repo, 'run-setup', id)), `${id} worktree was set up`);
+  assert.ok(!events.some((e) => e.includes('setup failed')));
+
+  const failing = createBoard(repo, 'demo', 'run-setup-fail');
+  const orch2 = createOrchestrator(repo, failing, { ...config, docs: false, concurrency: 1, worktreeSetup: 'echo boom >&2; exit 3' }, { log: (m) => events.push(m) });
+  await orch2.plan();
+  await orch2.execute();
+  assert.ok(events.some((e) => e.includes('worktree setup failed') && e.includes('boom')), 'failure is logged with stderr');
+  assert.deepEqual(failing.cards.map((c) => c.status), ['done', 'done', 'done'], 'a failed setup does not stop the card');
 });
 
 test('abort stops dispatching and leaves the board resumable', async () => {

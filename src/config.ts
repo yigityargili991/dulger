@@ -24,6 +24,8 @@ export interface Config {
   stallTimeoutSec: number;
   docs: boolean;
   checker: { allowedCommands: string[] };
+  /** Shell command run once in every new worktree before agents use it (e.g. "npm ci"). */
+  worktreeSetup?: string;
   claude: { mcp: boolean };  // inherit the user's MCP servers (off: far smaller prompts, no late-connect cache misses)
   codex: { bypassSandbox: boolean };
   memory: MemoryConfig;
@@ -38,7 +40,7 @@ export const DEFAULT_CONFIG: Config = {
   maxContinuations: 2,
   stallTimeoutSec: 600,
   docs: true,
-  checker: { allowedCommands: ['npm test', 'npm run test', 'pytest', 'cargo test', 'go test'] },
+  checker: { allowedCommands: ['npm test', 'npm run test', 'npm run typecheck', 'npm run lint', 'npm run build', 'pytest', 'cargo test', 'go test'] },
   claude: { mcp: false },
   codex: { bypassSandbox: false },
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },

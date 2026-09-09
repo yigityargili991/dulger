@@ -30,6 +30,8 @@ export interface WorkerResult {
 export interface CheckResult {
   pass: boolean;
   feedback: string[];
+  /** Non-blocking review observations; recorded on the card, never sent back as a fix task. */
+  notes?: string[];
   summary: string;
 }
 
@@ -65,6 +67,8 @@ export interface Card {
   attempts: number;
   branch?: string;
   feedback: string[];
+  /** Non-blocking observations from reviews, shown on the board. */
+  reviewNotes?: string[];
   summary?: string;
   costUsd: number;
   tokens?: number;

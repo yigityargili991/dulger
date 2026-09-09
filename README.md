@@ -15,8 +15,10 @@ dulger run "Add CSV export to the reports page"
 2. You review the board (edit the JSON if you like) and press Enter.
 3. **Workers** execute tasks. Every card gets its own git branch and worktree, so cards run in parallel
    without touching each other. A worker that reports `done: false` is resumed in the same session.
-4. A **checker** reviews each finished card against its acceptance criteria (it can run the tests).
-   A rejection appends a *fix task* to the card: one worker session that addresses the reviewer's
+4. A **checker** reviews each finished card the way a senior engineer reviews a pull request: it runs
+   the project's checks, reads the tests and the surrounding code, and judges correctness, failure modes
+   and fit with the codebase, not only the acceptance criteria. Style remarks and pre-existing problems
+   go into non-blocking *notes* shown on the board. A rejection appends a *fix task* to the card: one worker session that addresses the reviewer's
    points in the same worktree, without redoing the finished tasks. The card is then reviewed again,
    up to `maxAttempts` rounds. If syncing the result branch into the card conflicts with work other
    cards landed meanwhile, a fix task resolves the conflicts before the review; that does not count as
@@ -97,7 +99,8 @@ Optional `<repo>/.dulger/config.json`; CLI flags override it.
     "worker":  { "harness": "codex" },
     "checker": { "maxBudgetUsd": 1 }
   },
-  "checker": { "allowedCommands": ["npm test", "pytest"] },
+  "checker": { "allowedCommands": ["npm test", "npm run typecheck", "pytest"] },
+  "worktreeSetup": "npm ci",
   "claude": { "mcp": false },
   "codex": { "bypassSandbox": false },
   "memory": { "location": "user", "maxItems": 40, "maxChars": 6000 }
@@ -105,6 +108,14 @@ Optional `<repo>/.dulger/config.json`; CLI flags override it.
 ```
 
 Roles can mix harnesses: plan with Claude, implement with Codex, review with Claude.
+
+`checker.allowedCommands` is the complete list of shell commands the reviewer may run (default: `npm test`,
+`npm run test`, `npm run typecheck`, `npm run lint`, `npm run build`, `pytest`, `cargo test`, `go test`).
+The planner is told this list so that acceptance criteria only rely on commands the reviewer can run.
+
+`worktreeSetup` runs once in every new worktree before its first agent, from the worktree's root.
+Worktrees are fresh checkouts, so without it every worker starts by installing dependencies itself.
+A failing setup command is logged and the card goes ahead anyway.
 
 ## Common context
 

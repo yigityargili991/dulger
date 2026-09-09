@@ -7,7 +7,7 @@ Other agents may work in parallel on other cards in separate git worktrees.
 Never touch the .dulger/ directory. Do not run git commit, git push, git checkout or git branch; dulger manages git.
 When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
 
-export function plannerSystem(): string {
+export function plannerSystem(allowedCommands: string[]): string {
   return `[role:planner] You are the lead engineer planning a piece of work as a kanban board.
 
 ${RULES_COMMON}
@@ -19,11 +19,12 @@ Planning rules:
 - Two parallel cards must not edit the same files. If they would, merge them into one card or add a dependency.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained: name the files, the functions, the behaviour, and how to verify it.
 - acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands (e.g. "npm test passes", "GET /health returns 200").
+- The reviewer can only run these commands: ${allowedCommands.join(', ') || '(none)'}. Any other check must be verifiable from the diff alone.
 - Card ids: short slugs like c1, c2. Task ids: t1, t2 within a card.
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
 
-export function replanSystem(existingIds: string[]): string {
+export function replanSystem(existingIds: string[], allowedCommands: string[]): string {
   return `[role:planner] You are the lead engineer replanning a kanban board after part of the work failed.
 
 ${RULES_COMMON}
@@ -42,7 +43,7 @@ Planning rules:
 - Cards run IN PARALLEL unless linked by dependsOn. Use dependsOn only when a card truly needs another card's output.
 - Two parallel cards must not edit the same files.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained.
-- acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands.
+- acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands. The reviewer can only run: ${allowedCommands.join(', ') || '(none)'}.
 - Task ids: t1, t2 within a card.
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
@@ -99,7 +100,7 @@ Working rules:
 - Implement exactly the task. Do not start work that belongs to later tasks or other cards.
 - Run the project's tests/build for what you changed when that is cheap. Fix what you break.
 - Report honestly: if you could not finish, set done=false and list what remains in "remaining".
-- Put durable, non-obvious facts about the codebase into "learnings" (build quirks, conventions, gotchas). Keep it short.`;
+- Put durable, non-obvious facts about the codebase into "learnings" (build quirks, conventions, gotchas). Only facts that will still be true after this run: no progress notes, nothing about files that are still being written. Do not restate learnings already listed in your context. Usually zero to two items; an empty list is fine.`;
 }
 
 export function workerPrompt(board: Board, card: Card, task: Task, context: string): string {
@@ -159,20 +160,35 @@ Finish it, then answer with the JSON result object again.`;
 }
 
 export function checkerSystem(allowedCommands: string[]): string {
-  return `[role:checker] You are a strict but fair code reviewer verifying that a kanban card is complete.
+  return `[role:checker] You are a senior engineer reviewing a kanban card before it lands on the shared result branch. You are the last line of defence: what you approve is merged as is, nobody else looks at it, and the next cards build on it.
 
 ${RULES_COMMON}
 
-Review rules:
-- You are in the card's worktree. Read the diff and the surrounding code; do not edit anything.
-- The worktree already contains the other cards' merged work; what you approve lands on the result branch as is. Verify the card works in this combined state, not just on its own.
-- The only shell commands you may run are: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). Run one command per Bash call, with no pipes, && or other commands; anything else is denied without being executed.
-- Check every acceptance criterion. pass=true only if all are met and the change is sound (no obvious bugs, no leftover debug code, tests updated where relevant).
-- On pass=false, give specific, actionable feedback the implementing agent can act on: file, problem, what to do. Do not nitpick style.`;
+How to review:
+- You are in the card's worktree, which already contains the other cards' merged work. The diff is in your prompt; read the surrounding code as well, not just the changed lines, so you can judge whether the change fits the codebase and works in the combined state.
+- Run the checks. The only shell commands you may run are: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). One command per Bash call, no pipes, && or other commands; anything else is denied without being executed.
+- Read the tests, do not just run them. Tests that restate the implementation, skip the edge cases, or cannot fail do not count as coverage.
+- Think like the person who will maintain and build on this code. Trace the main path and the failure paths by hand. Look for boundary and off-by-one errors, unhandled errors, races, leaked resources, and inputs the author did not consider.
+- Compare against the specification the implementer was given and the project context: conventions, architecture notes, and what the other cards expect from this one.
+
+What blocks (pass=false):
+- An acceptance criterion is not met, or cannot be shown to be met.
+- A correctness bug, a failure mode that will bite users, or changed behaviour without a meaningful test.
+- A design that fights the codebase: logic duplicated from elsewhere, an API later cards will have to work around, conventions from the project context ignored.
+- Leftovers: debug output, dead code, commented-out code, secrets, unrelated changes.
+
+What does not block: style and naming preferences, alternatives that are not clearly better, problems that existed before this card (unless it made them worse), work that belongs to other cards. Put those in "notes"; they are recorded on the board without costing a rework round.
+
+Answer rules:
+- feedback: every blocking problem, each concrete and actionable (file, what is wrong, what to do). The implementing agent gets exactly this list and one session to address it, so be complete the first time.
+- notes: the non-blocking observations, if any.
+- summary: two or three sentences on what the card does and why it passes or fails, for the humans reading the board.`;
 }
 
 export function checkerPrompt(board: Board, card: Card, diffText: string, context: string): string {
   const summaries = card.tasks.filter((t) => t.result).map((t) => `- ${t.id} ${t.title}: ${t.result!.summary}`);
+  const spec = card.tasks.filter((t) => t.kind !== 'fix').map((t) => `### ${t.id} ${t.title}\n\n${t.instructions}`);
+  const fixes = card.tasks.filter((t) => t.kind === 'fix' && t.result).map((t) => `- ${t.title}: ${(t.feedback ?? []).join(' / ')}`);
   return `${context}
 
 ## Card under review: ${card.id} — ${card.title}
@@ -182,16 +198,21 @@ ${card.description}
 Acceptance criteria:
 ${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
 
-Implementing agents reported:
-${summaries.join('\n') || '- (no reports)'}
+## Specification the implementer was given
 
+${spec.join('\n\n') || '(none)'}
+
+## What the implementing agents reported
+
+${summaries.join('\n') || '- (no reports)'}
+${fixes.length ? `\nEarlier review rounds asked for these fixes (check they were addressed):\n${fixes.join('\n')}\n` : ''}
 ## Diff against ${board.runBranch}
 
 \`\`\`diff
 ${diffText || '(empty diff — nothing was changed)'}
 \`\`\`
 
-Verify the card and answer with the JSON result.`;
+Review the card and answer with the JSON result.`;
 }
 
 export function docsSystem(): string {

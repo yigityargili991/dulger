@@ -1,5 +1,6 @@
 // What every step of a run shares: the board and how to persist it, the registry the UI watches,
 // memory, prompt context, cost accounting, and one way to run an agent for a role.
+import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { getAdapter } from '../adapters/index.ts';
 import type { AdapterResult, AdapterRunOptions } from '../adapters/types.ts';
@@ -34,6 +35,8 @@ export interface Runtime {
   /** Persist the board, append a board event, and notify the UI. Every state change goes through here. */
   save(type: BoardEventType, extra?: Omit<BoardEvent, 'at' | 'type'>): void;
   addCost(card: Card | undefined, cost?: number, tokens?: number): void;
+  /** Run config.worktreeSetup in a freshly created worktree (installs dependencies and the like). */
+  setupWorktree(cwd: string): void;
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
   context(opts?: ContextOptions): string;
   agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>>;
@@ -87,6 +90,16 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       if (tokens) {
         board.tokens = (board.tokens ?? 0) + tokens;
         if (card) card.tokens = (card.tokens ?? 0) + tokens;
+      }
+    },
+    setupWorktree(cwd) {
+      if (!config.worktreeSetup) return;
+      try {
+        execSync(config.worktreeSetup, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60_000 });
+      } catch (err) {
+        const e = err as { stderr?: Buffer; message: string };
+        const tail = e.stderr?.toString().trim().split('\n').slice(-3).join(' | ') || e.message;
+        hooks.log?.(`worktree setup failed in ${cwd}: ${tail}`);
       }
     },
     context: (opts = {}) => buildCommonContext(repoRoot, board, memory, opts),

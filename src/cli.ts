@@ -236,6 +236,7 @@ function printBoard(board: Board): void {
     const deps = c.dependsOn.length ? dim(` after ${c.dependsOn.join(',')}`) : '';
     console.log(`  ${bold(c.id)} ${c.title}${deps}`);
     for (const t of c.tasks) console.log(dim(`     ${t.id} ${t.title}`));
+    for (const n of c.reviewNotes ?? []) console.log(yellow(`     note: ${n}`));
   }
 }
 

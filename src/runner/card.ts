@@ -22,7 +22,10 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
   const cwd = store.worktreeDir(rt.repoRoot, board.runId, card.id);
   card.branch = `dulger-wip/${board.runId}/${card.id}`;
   card.status = 'in_progress';
-  if (!existsSync(join(cwd, '.git'))) git.createWorktree(rt.repoRoot, cwd, card.branch, board.runBranch);
+  if (!existsSync(join(cwd, '.git'))) {
+    git.createWorktree(rt.repoRoot, cwd, card.branch, board.runBranch);
+    rt.setupWorktree(cwd);
+  }
   save('card_started', { cardId: card.id });
   log(`card ${card.id} started (${card.tasks.length} task${card.tasks.length === 1 ? '' : 's'})`);
 
@@ -51,17 +54,19 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
       if (signal.aborted) return { kind: 'aborted' };
       if (!verdict.pass) return { kind: 'rejected', verdict };
       if (!git.land(cwd, board.runBranch)) throw new Error(`result branch ${board.runBranch} moved while ${card.id} held the merge queue`);
-      return { kind: 'landed' };
+      return { kind: 'landed', verdict };
     });
 
     switch (outcome.kind) {
       case 'aborted':
         return;
       case 'landed':
+        recordNotes(card, outcome.verdict);
         card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
         return finishCard(rt, card, cwd, 'done');
       case 'rejected': {
         const { verdict } = outcome;
+        recordNotes(card, verdict);
         const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
         card.feedback.push(...feedback);
         card.attempts++;
@@ -87,7 +92,7 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
 }
 
 type Outcome =
-  | { kind: 'landed' }
+  | { kind: 'landed'; verdict: CheckResult }
   | { kind: 'aborted' }
   | { kind: 'rejected'; verdict: CheckResult }
   | { kind: 'conflict'; files: string };
@@ -146,6 +151,11 @@ async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult>
   }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
   rt.addCost(card, r.costUsd, r.tokens);
   return r.ok && r.output ? r.output : { pass: false, feedback: [`checker failed to run: ${r.error}`], summary: '' };
+}
+
+/** Keep the reviewer's non-blocking observations on the card; they are shown on the board, never sent back as work. */
+function recordNotes(card: Card, verdict: CheckResult): void {
+  if (verdict.notes?.length) card.reviewNotes = [...(card.reviewNotes ?? []), ...verdict.notes];
 }
 
 /** Put the card back to work with one fix task that carries `feedback`. */

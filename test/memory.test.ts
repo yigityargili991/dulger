@@ -4,7 +4,7 @@ import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
-import { extractPaths, learningId, memoryPath, openMemory, renderLearnings } from '../src/context/memory.ts';
+import { extractPaths, learningId, memoryPath, openMemory, renderLearnings, similar } from '../src/context/memory.ts';
 import { repoKey } from '../src/paths.ts';
 import { buildCommonContext, cardFiles } from '../src/context/common.ts';
 import { createBoard } from '../src/board/create.ts';
@@ -67,6 +67,53 @@ test('add de-duplicates by normalised text, merges files and counts sightings', 
   assert.ok(m.remove(all[0]!.id.slice(0, 6)), 'remove by id prefix');
   assert.equal(m.load().length, 0);
   assert.equal(m.remove('nope'), false);
+});
+
+test('paraphrases of one learning fold into it; different facts about the same files stay apart', () => {
+  const repo = tempRepo();
+  const m = openMemory(repo, cfg);
+  const base = { runId: 'r1', cardId: 'c1', harness: 'fake' as const, files: ['package.json'] };
+  // Four workers, four wordings, one fact (verbatim from a real run).
+  const added = m.add([
+    { ...base, text: 'Fresh worktrees have no node_modules; run `npm install` before `npm run typecheck` or tsc is not found (node_modules is gitignored). `npm test` works without it' },
+    { ...base, text: 'node_modules is not committed; run `npm install` in a fresh worktree before `npm run typecheck` (tsc is a devDependency).' },
+    { ...base, text: 'Fresh worktrees need `npm install` before `npm run typecheck`; `npm test` (node --test) runs .ts tests directly without it.' },
+    { ...base, text: 'Fresh worktrees have no node_modules; run `npm install` before `npm run typecheck` (tsc not found otherwise). `npm test` works without install since node:test is built in.' },
+  ]);
+  assert.equal(added.length, 1);
+  assert.equal(m.load().length, 1);
+  assert.equal(m.load()[0]!.seen, 4);
+  assert.match(m.load()[0]!.text, /^Fresh worktrees have no node_modules; run `npm install` before `npm run typecheck` or tsc/, 'the first wording is kept');
+
+  // Related but different facts, same file: kept apart.
+  const more = m.add([
+    { ...base, files: ['greet.js', 'package.json'], text: 'package.json is minimal ESM ("type": "module") with test script `node --test`; no dependencies or node_modules.' },
+    { ...base, files: ['greet.test.js', 'package.json'], text: '`node --test` auto-discovers *.test.js at the repo root; no config needed for ESM test files since package.json has "type": "module".' },
+    { ...base, files: ['src/file.ts'], text: 'loadFile in src/file.ts only swallows ENOENT; other fs errors (e.g. EISDIR) propagate to the caller.' },
+    { ...base, files: ['src/file.ts'], text: 'loadFile errors other than ENOENT (e.g. passing a directory) throw before enterRawMode; the uncaughtException handler still runs leaveRawMode harmlessly.' },
+  ]);
+  assert.equal(more.length, 4);
+  assert.equal(m.load().length, 5);
+  // The same fact seen on two unrelated cards is still one fact; files only tell where it was seen.
+  assert.ok(similar({ text: 'Adw.init() prints an Adwaita-WARNING about gtk-application-prefer-dark-theme; harmless.' }, { text: 'Running the tests prints an Adwaita-WARNING about gtk-application-prefer-dark-theme; harmless noise.' }));
+});
+
+test('add appends, so lines another process wrote in between are folded in on load', () => {
+  const repo = tempRepo();
+  const m = openMemory(repo, cfg);
+  const base = { runId: 'r1', cardId: 'c1', harness: 'fake' as const, files: [] as string[] };
+  m.add([{ ...base, text: 'Alpha needs the beta service running' }]);
+  const before = readFileSync(m.path, 'utf8');
+  // Another dulger process on a clone appends the same learning and a new one.
+  const [alpha] = m.load();
+  writeFileSync(m.path, before + JSON.stringify({ ...alpha, seen: 1 }) + '\n' + JSON.stringify({ ...alpha, id: learningId('Gamma is slow'), text: 'Gamma is slow', runId: 'r2' }) + '\n');
+  m.add([{ ...base, text: 'Delta must be built first' }]);
+  const all = m.load();
+  assert.deepEqual(all.map((l) => [l.text, l.seen]), [['Alpha needs the beta service running', 2], ['Gamma is slow', 1], ['Delta must be built first', 1]], 'nothing lost, sightings summed');
+  assert.equal(readFileSync(m.path, 'utf8').split('\n').filter(Boolean).length, 4, 'add appended one line and rewrote nothing');
+  const { kept, merged } = m.compact(repo);
+  assert.equal([kept, merged].join(), '3,1');
+  assert.equal(readFileSync(m.path, 'utf8').split('\n').filter(Boolean).length, 3, 'compact rewrote the log folded');
 });
 
 test('select ranks current run and file overlap first, respects the budget, skips stale learnings', () => {

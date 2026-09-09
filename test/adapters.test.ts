@@ -76,8 +76,10 @@ test('arg builders encode access mode', () => {
   const base = { prompt: 'p', systemPrompt: 's', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal } as const;
   const ro = buildClaudeArgs({ ...base, access: 'readonly', allowedCommands: ['npm test'] });
   assert.ok(ro.includes('dontAsk'));
-  assert.ok(ro.includes('--strict-mcp-config'), 'MCP servers are skipped by default');
-  assert.ok(!buildClaudeArgs({ ...base, access: 'readonly', mcp: true }).includes('--strict-mcp-config'));
+  assert.ok(ro.includes('--strict-mcp-config'), 'read-only agents never get MCP servers');
+  assert.ok(buildClaudeArgs({ ...base, access: 'readonly', mcp: true }).includes('--strict-mcp-config'), 'not even when MCP is on');
+  assert.ok(!buildClaudeArgs({ ...base, access: 'write', mcp: true }).includes('--strict-mcp-config'), 'write agents get them when MCP is on');
+  assert.ok(buildClaudeArgs({ ...base, access: 'write', mcp: false }).includes('--strict-mcp-config'), 'and not when it is off');
   assert.ok(ro.join(' ').includes('Bash(npm test)'));
   const rw = buildClaudeArgs({ ...base, access: 'write', schema: { type: 'object' } });
   assert.ok(rw.includes('bypassPermissions') && rw.includes('--json-schema'));

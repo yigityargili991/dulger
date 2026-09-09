@@ -1,6 +1,11 @@
 // Learnings reported by workers, stored as JSONL in the project data dir (see paths.ts).
+//
+// The file is an append-only log of sightings: `add` only appends, so concurrent runs on clones of one
+// repository never lose each other's lines, and `load` folds the log into one entry per learning. Two
+// sightings are the same learning when their ids match (normalised text) or their wording overlaps
+// enough (see `similar`), which is how paraphrases from different workers collapse.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { STATE_DIR, type MemoryConfig } from '../config.ts';
 import { projectDataDir } from '../paths.ts';
@@ -36,7 +41,8 @@ export interface MemoryStore {
   /** Returns the entries that were new (duplicates are merged). */
   add(entries: NewLearning[]): Learning[];
   remove(id: string): boolean;
-  compact(root: string): { kept: number; dropped: Learning[] };
+  /** Drop learnings whose files are all gone and rewrite the log folded (`merged` = sightings collapsed). */
+  compact(root: string): { kept: number; dropped: Learning[]; merged: number };
   /** Best first, within the configured budget. */
   select(opts?: SelectOptions): Learning[];
 }
@@ -79,6 +85,61 @@ function parse(line: string): Learning | undefined {
   }
 }
 
+const STOPWORDS = new Set('the a an is are it in on of to so and or for with that this be as by at its into from can will when than then there here they them was were has have had do does did not no only just also any all'.split(' '));
+
+/** Content words of a learning: lowercase, no stopwords, crude plural stripping. */
+export function contentWords(text: string): Set<string> {
+  const out = new Set<string>();
+  for (let w of text.toLowerCase().split(/[^a-z0-9_]+/)) {
+    if (w.length < 3 || STOPWORDS.has(w)) continue;
+    if (w.length > 4 && w.endsWith('s')) w = w.slice(0, -1);
+    out.add(w);
+  }
+  return out;
+}
+
+/**
+ * Same learning in other words? Overlap coefficient (shared words over the smaller word set) of at
+ * least 0.65, both sides substantial. Calibrated on paraphrases workers actually produced: duplicates
+ * scored 0.64-0.93, distinct facts 0.13-0.64. Files are deliberately not compared: a learning's files
+ * are the card it was seen on, not its subject, and the same fact surfaces on different cards.
+ */
+export function similar(a: Pick<Learning, 'text'>, b: Pick<Learning, 'text'>): boolean {
+  const wa = contentWords(a.text);
+  const wb = contentWords(b.text);
+  const smaller = Math.min(wa.size, wb.size);
+  if (smaller < 4) return false;
+  let shared = 0;
+  for (const w of wa) if (wb.has(w)) shared++;
+  return shared / smaller >= 0.65;
+}
+
+/** Merge a later sighting into the learning it belongs to. The first wording and origin win. */
+function absorb(into: Learning, sighting: Learning): void {
+  into.seen += sighting.seen;
+  into.files = [...new Set([...into.files, ...sighting.files])];
+  if (sighting.lastSeenAt > into.lastSeenAt) into.lastSeenAt = sighting.lastSeenAt;
+  if (sighting.createdAt && sighting.createdAt < into.createdAt) into.createdAt = sighting.createdAt;
+}
+
+/** One entry per learning: sightings with the same id, then paraphrases, are folded into the first. */
+export function fold(sightings: Learning[]): Learning[] {
+  const out: Learning[] = [];
+  const byId = new Map<string, Learning>();
+  for (const s of sightings) {
+    const match = byId.get(s.id) ?? out.find((l) => similar(l, s));
+    if (match) {
+      absorb(match, s);
+      byId.set(s.id, match);
+      continue;
+    }
+    const l = { ...s, files: [...s.files] };
+    out.push(l);
+    byId.set(l.id, l);
+  }
+  return out;
+}
+
 function score(l: Learning, opts: SelectOptions, files: Set<string>): number {
   let s = 0;
   if (opts.runId && l.runId === opts.runId) s += 4;
@@ -92,12 +153,20 @@ function score(l: Learning, opts: SelectOptions, files: Set<string>): number {
 export function openMemory(repoRoot: string, cfg: MemoryConfig): MemoryStore {
   const path = memoryPath(repoRoot, cfg);
 
-  const load = (): Learning[] => {
+  const readLog = (): Learning[] => {
     if (!existsSync(path)) return [];
     return readFileSync(path, 'utf8').split('\n').map(parse).filter((l): l is Learning => Boolean(l));
   };
+  const load = (): Learning[] => fold(readLog());
 
-  const write = (items: Learning[]): void => {
+  const append = (lines: Learning[]): void => {
+    if (!lines.length) return;
+    mkdirSync(join(path, '..'), { recursive: true });
+    appendFileSync(path, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  };
+
+  /** Rewrite the whole log (remove, compact). Atomic via rename. */
+  const rewrite = (items: Learning[]): void => {
     mkdirSync(join(path, '..'), { recursive: true });
     const tmp = path + '.tmp';
     writeFileSync(tmp, items.map((l) => JSON.stringify(l)).join('\n') + (items.length ? '\n' : ''));
@@ -109,28 +178,27 @@ export function openMemory(repoRoot: string, cfg: MemoryConfig): MemoryStore {
     load,
 
     add(entries) {
-      const items = load();
-      const byId = new Map(items.map((l) => [l.id, l]));
+      const known = load();
       const now = new Date().toISOString();
       const added: Learning[] = [];
+      const lines: Learning[] = [];
       for (const e of entries) {
         const text = e.text.trim();
         if (!text) continue;
         const id = learningId(text);
         const files = [...new Set(e.files.map((f) => f.trim()).filter(Boolean))];
-        const existing = byId.get(id);
+        const existing = known.find((l) => l.id === id) ?? known.find((l) => similar(l, { text }));
         if (existing) {
-          existing.seen++;
-          existing.lastSeenAt = now;
-          existing.files = [...new Set([...existing.files, ...files])];
+          // A sighting of a known learning: append it under the known id so `fold` needs no similarity pass to merge it.
+          lines.push({ ...existing, files, lastSeenAt: now, seen: 1 });
           continue;
         }
         const l: Learning = { id, text, files, runId: e.runId, cardId: e.cardId, harness: e.harness, createdAt: now, lastSeenAt: now, seen: 1 };
-        byId.set(id, l);
-        items.push(l);
+        known.push(l);
+        lines.push({ ...l });
         added.push(l);
       }
-      if (entries.length) write(items);
+      append(lines);
       return added;
     },
 
@@ -138,17 +206,19 @@ export function openMemory(repoRoot: string, cfg: MemoryConfig): MemoryStore {
       const items = load();
       const rest = items.filter((l) => l.id !== id && !l.id.startsWith(id));
       if (rest.length === items.length) return false;
-      write(rest);
+      rewrite(rest);
       return true;
     },
 
     compact(root) {
-      const items = load();
+      const log = readLog();
+      const items = fold(log);
       const stale = (l: Learning) => l.files.length > 0 && l.files.every((f) => !existsSync(join(root, f)));
       const dropped = items.filter(stale);
       const kept = items.filter((l) => !stale(l));
-      if (dropped.length) write(kept);
-      return { kept: kept.length, dropped };
+      const merged = log.length - items.length;
+      if (dropped.length || merged) rewrite(kept);
+      return { kept: kept.length, dropped, merged };
     },
 
     select(opts = {}) {

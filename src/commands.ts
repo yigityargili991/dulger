@@ -176,9 +176,9 @@ export function memoryCommand(repoRoot: string, config: Config, sub: string, arg
       return;
     }
     case 'compact': {
-      const { kept, dropped } = memory.compact(repoRoot);
+      const { kept, dropped, merged } = memory.compact(repoRoot);
       for (const l of dropped) console.log(dim(`dropped ${l.id}: ${l.text}`));
-      console.log(`${kept} kept, ${dropped.length} dropped`);
+      console.log(`${kept} kept, ${dropped.length} dropped, ${merged} duplicate sighting${merged === 1 ? '' : 's'} folded`);
       return;
     }
     case 'path':

@@ -83,6 +83,41 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.ok(idx(/card c3 started/) > idx(/card c1 done/) && idx(/card c3 started/) > idx(/card c2 done/));
 });
 
+test('a task whose agent fails is tried again in a fresh session before the card gives up', async () => {
+  let c1Calls = 0;
+  const worker: FakeScript['worker'] = (o, i) => {
+    if (/Card id: c1\b/.test(o.prompt) && ++c1Calls === 1) throw new Error('simulated agent crash');
+    return DEFAULT_FAKE_SCRIPT.worker!(o, i);
+  };
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }), delayMs: 1 }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-retry');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'done');
+  assert.equal(c1.tasks[0]!.attempts, 2, 'one failure, one success');
+  assert.equal(c1.attempts, 0, 'a task retry is not a review round');
+  assert.ok(events.some((e) => /task c1\/t1 failed; trying again \(2\/2\)/.test(e)));
+  const log = readFileSync(join(repo, '.dulger', 'runs', 'run-retry', 'events.jsonl'), 'utf8');
+  assert.match(log, /"type":"task_retry"/);
+
+  // Out of tries: the card fails, no fix task, dependents blocked.
+  c1Calls = 0;
+  const always: FakeScript['worker'] = (o, i) => { if (/Card id: c1\b/.test(o.prompt)) throw new Error('still broken'); return DEFAULT_FAKE_SCRIPT.worker!(o, i); };
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker: always, delayMs: 1 }));
+  const board2 = createBoard(repo, 'demo', 'run-retry-2');
+  const orch2 = createOrchestrator(repo, board2, { ...config, docs: false, maxReplans: 0 }, {});
+  await orch2.plan();
+  await orch2.execute();
+  assert.equal(board2.cards[0]!.status, 'failed');
+  assert.equal(board2.cards[0]!.tasks[0]!.attempts, 2);
+  assert.deepEqual(board2.cards[0]!.tasks.map((t) => t.id), ['t1']);
+  assert.equal(board2.cards[2]!.status, 'blocked');
+});
+
 test('a card that keeps failing blocks its dependents; docs still run for merged work', async () => {
   const script: FakeScript = {
     ...DEFAULT_FAKE_SCRIPT,

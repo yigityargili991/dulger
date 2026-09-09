@@ -17,7 +17,13 @@ export interface AdapterRunOptions {
   signal: AbortSignal;
   /** Bash command prefixes a readonly agent may run (checker running tests). */
   allowedCommands?: string[];
-  /** Claude only: load the user's MCP servers. Off by default (see config.claude.mcp). */
+  /**
+   * Give write agents the user's MCP servers (config.claude.mcp, on by default); read-only agents never get
+   * them. Only the Claude adapter acts on it: Claude Code inlines every MCP tool schema when ToolSearch is
+   * unavailable (~70k tokens per read-only agent) and has --strict-mcp-config to skip them. Codex showed no
+   * measurable prompt cost from its configured servers under `codex exec`, and its `-c mcp_servers={}`
+   * override merges into the config file rather than replacing it, so there is nothing to switch off there.
+   */
   mcp?: boolean;
 }
 

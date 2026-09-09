@@ -16,7 +16,8 @@ First release.
 - `--harness fake` runs the whole pipeline without spending tokens.
 - Runs report dollars when the harness does (Claude Code) and tokens for every harness (Codex reports
   no prices).
-- Claude Code agents skip the user's MCP servers unless `claude.mcp` is set.
+- Workers and the docs agent get the user's MCP servers (off with `claude.mcp: false`); the planner and
+  checker never do, since their restricted tool set would inline every schema for tools they may not call.
 - The checker reviews like a senior engineer: tests are read, not just run; design fit and failure modes
   count; non-blocking notes are recorded on the board instead of costing a rework round.
 - The goal is the contract: the planner must deliver what it asks with the technologies it names, state
@@ -28,6 +29,8 @@ First release.
   slash-commands for boards, reports, memory and settings.
 - Every run ends with a report of what landed (per card summary, files, review verdict and notes,
   failures, docs, diff stat, next steps); `dulger report` prints it again.
+- A task whose agent crashes, stalls or answers badly is tried again in a fresh session (up to
+  `maxAttempts`) instead of failing the card on the first transient error.
 - `worktreeSetup` runs a command (e.g. `npm ci`) once in every new worktree.
 - The planner is told which commands the checker may run, and the default allow-list includes typecheck,
   lint and build scripts.

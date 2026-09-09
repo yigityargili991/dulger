@@ -8,9 +8,10 @@ const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git 
 
 export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   const args = ['-p', opts.prompt, '--output-format', 'stream-json', '--verbose'];
-  // The user's MCP servers would be inlined as tool schemas (tens of thousands of tokens per agent when
-  // ToolSearch is not available) and attach mid-session, invalidating the prompt cache. Skip them unless asked.
-  if (!opts.mcp) args.push('--strict-mcp-config');
+  // Read-only agents get a restricted tool set without ToolSearch, so every MCP tool schema would be inlined
+  // (~70k tokens per agent) for tools their permission mode would deny anyway. Write agents defer MCP tools
+  // behind ToolSearch, which costs about a thousand tokens, so they get the user's servers unless configured off.
+  if (!opts.mcp || opts.access === 'readonly') args.push('--strict-mcp-config');
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
   else args.push('--append-system-prompt', opts.systemPrompt);
   if (opts.schema) args.push('--json-schema', JSON.stringify(opts.schema));

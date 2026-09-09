@@ -131,7 +131,7 @@ export type AgentEvent =
 export type BoardEventType =
   | 'planned' | 'replanned' | 'replan_failed'
   | 'card_started' | 'card_review' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
-  | 'task_started' | 'task_done' | 'task_failed' | 'learnings'
+  | 'task_started' | 'task_done' | 'task_failed' | 'task_retry' | 'learnings'
   | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'
   | 'aborted' | 'finished';
 

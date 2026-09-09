@@ -121,7 +121,7 @@ Optional `<repo>/.dulger/config.json`; CLI flags override it.
   },
   "checker": { "allowedCommands": ["npm test", "npm run typecheck", "pytest"] },
   "worktreeSetup": "npm ci",
-  "claude": { "mcp": false },
+  "claude": { "mcp": true },
   "codex": { "bypassSandbox": false },
   "memory": { "location": "user", "maxItems": 40, "maxChars": 6000 }
 }
@@ -190,11 +190,13 @@ re-included so they can be committed.
 - Planner and checker are read-only: Claude Code gets only Read/Grep/Glob and a short allow-list of
   Bash commands (plus `checker.allowedCommands`); Codex gets `--sandbox read-only`.
 - Agents are told never to run git commands; dulger commits, merges and cleans up.
-- Claude Code agents do not load your MCP servers (`--strict-mcp-config`). With the restricted tool set the
-  planner and checker use, every MCP tool schema would be inlined into the prompt (tens of thousands of
-  tokens per agent), and servers attaching mid-session invalidate the prompt cache. Set
-  `"claude": { "mcp": true }` if your agents need them.
-- An agent that produces no events for `stallTimeoutSec` is killed and counted as a failed attempt.
+- Workers and the docs agent get your MCP servers, as they would in Claude Code itself; the tool schemas
+  are deferred behind ToolSearch, so that costs about a thousand tokens per agent. The planner and checker
+  never get them: with their restricted tool set every MCP tool schema would be inlined (tens of
+  thousands of tokens per agent) for tools their permission mode denies anyway. Set
+  `"claude": { "mcp": false }` to keep MCP servers away from the workers too.
+- An agent that produces no events for `stallTimeoutSec` is killed. A task whose agent was killed, crashed
+  or answered badly is tried again in a fresh session, up to `maxAttempts` times, before the card fails.
 - `Ctrl-C` stops all agents, saves the board, and prints the `dulger resume` command.
 
 ## Adding a harness

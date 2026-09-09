@@ -8,7 +8,7 @@ import * as store from '../board/store.ts';
 import { allTerminal, blockUnreachable, readyCards } from '../board/scheduler.ts';
 import { PLANNER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
-import type { AgentRegistry } from './agentProcess.ts';
+import { markFailed, type AgentRegistry } from './agentProcess.ts';
 import { runCard } from './card.ts';
 import { runDocs } from './docs.ts';
 import { createRuntime, type AgentRequest, type RunHooks } from './runtime.ts';
@@ -110,6 +110,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       for (const card of readyCards(board, config.concurrency)) {
         inFlight.set(card.id, runCard(rt, card).catch((err) => {
           card.status = 'failed';
+          markFailed(rt.registry, card.id);
           card.feedback.push(`internal error: ${(err as Error).message}`);
           log(`card ${card.id} crashed: ${(err as Error).message}`);
           save('card_failed', { cardId: card.id, message: (err as Error).message });

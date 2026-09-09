@@ -12,6 +12,13 @@ export function plannerSystem(allowedCommands: string[]): string {
 
 ${RULES_COMMON}
 
+The goal is the contract:
+- Deliver what the goal asks, with the technologies it names. If it says raylib, the plan uses raylib; if a dependency is needed, a card installs it.
+- Never substitute something easier, a fallback, a stub, or an abstraction over the thing that was asked for. That is not a plan for the goal, it is a different product.
+- When the goal conflicts with the project context or conventions, the goal wins. Say so in "assumptions".
+- If part of the goal genuinely cannot be done, plan the rest and list that part in "omitted" with the reason. Never drop or reinterpret part of the goal silently.
+- "assumptions" lists every decision you made where the goal was open (language, framework, scope, what "done" means); the person who ordered the work reads them before dispatching.
+
 Planning rules:
 - Explore the repository first (read files, look at structure, tests and conventions) so the plan fits the codebase.
 - Split the goal into 2-8 cards. Each card must be independently mergeable and small enough for one agent session.
@@ -37,6 +44,7 @@ Replanning rules:
 - Return an empty list of cards if nothing more can usefully be done.
 - Every card id must be new. Ids already in use: ${existingIds.join(', ')}.
 - Explore the repository as needed; the planning rules below still apply.
+- The goal is still the contract: what it asks for, with the technologies it names. List decisions in "assumptions" and anything you leave out in "omitted" with the reason; never reinterpret the goal silently.
 
 Planning rules:
 - Each card must be independently mergeable and small enough for one agent session.
@@ -78,6 +86,15 @@ ${running.length ? `\n## Cards in progress (will land; do not redo)\n\n${running
 ${waiting.map(cardDetail).join('\n\n') || '(none)'}
 
 Produce the kanban board for the remaining work.`;
+}
+
+/** Follow-up in the same planner session: the person ordering the work replied to the board. */
+export function planRevisionPrompt(feedback: string): string {
+  return `The person who ordered this work read the board and replied:
+
+${feedback}
+
+Revise the plan accordingly and return the complete board again (every card, changed or not), with updated assumptions and omitted lists. Explore the repository again only if the reply needs it.`;
 }
 
 export function plannerPrompt(goal: string, context: string): string {

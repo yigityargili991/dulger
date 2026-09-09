@@ -7,6 +7,7 @@ import * as store from './board/store.ts';
 import { resetInterrupted } from './board/scheduler.ts';
 import * as git from './git/worktree.ts';
 import { createOrchestrator } from './runner/orchestrator.ts';
+import { createBoard } from './board/create.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { worktreesDir } from './paths.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
@@ -203,4 +204,50 @@ export function printBoard(board: Board): void {
     for (const t of c.tasks) console.log(dim(`     ${t.id} ${t.title}`));
     for (const n of c.reviewNotes ?? []) console.log(yellow(`     note: ${n}`));
   }
+  printPlanNotes(board);
+}
+
+/** What the planner decided on its own and what it left out: read this before dispatching. */
+export function printPlanNotes(board: Board): void {
+  const p = board.plan;
+  if (!p) return;
+  for (const a of p.assumptions) console.log(yellow(`  assumes: ${a}`));
+  for (const o of p.omitted) console.log(red(`  left out: ${o}`));
+}
+
+/**
+ * Plan with the planner in a conversation: show the board, take feedback, revise in the same session,
+ * until the person says go (dispatch) or cancel (delete the run). Ctrl-C leaves the run in the backlog.
+ */
+export async function orderRun(repoRoot: string, goal: string, config: Config, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
+  const board = createBoard(repoRoot, goal);
+  const log = (msg: string) => console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`);
+  const orch = createOrchestrator(repoRoot, board, config, { log });
+  await orch.plan();
+  while (true) {
+    console.log();
+    printBoard(board);
+    console.log(dim(`\nReply to change the plan (same planner session). ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog. Edit ${store.boardPath(repoRoot, board.runId)} by hand if you prefer.`));
+    const answer = await ask(`${bold(cyan('order'))} ${dim('›')} `);
+    if (answer === undefined) {
+      console.log(dim(`kept in the backlog; \`dulger resume ${board.runId}\` runs it later`));
+      return { landed: 0, aborted: true };
+    }
+    const text = answer.trim();
+    if (!text) continue;
+    if (/^\/?(go|run|dispatch|yes|y)$/i.test(text)) break;
+    if (/^\/?(cancel|abort|drop|discard)$/i.test(text)) {
+      store.removeRun(repoRoot, board.runId);
+      git.deleteBranch(repoRoot, board.runBranch);
+      console.log(dim(`run ${board.runId} deleted`));
+      return { landed: 0, aborted: true };
+    }
+    try {
+      await orch.plan(text);
+    } catch (err) {
+      console.error(red('error: ') + (err as Error).message);
+    }
+  }
+  board.cards = store.loadBoard(repoRoot, board.runId).cards;
+  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
 }

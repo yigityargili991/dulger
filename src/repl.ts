@@ -6,7 +6,7 @@ import { createBoard } from './board/create.ts';
 import * as git from './git/worktree.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
-import { CliError, clean, latestRun, memoryCommand, mergeRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import type { HarnessName } from './types.ts';
 
 export interface Session {
@@ -18,6 +18,7 @@ export interface Session {
 }
 
 const HELP = `Type a goal to plan and run it. Commands:
+  /order [goal]       plan with the planner in a conversation, then dispatch
   /board [runId]      print a run's board (latest when omitted)
   /report [runId]     print what a run landed
   /runs               list runs
@@ -46,9 +47,13 @@ export async function repl(repoRoot: string, session: Session, version: string):
     const text = line.trim();
     if (!text) continue;
     try {
-      if (text.startsWith('/')) {
-        if (await command(text, repoRoot, session, config)) break;
+      if (text.startsWith('/') || /^(exit|quit|q|help|\?)$/i.test(text)) {
+        if (await command(text.startsWith('/') ? text : `/${text}`, repoRoot, session, config)) break;
       } else {
+        if (text.split(/\s+/).length < 3) {
+          const a = await ask(`Run ${JSON.stringify(text)} as a goal? ${dim('[y/N]')} `);
+          if (!a || !/^\s*y/i.test(a)) continue;
+        }
         await goal(text, repoRoot, session, config());
       }
     } catch (err) {
@@ -88,6 +93,21 @@ async function command(text: string, repoRoot: string, session: Session, config:
       const r = await resumeRun(repoRoot, config(), args[0], { quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0]));
+        await offerMerge(repoRoot, board.runId, board.runBranch);
+      }
+      return false;
+    }
+    case 'order': {
+      let text = rest;
+      if (!text) {
+        const a = await ask(`What should be built? ${dim('(Ctrl-C to go back)')} `);
+        if (!a?.trim()) return false;
+        text = a.trim();
+      }
+      if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /set dirty on)');
+      const r = await orderRun(repoRoot, text, config(), { quiet: session.quiet, merge: false, interactive: true });
+      if (!r.aborted && r.landed > 0) {
+        const board = store.loadBoard(repoRoot, latestRun(repoRoot));
         await offerMerge(repoRoot, board.runId, board.runBranch);
       }
       return false;

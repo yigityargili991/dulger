@@ -44,6 +44,10 @@ export function branchExists(cwd: string, branch: string): boolean {
   return git(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { allowFail: true }) !== '';
 }
 
+export function deleteBranch(cwd: string, branch: string): void {
+  git(cwd, ['branch', '-D', branch], { allowFail: true });
+}
+
 export function createBranch(cwd: string, branch: string, from: string): void {
   git(cwd, ['branch', '--no-track', branch, from]);
 }

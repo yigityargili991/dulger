@@ -12,7 +12,10 @@ dulger run "Add CSV export to the reports page"
 
 1. **Planner** (the main agent) explores the repo and writes a kanban board: cards with acceptance
    criteria and 1–4 sequential tasks each, plus dependencies between cards.
-2. You review the board (edit the JSON if you like) and press Enter.
+2. You review the board and press Enter. The planner's **assumptions** (decisions it made where the goal
+   was open) and anything it **left out** of the goal are printed with the board, so a substitution
+   never slips through: the goal is the contract, and it wins over the project conventions when they
+   conflict. Edit the JSON, or use `/order` to talk it through, if you want changes.
 3. **Workers** execute tasks. Every card gets its own git branch and worktree, so cards run in parallel
    without touching each other. A worker that reports `done: false` is resumed in the same session.
 4. A **checker** reviews each finished card the way a senior engineer reviews a pull request: it runs
@@ -66,9 +69,15 @@ branch, so the next goal builds on it. Slash-commands cover the rest: `/board`, 
 `/resume`, `/merge`, `/memory`, `/clean`, `/set` (harness, concurrency, attempts, model, …), `/status`,
 `/help`, `/quit`. Ctrl-C during a run stops the agents and returns to the prompt with the board saved.
 
+`/order <goal>` (or `dulger order "<goal>"`) plans in a conversation instead of a single shot: the planner
+proposes a board, you reply in plain words ("use raylib, not a terminal backend", "split c2", "drop the
+docs card"), and it revises in the same session, keeping what it learned about the repository. `go`
+dispatches, `cancel` deletes the run.
+
 ```
 dulger                           interactive prompt
 dulger run "<goal>" [options]     plan a board for the goal, then execute it
+dulger order "<goal>" [options]   plan in a conversation with the planner, then execute
 dulger resume [runId]             continue an interrupted run
 dulger board [runId]              print a run's board
 dulger report [runId]             print what a run landed

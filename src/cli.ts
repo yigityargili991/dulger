@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { loadConfig, type Config } from './config.ts';
 import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
-import { CliError, clean, memoryCommand, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, memoryCommand, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { repl } from './repl.ts';
 import { red, cursor } from './ui/ansi.ts';
 import type { HarnessName } from './types.ts';
@@ -15,6 +15,7 @@ const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / C
 Usage:
   dulger                          interactive prompt: type goals, /help for commands
   dulger run "<goal>" [options]   plan a board for the goal, then execute it
+  dulger order "<goal>" [options] plan in a conversation with the planner, then execute
   dulger resume <runId> [options] continue an interrupted run
   dulger board [runId]            print a run's board (latest when omitted)
   dulger report [runId]           print what a run landed (latest when omitted)
@@ -81,6 +82,13 @@ async function main(argv: string[]): Promise<void> {
       if (!arg) throw new CliError('dulger run needs a goal, e.g. dulger run "add a /health endpoint"');
       if (!v['allow-dirty'] && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them or pass --allow-dirty)');
       const r = await runBoard(repoRoot, createBoard(repoRoot, arg), config, { ...runOpts, yes: Boolean(v.yes), fresh: true });
+      if (r.aborted) process.exitCode = 130;
+      break;
+    }
+    case 'order': {
+      if (!arg) throw new CliError('dulger order needs a goal');
+      if (!v['allow-dirty'] && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them or pass --allow-dirty)');
+      const r = await orderRun(repoRoot, arg, config, runOpts);
       if (r.aborted) process.exitCode = 130;
       break;
     }

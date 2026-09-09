@@ -216,6 +216,31 @@ test('worktreeSetup runs once in every new worktree, before its first agent', as
   assert.deepEqual(failing.cards.map((c) => c.status), ['done', 'done', 'done'], 'a failed setup does not stop the card');
 });
 
+test('plan(feedback) revises in the same planner session and records assumptions', async () => {
+  const seen: Array<{ resume?: string; prompt: string }> = [];
+  const defaultCards = (DEFAULT_FAKE_SCRIPT.planner as PlannerResult).cards;
+  const planner: FakeScript['planner'] = (o, i) => {
+    seen.push({ resume: o.resumeSessionId, prompt: o.prompt });
+    return i === 0
+      ? { assumptions: ['Assumed TypeScript'], omitted: ['No deploy: nowhere to deploy to'], cards: defaultCards }
+      : { assumptions: ['Assumed TypeScript', 'Dropped c3 as asked'], omitted: [], cards: defaultCards.slice(0, 2) };
+  };
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, planner, delayMs: 1 }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-order');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, {});
+  await orch.plan();
+  assert.equal(board.cards.length, 3);
+  assert.deepEqual(board.plan, { sessionId: 'fake-planner-0', assumptions: ['Assumed TypeScript'], omitted: ['No deploy: nowhere to deploy to'], revisions: 0 });
+  await orch.plan('drop the third card');
+  assert.equal(board.cards.length, 2);
+  assert.equal(board.plan?.revisions, 1);
+  assert.deepEqual(board.plan?.omitted, []);
+  assert.equal(seen[1]?.resume, 'fake-planner-0', 'the revision continues the planner session');
+  assert.match(seen[1]!.prompt, /drop the third card/);
+  assert.equal(store.loadBoard(repo, 'run-order').plan?.revisions, 1, 'the revision is persisted');
+});
+
 test('abort stops dispatching and leaves the board resumable', async () => {
   registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 50 }));
   const repo = tempRepo();

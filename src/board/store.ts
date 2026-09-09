@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR } from '../config.ts';
 import { worktreesDir } from '../paths.ts';
@@ -35,6 +35,11 @@ export function loadBoard(repoRoot: string, runId: string): Board {
   const board = JSON.parse(readFileSync(boardPath(repoRoot, runId), 'utf8')) as Board;
   validateBoard(board);
   return board;
+}
+
+/** Delete a run's directory (board, events, logs). The caller removes its branch. */
+export function removeRun(repoRoot: string, runId: string): void {
+  rmSync(runDir(repoRoot, runId), { recursive: true, force: true });
 }
 
 export function listRuns(repoRoot: string): string[] {

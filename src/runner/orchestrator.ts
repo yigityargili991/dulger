@@ -11,7 +11,7 @@ import * as P from '../roles/prompts.ts';
 import type { AgentRegistry } from './agentProcess.ts';
 import { runCard } from './card.ts';
 import { runDocs } from './docs.ts';
-import { createRuntime, type RunHooks } from './runtime.ts';
+import { createRuntime, type AgentRequest, type RunHooks } from './runtime.ts';
 import type { Board, Card, PlannerResult } from '../types.ts';
 
 export type OrchestratorHooks = RunHooks;
@@ -19,8 +19,8 @@ export type OrchestratorHooks = RunHooks;
 export interface Orchestrator {
   board: Board;
   registry: AgentRegistry;
-  /** Run the planner and populate the board. */
-  plan(): Promise<void>;
+  /** Run the planner and populate the board. With `feedback`, continue the planner's session and revise the board. */
+  plan(feedback?: string): Promise<void>;
   /** Run all cards + docs until the board is terminal. */
   execute(): Promise<void>;
   abort(): void;
@@ -31,17 +31,41 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   const rt = createRuntime(repoRoot, board, config, hooks, ctrl.signal);
   const { log, save } = rt;
 
-  async function plan(): Promise<void> {
-    log('planning…');
-    const r = await rt.agent<PlannerResult>('planner', {
-      prompt: P.plannerPrompt(board.goal, rt.context({ root: repoRoot })), systemPrompt: P.plannerSystem(config.checker.allowedCommands), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
-    }, { logName: 'planner' });
+  /** First call: plan the goal. Later calls: revise the board with the person's feedback, in the planner's own session. */
+  async function plan(feedback?: string): Promise<void> {
+    const revising = feedback !== undefined;
+    const revision = revising ? (board.plan?.revisions ?? 0) + 1 : 0;
+    log(revising ? `revising the plan (${revision})…` : 'planning…');
+
+    const r = await rt.agent<PlannerResult>('planner', plannerRequest(feedback), { logName: revising ? `planner.rev${revision}` : 'planner' });
     rt.addCost(undefined, r.costUsd, r.tokens);
     if (!r.ok || !r.output?.cards?.length) throw new Error(`planner failed: ${r.error ?? 'no cards returned'}`);
-    board.cards = store.cardsFromPlan(r.output);
-    store.validateBoard(board);
-    save('planned', { data: { cards: board.cards.length } });
-    log(`planned ${board.cards.length} cards`);
+
+    applyPlan(r.output, r.sessionId, revision);
+    save('planned', { data: { cards: board.cards.length, revision } });
+    log(`${revising ? 'revised' : 'planned'}: ${board.cards.length} cards`);
+  }
+
+  /** A follow-up in the planner's session when there is one to continue; otherwise a fresh plan, with the feedback appended to the goal. */
+  function plannerRequest(feedback?: string): AgentRequest {
+    const base = { systemPrompt: P.plannerSystem(config.checker.allowedCommands), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly' as const };
+    const session = board.plan?.sessionId;
+    if (feedback !== undefined && session) return { ...base, prompt: P.planRevisionPrompt(feedback), resumeSessionId: session };
+    const goal = feedback === undefined ? board.goal : `${board.goal}\n\nThe person ordering the work added: ${feedback}`;
+    return { ...base, prompt: P.plannerPrompt(goal, rt.context({ root: repoRoot })) };
+  }
+
+  /** Replace the cards with the planner's answer; keep the old ones if the new board is invalid. */
+  function applyPlan(output: PlannerResult, sessionId: string | undefined, revision: number): void {
+    const previous = board.cards;
+    board.cards = store.cardsFromPlan(output);
+    try {
+      store.validateBoard(board);
+    } catch (err) {
+      board.cards = previous;
+      throw err;
+    }
+    board.plan = { sessionId, assumptions: output.assumptions ?? [], omitted: output.omitted ?? [], revisions: revision };
   }
 
   /** Ask the planner for a new set of remaining cards after `failed` cards gave up. Leaves the board as is when it cannot. */

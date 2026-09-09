@@ -4,6 +4,8 @@ const strArray = { type: 'array', items: { type: 'string' } };
 export const PLANNER_SCHEMA = {
   type: 'object',
   properties: {
+    assumptions: { ...strArray, description: 'decisions you made where the goal was open: language, framework, scope, conflicts you resolved' },
+    omitted: { ...strArray, description: 'parts of the goal you did not plan, each with the reason (empty when the board covers the whole goal)' },
     cards: {
       type: 'array',
       items: {
@@ -29,7 +31,7 @@ export const PLANNER_SCHEMA = {
       },
     },
   },
-  required: ['cards'],
+  required: ['assumptions', 'omitted', 'cards'],
   additionalProperties: false,
 } as const;
 

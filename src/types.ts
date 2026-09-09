@@ -9,6 +9,10 @@ export type HarnessName = 'claude' | 'codex' | 'fake';
 // ---- Structured results returned by each role (enforced via JSON schema) ----
 
 export interface PlannerResult {
+  /** Decisions the planner made where the goal was open (language, framework, scope). */
+  assumptions?: string[];
+  /** Parts of the goal the planner did not plan, each with the reason. */
+  omitted?: string[];
   cards: Array<{
     id: string;
     title: string;
@@ -89,6 +93,8 @@ export interface Board {
   tokens?: number;
   /** Times the planner was asked to replan after a card failed. */
   replans?: number;
+  /** What the planner decided on its own, what it left out, and the session to continue the conversation. */
+  plan?: { sessionId?: string; assumptions: string[]; omitted: string[]; revisions: number };
 }
 
 // ---- Live agent status (derived from adapter events, shown in the TUI) ----

@@ -1,9 +1,8 @@
 // The main loop: plan -> approve -> dispatch cards (parallel) -> check -> merge back -> docs.
 import { existsSync, mkdirSync, rmdirSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { getAdapter } from '../adapters/index.ts';
-import { type Config, roleConfig, STATE_DIR } from '../config.ts';
+import { type Config, roleConfig } from '../config.ts';
 import { buildCommonContext, cardFiles } from '../context/common.ts';
 import { extractPaths, openMemory } from '../context/memory.ts';
 import { worktreesDir } from '../paths.ts';
@@ -30,30 +29,6 @@ export interface Orchestrator {
   /** Run all cards + docs until the board is terminal. */
   execute(): Promise<void>;
   abort(): void;
-}
-
-export function newRunId(): string {
-  const d = new Date();
-  const p = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}-${randomBytes(2).toString('hex')}`;
-}
-
-export function createBoard(repoRoot: string, goal: string, runId = newRunId()): Board {
-  const board: Board = {
-    runId, goal,
-    baseRef: git.headRef(repoRoot),
-    baseBranch: git.currentBranch(repoRoot),
-    runBranch: `usta/${runId}`,
-    createdAt: new Date().toISOString(),
-    cards: [],
-    docs: { status: 'pending' },
-    costUsd: 0,
-  };
-  if (!git.branchExists(repoRoot, board.runBranch)) git.createBranch(repoRoot, board.runBranch, board.baseRef);
-  // context/ and config.json stay committable.
-  git.excludeFromGit(repoRoot, [`${STATE_DIR}/*`, `!${STATE_DIR}/context`, `!${STATE_DIR}/config.json`], [`${STATE_DIR}/`]);
-  store.saveBoard(repoRoot, board);
-  return board;
 }
 
 export function createOrchestrator(repoRoot: string, board: Board, config: Config, hooks: OrchestratorHooks = {}): Orchestrator {

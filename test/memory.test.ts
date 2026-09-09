@@ -7,7 +7,7 @@ import * as wt from '../src/git/worktree.ts';
 import { extractPaths, learningId, memoryPath, openMemory, renderLearnings } from '../src/context/memory.ts';
 import { repoKey } from '../src/paths.ts';
 import { buildCommonContext, cardFiles } from '../src/context/common.ts';
-import { createBoard } from '../src/runner/orchestrator.ts';
+import { createBoard } from '../src/board/create.ts';
 import type { Card } from '../src/types.ts';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'usta-data-'));

@@ -10,6 +10,8 @@ import type { DocsResult } from '../types.ts';
 export async function runDocs(rt: Runtime): Promise<void> {
   const { board, config, log, save } = rt;
   if (!config.docs) { board.docs = { status: 'skipped' }; save('docs_skipped'); return; }
+  // A resumed run keeps its finished documentation; only failed or pending docs run again.
+  if (board.docs?.status === 'done') { log('documentation already done'); return; }
   if (!board.cards.some((c) => c.status === 'done')) { board.docs = { status: 'skipped', summary: 'nothing merged' }; save('docs_skipped'); return; }
   const cwd = store.worktreeDir(rt.repoRoot, board.runId, 'docs');
   const branch = `dulger-wip/${board.runId}/docs`;

@@ -11,6 +11,7 @@ import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/
 import { registerAdapter } from '../src/adapters/index.ts';
 import { openMemory } from '../src/context/memory.ts';
 import { buildReport } from '../src/ui/report.ts';
+import { resetInterrupted } from '../src/board/scheduler.ts';
 import * as store from '../src/board/store.ts';
 import type { PlannerResult } from '../src/types.ts';
 
@@ -274,6 +275,25 @@ test('plan(feedback) revises in the same planner session and records assumptions
   assert.equal(seen[1]?.resume, 'fake-planner-0', 'the revision continues the planner session');
   assert.match(seen[1]!.prompt, /drop the third card/);
   assert.equal(store.loadBoard(repo, 'run-order').plan?.revisions, 1, 'the revision is persisted');
+});
+
+test('resuming a finished run does not start the documentation agent again', async () => {
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-docs-once');
+  const first = createOrchestrator(repo, board, config, {});
+  await first.plan();
+  await first.execute();
+  assert.equal(board.docs?.status, 'done');
+
+  const resumed = store.loadBoard(repo, 'run-docs-once');
+  resetInterrupted(resumed);
+  const events: string[] = [];
+  await createOrchestrator(repo, resumed, config, { log: (m) => events.push(m) }).execute();
+  assert.equal(resumed.docs?.status, 'done');
+  assert.ok(events.some((e) => e === 'documentation already done'));
+  const log = readFileSync(join(repo, '.dulger', 'runs', 'run-docs-once', 'events.jsonl'), 'utf8');
+  assert.equal((log.match(/"type":"docs_started"/g) ?? []).length, 1, 'the docs agent ran once across run and resume');
 });
 
 test('abort stops dispatching and leaves the board resumable', async () => {

@@ -49,6 +49,9 @@ export interface Task {
   attempts: number;
   sessionId?: string;
   result?: WorkerResult;
+  /** Set on tasks usta appends after a rejection: they address `feedback` instead of implementing new work. */
+  kind?: 'fix';
+  feedback?: string[];
 }
 
 export interface Card {

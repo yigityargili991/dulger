@@ -69,6 +69,33 @@ Title: ${task.title}
 ${task.instructions}`;
 }
 
+/** Prompt for a fix task: the card's work is committed in the worktree; address the reviewer's points. */
+export function workerFixPrompt(board: Board, card: Card, task: Task, context: string): string {
+  const done = card.tasks.filter((t) => t !== task && t.result).map((t) => `- ${t.id} ${t.title}: ${t.result!.summary}`);
+  const doneCards = board.cards.filter((c) => c.status === 'done' && c.summary).map((c) => `- ${c.id} ${c.title}: ${c.summary}`);
+  return `${context}
+
+## Card ${card.id}: ${card.title}
+
+${card.description}
+
+Acceptance criteria for the whole card:
+${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
+${done.length ? `\nWork done so far on this card:\n${done.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
+## Your task
+
+Task id: ${task.id}
+Card id: ${card.id}
+Title: ${task.title}
+
+The card's changes are committed in this worktree; \`git diff ${board.runBranch}...HEAD\` shows them.
+The card was not accepted for these reasons:
+${(task.feedback ?? []).map((f) => `- ${f}`).join('\n') || '- (no details given)'}
+
+Fix every point above and keep the rest of the work intact. Do not redo tasks that are already done.
+Make sure the acceptance criteria still hold; run the tests or build for what you touched when that is cheap.`;
+}
+
 export function workerContinuePrompt(task: Task, result: { remaining: string[] }): string {
   return `Continue task ${task.id}. You reported it is not finished. Remaining work:
 ${result.remaining.map((r) => `- ${r}`).join('\n')}

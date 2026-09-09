@@ -1,13 +1,33 @@
 {
   "name": "dulger",
   "version": "0.1.0",
-  "description": "dulger — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
+  "description": "dulger \u2014 a multi-agent kanban orchestrator that wraps Claude Code / Codex",
   "license": "MIT",
   "author": "Yigit Yargili",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitlab.com/zamazingo99/dulger.git"
+  },
+  "homepage": "https://gitlab.com/zamazingo99/dulger",
+  "bugs": "https://gitlab.com/zamazingo99/dulger/-/issues",
+  "keywords": [
+    "agents",
+    "claude-code",
+    "codex",
+    "kanban",
+    "orchestrator"
+  ],
   "type": "module",
-  "bin": { "dulger": "./bin/dulger.js" },
-  "files": ["bin/", "src/"],
-  "engines": { "node": ">=24" },
+  "bin": {
+    "dulger": "./bin/dulger.js"
+  },
+  "files": [
+    "bin/",
+    "src/"
+  ],
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --test test/",

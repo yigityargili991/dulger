@@ -16,9 +16,12 @@ dulger run "Add CSV export to the reports page"
 Node 24+, git, and `claude` or `codex` on your PATH.
 
 ```sh
-git clone <repo-url> dulger && cd dulger
-npm install && npm link      # or: npm pack && npm install -g dulger-*.tgz
+npx dulger                                  # run without installing
+npm install -g dulger                       # or install the command
+npx gitlab:zamazingo99/dulger               # straight from the repository
 ```
+
+From a checkout: `npm install && npm link`.
 
 ## How a run works
 
@@ -102,6 +105,13 @@ when a card lands.
   reviewer are read-only, with an allow-list of commands.
 - Agents never run git; dulger commits, merges, cleans up.
 - Ctrl-C stops the agents and saves the board. `dulger resume` picks it up.
+
+## Known limitations
+
+Codex reports tokens but no prices and no plan-window figure, so its runs show only tokens. The
+documentation agent's commit is the one piece of work nobody reviews. Old runs are never deleted;
+remove `.dulger/runs/<runId>` by hand. Workers run with `bypassPermissions`, so inside their worktree
+they have whatever your Claude Code or Codex login has, MCP servers included.
 
 ## Development
 

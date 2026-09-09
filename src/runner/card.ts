@@ -147,7 +147,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
     const r = await rt.agent<WorkerResult>('worker', {
       prompt, systemPrompt: sys, cwd, schema: WORKER_SCHEMA, access: 'write', resumeSessionId: sessionId,
     }, { cardId: card.id, taskId: task.id, logName: `${card.id}.${task.id}.${task.attempts}${cont ? `.cont${cont}` : ''}` });
-    rt.addCost(card, r.costUsd, r.tokens);
+    rt.addCost(card, r.costUsd, r.usage);
     sessionId = r.sessionId;
     task.sessionId = sessionId;
     if (!r.ok || !r.output) {
@@ -183,7 +183,7 @@ async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult>
     systemPrompt: P.checkerSystem(config.checker.allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
     allowedCommands: config.checker.allowedCommands,
   }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
-  rt.addCost(card, r.costUsd, r.tokens);
+  rt.addCost(card, r.costUsd, r.usage);
   return r.ok && r.output ? r.output : { pass: false, feedback: [`checker failed to run: ${r.error}`], summary: '' };
 }
 

@@ -9,8 +9,9 @@ import { buildCommonContext, type ContextOptions } from '../context/common.ts';
 import { openMemory, type MemoryStore } from '../context/memory.ts';
 import * as store from '../board/store.ts';
 import { type AgentRegistry, runAgent } from './agentProcess.ts';
-import type { AgentRole, Board, BoardEvent, BoardEventType, Card } from '../types.ts';
+import type { AgentRole, Board, BoardEvent, BoardEventType, Card, Usage } from '../types.ts';
 import { yellow } from '../ui/ansi.ts';
+import { addUsage } from '../usage.ts';
 
 export interface RunHooks {
   /** Called after every board change. */
@@ -35,7 +36,8 @@ export interface Runtime {
   log(msg: string): void;
   /** Persist the board, append a board event, and notify the UI. Every state change goes through here. */
   save(type: BoardEventType, extra?: Omit<BoardEvent, 'at' | 'type'>): void;
-  addCost(card: Card | undefined, cost?: number, tokens?: number): void;
+  /** Charge an agent call to the run and, when given, to its card. */
+  addCost(card: Card | undefined, cost?: number, usage?: Usage): void;
   /** Run config.worktreeSetup in a freshly created worktree (installs dependencies and the like). */
   setupWorktree(cwd: string): void;
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
@@ -65,6 +67,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
+    if (r.rateLimits) board.rateLimits = r.rateLimits; // a snapshot: the latest reading wins
     return { ...r, output: r.output as T | undefined };
   }
 
@@ -84,14 +87,14 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       store.appendEvent(repoRoot, board.runId, { type, ...extra });
       hooks.onBoardChange?.(board);
     },
-    addCost(card, cost, tokens) {
+    addCost(card, cost, usage) {
       if (cost) {
         board.costUsd += cost;
         if (card) card.costUsd += cost;
       }
-      if (tokens) {
-        board.tokens = (board.tokens ?? 0) + tokens;
-        if (card) card.tokens = (card.tokens ?? 0) + tokens;
+      if (usage) {
+        board.usage = addUsage(board.usage, usage);
+        if (card) card.usage = addUsage(card.usage, usage);
       }
     },
     setupWorktree(cwd) {

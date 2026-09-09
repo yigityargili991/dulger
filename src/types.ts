@@ -77,7 +77,7 @@ export interface Card {
   review?: string;
   summary?: string;
   costUsd: number;
-  tokens?: number;
+  usage?: Usage;
 }
 
 export interface Board {
@@ -90,11 +90,31 @@ export interface Board {
   cards: Card[];
   docs?: { status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'; summary?: string };
   costUsd: number;
-  tokens?: number;
+  usage?: Usage;
+  /** Plan-window utilization as last reported by the harness during this run. */
+  rateLimits?: RateLimits;
   /** Times the planner was asked to replan after a card failed. */
   replans?: number;
   /** What the planner decided on its own, what it left out, and the session to continue the conversation. */
   plan?: { sessionId?: string; assumptions: string[]; omitted: string[]; revisions: number };
+}
+
+/** Token usage of one agent call or a whole run: uncached input, prompt cache reads and writes, output. */
+export interface Usage {
+  input: number;
+  cacheRead: number;
+  cacheWrite: number;
+  output: number;
+}
+
+/**
+ * The harness account's plan windows as last reported during a run (Claude Code sends one reading per
+ * call; Codex reports none on its stream). A snapshot, never summed: the latest reading is the truth.
+ */
+export interface RateLimits {
+  at: string;
+  status?: string;
+  windows: Array<{ name: string; utilization: number; resetsAt?: string }>;
 }
 
 // ---- Live agent status (derived from adapter events, shown in the TUI) ----
@@ -125,7 +145,9 @@ export type AgentEvent =
   | { type: 'turn' }
   /** The harness output something dulger did not expect (format drift); the run goes on. */
   | { type: 'warning'; text: string }
-  | { type: 'result'; costUsd?: number; tokens?: number; output?: unknown; text?: string; isError?: boolean; error?: string };
+  /** The harness reported the account's plan-window utilization. */
+  | { type: 'rate_limit'; limits: RateLimits }
+  | { type: 'result'; costUsd?: number; usage?: Usage; output?: unknown; text?: string; isError?: boolean; error?: string };
 
 // Board-level events appended to events.jsonl.
 export type BoardEventType =

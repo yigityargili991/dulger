@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../types.ts';
+import type { AgentEvent, RateLimits, Usage } from '../types.ts';
 
 export interface AdapterRunOptions {
   prompt: string;
@@ -35,8 +35,10 @@ export interface AdapterResult {
   text: string;
   sessionId?: string;
   costUsd?: number;
-  /** Total tokens (input incl. cache + output); the only spend figure some harnesses report. */
-  tokens?: number;
+  /** Token usage by bucket; the only spend figure some harnesses report. */
+  usage?: Usage;
+  /** The account's plan windows as last reported by this call, when the harness tells. */
+  rateLimits?: RateLimits;
   /** Format drift noticed while parsing the harness output; logged, never fatal. */
   warnings?: string[];
   exitCode: number;

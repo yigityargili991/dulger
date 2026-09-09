@@ -64,7 +64,11 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
 
   assert.equal(c1.review, 'looks good', 'the final review summary is kept on the card');
   const report = buildReport(board, { diffStat: ' 3 files changed' }).replace(/\x1b\[[0-9;]*m/g, '');
-  assert.match(report, /^Run run1  main @ [0-9a-f]{7} → dulger\/run1\nGoal: demo\nLanded 3 of 3 cards, docs updated · spent \$/);
+  assert.match(report, /^Run run1  main @ [0-9a-f]{7} → dulger\/run1\nGoal: demo\nLanded 3 of 3 cards, docs updated · spent \$0\.1\d · \d+k tokens \(74% cached, \d+ out\)/);
+  assert.match(report, /spent: \$0\.0\d · \dk tokens \(74% cached/);
+  assert.deepEqual(board.usage, { input: 2200, cacheRead: 7700, cacheWrite: 550, output: 550 });
+  assert.match(report, /Plan windows at the end of the run: 5h 35% · 7d 23%/);
+  assert.equal(board.rateLimits?.windows.length, 2, 'the latest reading is kept on the board');
   assert.match(report, /\nLanded\n  c1 .*\n     t1 .*Wrote c1-t1\.txt/);
   assert.match(report, /files: out\/c1-fix1\.txt, out\/c1-t1\.txt/);
   assert.match(report, /review rounds: 2 \(fix tasks: Address review feedback\)/);

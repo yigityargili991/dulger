@@ -1,213 +1,113 @@
 # dulger
 
-**dulger** (Turkish *dülger*: carpenter) is a small, dependency-free TypeScript framework that turns one
-goal into a kanban board and has a crew of coding agents work through it. It is a *wrapper*: every agent
-is a headless [Claude Code](https://claude.com/claude-code) or [Codex](https://github.com/openai/codex)
-process spawned with a prompt, a working directory and a JSON schema for its answer. dulger itself never
-calls an LLM API.
+A kanban of coding agents. Give it a goal; a planner turns it into cards, workers build the cards in
+parallel git worktrees, a reviewer checks each one, and the result lands on a branch for you to merge.
+Every agent is a headless [Claude Code](https://claude.com/claude-code) or
+[Codex](https://github.com/openai/codex) process. No API keys, no dependencies.
 
-```
+```sh
+cd your-repo
+dulger                       # interactive prompt: type a goal, or /help
 dulger run "Add CSV export to the reports page"
 ```
 
-1. **Planner** (the main agent) explores the repo and writes a kanban board: cards with acceptance
-   criteria and 1–4 sequential tasks each, plus dependencies between cards.
-2. You review the board and press Enter. The planner's **assumptions** (decisions it made where the goal
-   was open) and anything it **left out** of the goal are printed with the board, so a substitution
-   never slips through: the goal is the contract, and it wins over the project conventions when they
-   conflict. Edit the JSON, or use `/order` to talk it through, if you want changes.
-3. **Workers** execute tasks. Every card gets its own git branch and worktree, so cards run in parallel
-   without touching each other. A worker that reports `done: false` is resumed in the same session.
-4. A **checker** reviews each finished card the way a senior engineer reviews a pull request: it runs
-   the project's checks, reads the tests and the surrounding code, and judges correctness, failure modes
-   and fit with the codebase, not only the acceptance criteria. Style remarks and pre-existing problems
-   go into non-blocking *notes* shown on the board. A rejection appends a *fix task* to the card: one worker session that addresses the reviewer's
-   points in the same worktree, without redoing the finished tasks. The card is then reviewed again,
-   up to `maxAttempts` rounds. If syncing the result branch into the card conflicts with work other
-   cards landed meanwhile, a fix task resolves the conflicts before the review; that does not count as
-   a review round.
-5. Review and merge form a *merge queue*: one card at a time syncs the result branch into its
-   worktree, is reviewed in that combined state, and lands on `dulger/<runId>` by fast-forward. What
-   the checker approves is exactly what lands.
-6. When a card fails, the **planner replans**: it sees what merged, what is still running, what failed
-   and why, and the cards that were waiting, and returns a new set of cards for the remaining work.
-   Waiting cards are replaced; done and running cards are never touched. After `maxReplans`
-   replans, a failed card simply blocks its dependents.
-7. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
-8. A live terminal table shows the board and every agent's state, current tool and last message.
-9. When the run ends, a **report** of what landed is printed: per card what was built, which files
-   changed, the reviewer's verdict and notes, what did not land and why, the documentation summary,
-   the diff stat, and what to do next. `dulger report` prints it again later.
-
-Your checkout is never modified: the result lands on `dulger/<runId>` for you to review and merge.
-
-## Requirements
-
-- Node **24+** (the code is TypeScript run directly by Node; no build step)
-- `git`
-- `claude` and/or `codex` on your `PATH`, logged in
-
 ## Install
 
-From a checkout:
+Node 24+, git, and `claude` or `codex` on your PATH.
 
 ```sh
 git clone <this repo> dulger && cd dulger
-npm install          # only installs typescript for `npm run typecheck`
-npm link             # puts `dulger` on your PATH (or run `node src/cli.ts`)
+npm install && npm link      # or: npm pack && npm install -g dulger-*.tgz
 ```
 
-Or from a tarball: `npm pack` produces `dulger-<version>.tgz`, and `npm install -g dulger-<version>.tgz`
-installs the `dulger` command. There is no build step either way: `bin/dulger.js` strips the types of
-dulger's own files at load time, because Node refuses to do that for packages under `node_modules`.
+## How a run works
 
-## Usage
+1. **Plan.** The planner explores the repo and writes cards: acceptance criteria, 1–4 tasks each,
+   dependencies. It lists its assumptions and anything it left out of the goal. You read the board
+   and press Enter, or use `/order` to talk it through first.
+2. **Build.** Each card gets its own worktree and branch. Workers run its tasks in sequence; cards run
+   in parallel.
+3. **Review.** One card at a time syncs the result branch, is reviewed in that combined state, and
+   lands by fast-forward. A rejection adds a fix task and a second review, up to `maxAttempts`.
+   Non-blocking remarks become notes on the board.
+4. **Replan.** If a card fails, the planner replans the remaining work once.
+5. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
+6. **Report.** What landed, what did not, files, reviewer notes, spend, next step.
 
-`dulger` on its own opens an interactive prompt in the current repository. Type a goal to plan and run
-it, exactly as `dulger run` would; when it lands you are asked whether to merge the result into your
-branch, so the next goal builds on it. Slash-commands cover the rest: `/board`, `/report`, `/runs`,
-`/resume`, `/merge`, `/memory`, `/clean`, `/set` (harness, concurrency, attempts, model, …), `/status`,
-`/help`, `/quit`. Ctrl-C during a run stops the agents and returns to the prompt with the board saved.
+Your checkout is untouched. The result is on `dulger/<runId>`; `git merge` it when you are happy.
 
-`/order <goal>` (or `dulger order "<goal>"`) plans in a conversation instead of a single shot: the planner
-proposes a board, you reply in plain words ("use raylib, not a terminal backend", "split c2", "drop the
-docs card"), and it revises in the same session, keeping what it learned about the repository. `go`
-dispatches, `cancel` deletes the run.
+## Commands
 
 ```
-dulger                           interactive prompt
-dulger run "<goal>" [options]     plan a board for the goal, then execute it
-dulger order "<goal>" [options]   plan in a conversation with the planner, then execute
-dulger resume [runId]             continue an interrupted run
-dulger board [runId]              print a run's board
-dulger report [runId]             print what a run landed
-dulger runs                       list runs
-dulger clean                      remove leftover worktrees and wip branches
-dulger memory [list|add|rm|compact|path]   inspect and curate what agents learned about the repo
+dulger                        interactive prompt (/order /board /report /runs /resume /merge /memory /set /help)
+dulger run "<goal>"           plan, pause for approval, execute
+dulger order "<goal>"         plan in a conversation with the planner, then execute
+dulger resume [runId]         continue an interrupted run
+dulger board | report [runId] print a run's board / what it landed
+dulger runs                   list runs
+dulger memory [list|add|rm|compact|path]
+dulger clean                  remove leftover worktrees and wip branches
 
---harness <claude|codex|fake>   backend for all roles (default: claude)
---concurrency <n>               parallel cards (default: 3)
---max-attempts <n>              review rounds per card (default: 2)
---max-replans <n>               replans after a card failed (default: 1)
---model <name>                  model for all roles
---yes                           skip the board approval pause
---no-docs                       skip the documentation agent
---merge                         merge the result branch into the current branch when done
---allow-dirty                   run even with uncommitted changes
---repo <path>                   repository to work in (default: cwd)
---quiet                         no live table, log lines only
---version                       print dulger's version
+--harness claude|codex|fake   --model <name>        --concurrency <n>     --max-attempts <n>
+--yes                         --no-docs             --merge               --allow-dirty
+--repo <path>                 --quiet               --max-replans <n>     --version
 ```
 
-Try it without spending tokens: `dulger run --harness fake --yes "demo"` in any git repo.
+`--harness fake` runs the whole pipeline without an LLM, for trying things out.
 
 ## Configuration
 
-Optional `<repo>/.dulger/config.json`; CLI flags override it.
+`<repo>/.dulger/config.json`, all optional; flags override it.
 
-```json
+```jsonc
 {
-  "harness": "claude",
+  "harness": "claude",             // default for every role
+  "roles": { "worker": { "harness": "codex" }, "planner": { "model": "opus" } },
   "concurrency": 3,
-  "maxAttempts": 2,
+  "maxAttempts": 2,                // review rounds per card, and tries per task
   "maxReplans": 1,
-  "maxContinuations": 2,
-  "stallTimeoutSec": 600,
+  "stallTimeoutSec": 600,          // kill an agent that goes silent this long
   "docs": true,
-  "roles": {
-    "planner": { "harness": "claude", "model": "opus" },
-    "worker":  { "harness": "codex" },
-    "checker": { "maxBudgetUsd": 1 }
-  },
-  "checker": { "allowedCommands": ["npm test", "npm run typecheck", "pytest"] },
-  "worktreeSetup": "npm ci",
-  "claude": { "mcp": true },
+  "checker": { "allowedCommands": ["npm test", "npm run typecheck"] },   // the only shell commands the reviewer may run
+  "worktreeSetup": "npm ci",       // run once in every new worktree
+  "claude": { "mcp": true },       // workers get your MCP servers; the planner and reviewer never do
   "codex": { "bypassSandbox": false },
   "memory": { "location": "user", "maxItems": 40, "maxChars": 6000 }
 }
 ```
 
-Roles can mix harnesses: plan with Claude, implement with Codex, review with Claude.
+## Context and memory
 
-`checker.allowedCommands` is the complete list of shell commands the reviewer may run (default: `npm test`,
-`npm run test`, `npm run typecheck`, `npm run lint`, `npm run build`, `pytest`, `cargo test`, `go test`).
-The planner is told this list so that acceptance criteria only rely on commands the reviewer can run.
+- **You write** `<repo>/.dulger/context/*.md`: conventions, architecture, how to run tests. Included
+  verbatim in every prompt. Commit it.
+- **Agents learn.** Workers report facts about the codebase; dulger stores them outside the repo, folds
+  duplicates and paraphrases, and gives each agent the ones relevant to its card. `dulger memory`
+  lists, adds, removes and compacts them.
 
-`worktreeSetup` runs once in every new worktree before its first agent, from the worktree's root.
-Worktrees are fresh checkouts, so without it every worker starts by installing dependencies itself.
-A failing setup command is logged and the card goes ahead anyway.
-
-## Common context
-
-Every agent's prompt starts with the run summary and the board, followed by two kinds of context:
-
-**Project context you write.** Everything in `<repo>/.dulger/context/*.md` is included verbatim:
-conventions, architecture notes, "how to run the tests", anything you would tell a new teammate.
-This directory is meant to be committed so the whole team shares it (dulger excludes the rest of
-`.dulger/` from git but leaves `context/` and `config.json` visible).
-
-**Memory the agents build.** Workers report `learnings` (non-obvious facts about the codebase) and
-dulger stores them as one JSON record per line, with the run, card, harness, and the files each
-learning is about. Identical learnings are merged rather than repeated. When a prompt is built, dulger
-picks the learnings worth including instead of dumping all of them: learnings from the current run
-first, then learnings about the files the card touches, then the most reported ones, within
-`memory.maxItems` / `memory.maxChars`. Learnings whose files no longer exist are skipped.
-
-By default the memory file lives outside the repository in `$XDG_DATA_HOME/dulger/<project>/memory.jsonl`
-(`~/.local/share/dulger/…`). `<project>` is the normalised `origin` URL (so every clone of a repository
-shares one memory and forks get their own) or, without a remote, the checkout path. Memory is never
-shared between different projects. Set `"memory": { "location": "repo" }` to keep it at `.dulger/memory.jsonl` instead,
-or `DULGER_DATA_DIR` to move the whole data directory. `dulger memory` lists the learnings with their ids;
-`rm` deletes one, `add` records one by hand, `compact` drops the stale ones, `path` prints the file.
-
-## What lives where
+## Where things live
 
 ```
-<repo>/.dulger/
-  config.json                 optional configuration (committable)
-  context/*.md                project context you write (committable)
-  runs/<runId>/board.json     the kanban — source of truth, editable, resumable
-  runs/<runId>/events.jsonl   every state transition
-  runs/<runId>/logs/*.jsonl   raw event stream of every agent process
-
-~/.local/share/dulger/<project>/          <project> = origin URL or checkout path ($XDG_DATA_HOME, DULGER_DATA_DIR)
-  memory.jsonl                          learnings reported by workers
-  worktrees/<runId>/<cardId>/           per-card git worktrees (removed when the card merges; kept on failure)
+<repo>/.dulger/context/*.md             your notes (committed)
+<repo>/.dulger/config.json              configuration (committed)
+<repo>/.dulger/runs/<runId>/            board.json, events.jsonl, logs/   (git-ignored)
+~/.local/share/dulger/<project>/        memory.jsonl, worktrees/          (per origin URL; $XDG_DATA_HOME or $DULGER_DATA_DIR)
 ```
 
-Worktrees live outside the checkout so tools that walk the repository (test runners, linters, type
-checkers, the agents' own searches) never see other cards' copies of the code.
+Branches: `dulger/<runId>` is the result, `dulger-wip/<runId>/<card>` are work branches that disappear
+when a card lands.
 
-Git branches: `dulger/<runId>` is the result; `dulger-wip/<runId>/<cardId>` are per-card work branches
-that disappear when the card merges. `dulger clean` removes leftover worktrees and wip branches.
-`.dulger/*` is added to `.git/info/exclude` automatically, with `context/` and `config.json`
-re-included so they can be committed.
+## Safety
 
-## Permissions and safety
-
-- Workers and the docs agent run with write access to their worktree: Claude Code with
-  `--permission-mode bypassPermissions`, Codex with `--sandbox workspace-write`.
-- Planner and checker are read-only: Claude Code gets only Read/Grep/Glob and a short allow-list of
-  Bash commands (plus `checker.allowedCommands`); Codex gets `--sandbox read-only`.
-- Agents are told never to run git commands; dulger commits, merges and cleans up.
-- Workers and the docs agent get your MCP servers, as they would in Claude Code itself; the tool schemas
-  are deferred behind ToolSearch, so that costs about a thousand tokens per agent. The planner and checker
-  never get them: with their restricted tool set every MCP tool schema would be inlined (tens of
-  thousands of tokens per agent) for tools their permission mode denies anyway. Set
-  `"claude": { "mcp": false }` to keep MCP servers away from the workers too.
-- An agent that produces no events for `stallTimeoutSec` is killed. A task whose agent was killed, crashed
-  or answered badly is tried again in a fresh session, up to `maxAttempts` times, before the card fails.
-- `Ctrl-C` stops all agents, saves the board, and prints the `dulger resume` command.
-
-## Adding a harness
-
-Implement the `Adapter` interface in `src/adapters/types.ts`: spawn the CLI, translate its output into
-`AgentEvent`s (`init`, `text`, `tool`, `tool_result`, `turn`, `result`), and return the parsed JSON
-answer. Register it in `src/adapters/index.ts`. `src/adapters/fake.ts` is the smallest example.
+- Workers write only inside their worktree (`bypassPermissions` / `workspace-write`). Planner and
+  reviewer are read-only, with an allow-list of commands.
+- Agents never run git; dulger commits, merges, cleans up.
+- Ctrl-C stops the agents and saves the board. `dulger resume` picks it up.
 
 ## Development
 
 ```sh
-npm run typecheck
-npm test
+npm run typecheck && npm test
 ```
+
+To add a harness, implement `Adapter` in `src/adapters/types.ts` and register it in
+`src/adapters/index.ts`; `src/adapters/fake.ts` is the smallest example.

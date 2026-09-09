@@ -2,9 +2,10 @@
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentEvent } from '../types.ts';
+import type { AgentEvent, Usage } from '../types.ts';
 import type { Adapter, AdapterResult, AdapterRunOptions } from './types.ts';
 import { spawnLines, tryParseJson, extractJson } from './process.ts';
+import { addUsage } from '../usage.ts';
 
 export interface CodexAdapterOptions {
   bypassSandbox?: boolean;
@@ -28,8 +29,8 @@ export function buildCodexArgs(opts: AdapterRunOptions, files: { schema?: string
 
 export interface CodexParser {
   parse(line: string): AgentEvent[];
-  /** Tokens across all turns so far (Codex reports usage, never dollars). */
-  readonly tokens: number;
+  /** Usage across all turns so far (Codex reports tokens, never dollars); undefined until a turn completed. */
+  readonly usage: Usage | undefined;
   /** Set when the turn failed or Codex reported a top-level error. */
   readonly error: string | undefined;
 }
@@ -41,7 +42,7 @@ export interface CodexParser {
  * truncated) become warnings; only `turn.failed` and top-level errors fail the run.
  */
 export function createCodexParser(): CodexParser {
-  let tokens = 0;
+  let usage: Usage | undefined;
   let error: string | undefined;
   const TOOL_ITEMS = new Set(['command_execution', 'file_change', 'mcp_tool_call', 'web_search']);
 
@@ -62,9 +63,9 @@ export function createCodexParser(): CodexParser {
         if (typeof item.type === 'string' && TOOL_ITEMS.has(item.type)) return [{ type: 'tool_result' }, { type: 'turn' }];
         return [];
       case 'turn.completed': {
-        const usage = o.usage && typeof o.usage === 'object' ? (o.usage as Record<string, unknown>) : undefined;
-        if (!usage) return [{ type: 'warning', text: 'turn.completed has no usage; spend will read as unknown (codex JSONL format changed?)' }];
-        tokens += (typeof usage.input_tokens === 'number' ? usage.input_tokens : 0) + (typeof usage.output_tokens === 'number' ? usage.output_tokens : 0);
+        const u = o.usage && typeof o.usage === 'object' ? (o.usage as Record<string, unknown>) : undefined;
+        if (!u) return [{ type: 'warning', text: 'turn.completed has no usage; spend will read as unknown (codex JSONL format changed?)' }];
+        usage = addUsage(usage, codexUsage(u));
         return [];
       }
       case 'turn.failed':
@@ -78,7 +79,14 @@ export function createCodexParser(): CodexParser {
     }
   }
 
-  return { parse, get tokens() { return tokens; }, get error() { return error; } };
+  return { parse, get usage() { return usage; }, get error() { return error; } };
+}
+
+/** OpenAI semantics: input_tokens is the whole prompt and cached_input_tokens the part of it served from cache. */
+function codexUsage(u: Record<string, unknown>): Usage {
+  const n = (k: string) => (typeof u[k] === 'number' ? (u[k] as number) : 0);
+  const cacheRead = n('cached_input_tokens');
+  return { input: Math.max(0, n('input_tokens') - cacheRead), cacheRead, cacheWrite: n('cache_write_input_tokens'), output: n('output_tokens') };
 }
 
 function toolStarted(item: Record<string, unknown> | undefined): AgentEvent[] {
@@ -124,15 +132,14 @@ export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
 
         const text = existsSync(files.lastMessage) ? readFileSync(files.lastMessage, 'utf8') : lastText;
         const output = opts.schema ? extractJson(text) : undefined;
-        const tokens = parser.tokens || undefined;
-        opts.onEvent({ type: 'result', output, text, tokens, isError: Boolean(parser.error), error: parser.error });
+        opts.onEvent({ type: 'result', output, text, usage: parser.usage, isError: Boolean(parser.error), error: parser.error });
         const ok = exitCode === 0 && !parser.error && (!opts.schema || output !== undefined);
         return {
           ok,
           output,
           text,
           sessionId,
-          tokens,
+          usage: parser.usage,
           warnings: warnings.length ? warnings : undefined,
           exitCode,
           error: ok ? undefined : parser.error || stderr.trim().split('\n').slice(-5).join('\n') || `codex exited with ${exitCode}`,

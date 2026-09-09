@@ -1,6 +1,6 @@
 // Live terminal view: kanban columns on top, one row per agent below.
 // Redraws in place on a TTY; prints one log line per change otherwise.
-import { bold, dim, red, green, yellow, cyan, magenta, cursor, pad, truncate, fmtDuration, fmtSpend } from './ansi.ts';
+import { bold, dim, red, green, yellow, cyan, magenta, cursor, pad, truncate, fmtDuration, fmtSpend, fmtWindows } from './ansi.ts';
 import type { AgentStatus, Board, Card, CardStatus } from '../types.ts';
 
 const COLUMNS: Array<{ title: string; statuses: CardStatus[] }> = [
@@ -69,7 +69,7 @@ export function renderAgents(statuses: Iterable<AgentStatus>, width: number, now
 
 export function renderHeader(board: Board, startedAt: number, width: number, now = Date.now()): string {
   const left = `${bold(cyan('dulger'))}  run ${board.runId}   goal: `;
-  const right = `   elapsed ${fmtDuration(now - startedAt)}   ${fmtSpend(board)}`;
+  const right = `   elapsed ${fmtDuration(now - startedAt)}   ${fmtSpend(board)}${board.rateLimits ? `   ${fmtWindows(board.rateLimits)}` : ''}`;
   const goalWidth = Math.max(10, width - (left.length - 12) - right.length);
   return left + truncate(board.goal, goalWidth) + right;
 }

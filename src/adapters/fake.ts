@@ -79,8 +79,11 @@ export function createFakeAdapter(script: FakeScript = DEFAULT_FAKE_SCRIPT): Ada
       else output = (script.docs ?? DEFAULT_FAKE_SCRIPT.docs!)(opts, i);
 
       const text = JSON.stringify(output);
-      opts.onEvent({ type: 'result', output, text, costUsd: 0.01, tokens: 1000 });
-      return { ok: true, output, text, sessionId, costUsd: 0.01, tokens: 1000, exitCode: 0 };
+      const usage = { input: 200, cacheRead: 700, cacheWrite: 50, output: 50 };
+      const rateLimits = { at: new Date().toISOString(), status: 'allowed', windows: [{ name: 'five_hour', utilization: 0.35 }, { name: 'seven_day', utilization: 0.23 }] };
+      opts.onEvent({ type: 'rate_limit', limits: rateLimits });
+      opts.onEvent({ type: 'result', output, text, costUsd: 0.01, usage });
+      return { ok: true, output, text, sessionId, costUsd: 0.01, usage, rateLimits, exitCode: 0 };
     },
   };
 }

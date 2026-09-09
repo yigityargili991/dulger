@@ -1,5 +1,5 @@
 // Adapter for Claude Code: `claude -p ... --output-format stream-json`.
-import type { AgentEvent } from '../types.ts';
+import type { AgentEvent, RateLimits, Usage } from '../types.ts';
 import type { Adapter, AdapterResult, AdapterRunOptions } from './types.ts';
 import { spawnLines, tryParseJson, extractJson } from './process.ts';
 
@@ -49,6 +49,8 @@ export function createClaudeParser(): (line: string) => AgentEvent[] {
         return toolResultEvents(o);
       case 'result':
         return resultEvents(o);
+      case 'rate_limit_event':
+        return rateLimitEvents(o);
       default:
         return [];
     }
@@ -81,20 +83,39 @@ function resultEvents(o: Record<string, unknown>): AgentEvent[] {
   const usage = o.usage && typeof o.usage === 'object' ? (o.usage as Record<string, unknown>) : undefined;
   const costUsd = typeof o.total_cost_usd === 'number' ? o.total_cost_usd : undefined;
   if (costUsd === undefined && !usage) events.push({ type: 'warning', text: 'result event has neither total_cost_usd nor usage; spend will read as unknown (stream-json format changed?)' });
-  const tokens = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens']
-    .reduce((n, k) => n + (typeof usage?.[k] === 'number' ? (usage[k] as number) : 0), 0);
   const text = typeof o.result === 'string' ? o.result : '';
   const isError = o.is_error === true;
   events.push({
     type: 'result',
     costUsd,
-    tokens: tokens || undefined,
+    usage: usage && claudeUsage(usage),
     output: o.structured_output,
     text,
     isError,
     error: isError ? text || JSON.stringify(o.errors ?? o.subtype ?? 'unknown error') : undefined,
   });
   return events;
+}
+
+/** `rate_limit_info.unifiedWindows` holds one entry per plan window (five_hour, seven_day) with utilization 0..1. */
+function rateLimitEvents(o: Record<string, unknown>): AgentEvent[] {
+  const info = o.rate_limit_info && typeof o.rate_limit_info === 'object' ? (o.rate_limit_info as Record<string, unknown>) : undefined;
+  const unified = info?.unifiedWindows && typeof info.unifiedWindows === 'object' ? (info.unifiedWindows as Record<string, unknown>) : undefined;
+  if (!unified) return [];
+  const windows: RateLimits['windows'] = [];
+  for (const [name, w] of Object.entries(unified)) {
+    const win = w && typeof w === 'object' ? (w as Record<string, unknown>) : undefined;
+    if (typeof win?.utilization !== 'number') continue;
+    windows.push({ name, utilization: win.utilization, resetsAt: typeof win.resetsAt === 'number' ? new Date(win.resetsAt * 1000).toISOString() : undefined });
+  }
+  if (!windows.length) return [];
+  return [{ type: 'rate_limit', limits: { at: new Date().toISOString(), status: typeof info?.status === 'string' ? info.status : undefined, windows } }];
+}
+
+/** Anthropic semantics: input_tokens is the uncached part; cache reads and writes are separate. */
+function claudeUsage(u: Record<string, unknown>): Usage {
+  const n = (k: string) => (typeof u[k] === 'number' ? (u[k] as number) : 0);
+  return { input: n('input_tokens'), cacheRead: n('cache_read_input_tokens'), cacheWrite: n('cache_creation_input_tokens'), output: n('output_tokens') };
 }
 
 function contentBlocks(o: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -107,6 +128,7 @@ export const claudeAdapter: Adapter = {
   async run(opts): Promise<AdapterResult> {
     let sessionId: string | undefined = opts.resumeSessionId;
     let final: Extract<AgentEvent, { type: 'result' }> | undefined;
+    let rateLimits: RateLimits | undefined;
     const warnings: string[] = [];
     const parse = createClaudeParser();
 
@@ -121,6 +143,7 @@ export const claudeAdapter: Adapter = {
           if (ev.type === 'init') sessionId = ev.sessionId;
           if (ev.type === 'result') final = ev;
           if (ev.type === 'warning') warnings.push(ev.text);
+          if (ev.type === 'rate_limit') rateLimits = ev.limits;
           opts.onEvent(ev);
         }
       },
@@ -135,7 +158,8 @@ export const claudeAdapter: Adapter = {
       text,
       sessionId,
       costUsd: final?.costUsd,
-      tokens: final?.tokens,
+      usage: final?.usage,
+      rateLimits,
       warnings: warnings.length ? warnings : undefined,
       exitCode,
       error: ok ? undefined : final?.error || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,

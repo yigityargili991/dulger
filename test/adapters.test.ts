@@ -23,7 +23,7 @@ test('claude stream-json parses into normalised events', () => {
   if (result?.type === 'result') {
     assert.deepEqual(result.output, { ok: true, note: 'hi' });
     assert.ok(result.costUsd! > 0);
-    assert.equal(result.tokens, 66 + 22370 + 43700 + 828);
+    assert.deepEqual(result.usage, { input: 66, cacheRead: 43700, cacheWrite: 22370, output: 828 });
     assert.equal(result.isError, false);
   }
 });
@@ -40,7 +40,13 @@ test('claude parser reports format drift and errors instead of hiding them', () 
   const parallel = parse('{"type":"user","message":{"content":[{"type":"tool_result"},{"type":"tool_result"}]}}');
   assert.equal(parallel.length, 2, 'one tool_result per block');
   assert.deepEqual(parse('{"type":"user","message":{"content":"the echoed prompt"}}'), []);
-  assert.deepEqual(parse('{"type":"rate_limit_event"}'), []);
+  assert.deepEqual(parse('{"type":"rate_limit_event"}'), [], 'no windows, no event');
+  const rl = parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.35,"resetsAt":1789002000},"seven_day":{"utilization":0.23}}}}')[0];
+  assert.equal(rl?.type, 'rate_limit');
+  if (rl?.type === 'rate_limit') {
+    assert.equal(rl.limits.status, 'allowed');
+    assert.deepEqual(rl.limits.windows, [{ name: 'five_hour', utilization: 0.35, resetsAt: '2026-09-10T01:00:00.000Z' }, { name: 'seven_day', utilization: 0.23, resetsAt: undefined }]);
+  }
 });
 
 test('codex jsonl parses into normalised events', () => {
@@ -50,7 +56,7 @@ test('codex jsonl parses into normalised events', () => {
   assert.deepEqual(types, ['init', 'text', 'turn', 'tool', 'tool_result', 'turn', 'text', 'turn'], 'a turn per completed item');
   const init = events[0];
   if (init?.type === 'init') assert.match(init.sessionId, /^[0-9a-f-]{36}$/);
-  assert.equal(parser.tokens, 33771 + 61);
+  assert.deepEqual(parser.usage, { input: 33771 - 16640, cacheRead: 16640, cacheWrite: 0, output: 61 }, 'cached tokens are carved out of the prompt total');
   assert.equal(parser.error, undefined);
 });
 

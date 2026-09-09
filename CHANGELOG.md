@@ -14,8 +14,11 @@ First release.
 - Interrupted runs are resumable with `dulger resume`.
 - Workers' learnings are stored as structured memory outside the repository and selected per prompt.
 - `--harness fake` runs the whole pipeline without spending tokens.
-- Runs report dollars when the harness does (Claude Code) and tokens for every harness (Codex reports
-  no prices).
+- Runs report dollars when the harness does (Claude Code) and token usage for every harness (Codex
+  reports no prices), split into uncached input, cache reads, cache writes and output; the report shows
+  the cached share and output per card.
+- Claude Code runs also report the account's plan-window utilization (5-hour and 7-day) as last seen,
+  in the live header and the report. Codex does not put it on its output stream.
 - Workers and the docs agent get the user's MCP servers (off with `claude.mcp: false`); the planner and
   checker never do, since their restricted tool set would inline every schema for tools they may not call.
 - The checker reviews like a senior engineer: tests are read, not just run; design fit and failure modes

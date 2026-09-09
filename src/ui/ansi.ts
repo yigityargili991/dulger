@@ -1,4 +1,6 @@
 // Tiny ANSI helpers. No dependencies.
+import type { RateLimits, Usage } from '../types.ts';
+import { cachedShare, usageTokens } from '../usage.ts';
 
 const enabled = process.stdout.isTTY && !process.env.NO_COLOR;
 
@@ -62,9 +64,23 @@ export function fmtTokens(n: number): string {
 }
 
 /** "$1.23 · 45k tokens"; dollars only when a harness reported them, tokens whenever known. */
-export function fmtSpend(x: { costUsd: number; tokens?: number }): string {
+export function fmtSpend(x: { costUsd: number; usage?: Usage }): string {
   const parts: string[] = [];
   if (x.costUsd > 0) parts.push(fmtCost(x.costUsd));
-  if (x.tokens) parts.push(`${fmtTokens(x.tokens)} tokens`);
+  if (x.usage) parts.push(`${fmtTokens(usageTokens(x.usage))} tokens`);
   return parts.join(' · ') || '-';
+}
+
+const WINDOW_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d' };
+
+/** "5h 35% · 7d 23%": how much of each plan window is used, per the harness's last report. */
+export function fmtWindows(rl: RateLimits): string {
+  return rl.windows.map((w) => `${WINDOW_NAMES[w.name] ?? w.name} ${Math.round(w.utilization * 100)}%`).join(' · ');
+}
+
+/** "$1.23 · 45k tokens (91% cached, 2k out)": the spend with the usage split that explains it. */
+export function fmtSpendDetail(x: { costUsd: number; usage?: Usage }): string {
+  const u = x.usage;
+  if (!u) return fmtSpend(x);
+  return `${fmtSpend(x)} (${Math.round(cachedShare(u) * 100)}% cached, ${fmtTokens(u.output)} out)`;
 }

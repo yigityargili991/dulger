@@ -36,10 +36,16 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   await orch.execute();
 
   assert.deepEqual(board.cards.map((c) => c.status), ['done', 'done', 'done']);
-  assert.equal(board.cards[0]!.attempts, 1, 'c1 was rejected once');
+  const c1 = board.cards[0]!;
+  assert.equal(c1.attempts, 1, 'c1 was rejected once');
+  // The rejection appends a fix task instead of rerunning the finished ones.
+  assert.deepEqual(c1.tasks.map((t) => [t.id, t.kind, t.status, t.attempts]), [['t1', undefined, 'done', 1], ['fix1', 'fix', 'done', 1]]);
+  assert.deepEqual(c1.tasks[1]!.feedback, ['Fake checker: please retry once']);
+  assert.equal(c1.tasks[1]!.title, 'Address review feedback');
+  assert.match(c1.summary!, /Wrote c1-t1\.txt Wrote c1-fix1\.txt/);
   assert.equal(board.docs?.status, 'done');
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'usta/run1']).split('\n').sort();
-  assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c1-t1.txt', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-t1.txt']);
+  assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c1-fix1.txt', 'out/c1-t1.txt', 'out/c2-t1.txt', 'out/c2-t2.txt', 'out/c3-t1.txt']);
   assert.equal(wt.currentBranch(repo), 'main');
   assert.equal(wt.git(repo, ['branch', '--list', 'usta-wip/*']), '', 'wip branches cleaned up');
   assert.ok(!existsSync(store.worktreeDir(repo, 'run1', 'c1')));
@@ -72,6 +78,8 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   const byId = Object.fromEntries(board.cards.map((c) => [c.id, c]));
   assert.equal(byId.c1!.status, 'failed');
   assert.equal(byId.c1!.attempts, 2);
+  assert.deepEqual(byId.c1!.tasks.map((t) => t.id), ['t1', 'fix1'], 'one fix round before giving up; no fix task after the final rejection');
+  assert.deepEqual(byId.c1!.feedback, ['never good enough', 'never good enough']);
   assert.equal(byId.c2!.status, 'done');
   assert.equal(byId.c3!.status, 'blocked');
   assert.match(byId.c3!.feedback.at(-1)!, /dependency c1/);

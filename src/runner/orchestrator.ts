@@ -8,7 +8,7 @@ import { buildCommonContext, cardFiles } from '../context/common.ts';
 import { extractPaths, openMemory } from '../context/memory.ts';
 import { worktreesDir } from '../paths.ts';
 import * as store from '../board/store.ts';
-import { allTerminal, blockUnreachable, readyCards, resetTasks } from '../board/scheduler.ts';
+import { allTerminal, blockUnreachable, readyCards } from '../board/scheduler.ts';
 import * as git from '../git/worktree.ts';
 import { CHECK_SCHEMA, DOCS_SCHEMA, PLANNER_SCHEMA, WORKER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
@@ -109,7 +109,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     task.attempts++;
     save('task_started', { cardId: card.id, taskId: task.id });
     const sys = P.workerSystem();
-    let prompt = P.workerPrompt(board, card, task, context({ files: cardFiles(card, cwd), root: cwd }));
+    const ctx = context({ files: cardFiles(card, cwd), root: cwd });
+    let prompt = task.kind === 'fix' ? P.workerFixPrompt(board, card, task, ctx) : P.workerPrompt(board, card, task, ctx);
     let sessionId: string | undefined;
     let last: WorkerResult | undefined;
 
@@ -180,26 +181,41 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       if (ctrl.signal.aborted) return;
 
       const verdict: CheckResult = check.ok && check.output ? check.output : { pass: false, feedback: [`checker failed to run: ${check.error}`], summary: '' };
+      let fix: { title: string; feedback: string[] };
       if (verdict.pass) {
         const merged = git.mergeBack(cwd, board.runBranch, card.branch, { keepConflicts: true });
-        if (!merged.ok) {
-          card.feedback.push(`Merging the result branch (other cards' work) into this card produced conflicts in: ${merged.conflicts?.join(', ')}. The files now contain conflict markers (<<<<<<< / >>>>>>>). Resolve them keeping the intent of both sides, remove the markers, and make sure everything still works.`);
-        } else {
+        if (merged.ok) {
           card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
           return finishCard(card, cwd, 'done');
         }
+        fix = {
+          title: 'Resolve merge conflicts',
+          feedback: [`Merging the result branch (other cards' work) into this card produced conflicts in: ${merged.conflicts?.join(', ')}. The files now contain conflict markers (<<<<<<< / >>>>>>>). Resolve them keeping the intent of both sides, remove the markers, and make sure everything still works.`],
+        };
       } else {
-        card.feedback.push(...(verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details']));
+        fix = {
+          title: 'Address review feedback',
+          feedback: verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'],
+        };
       }
 
+      card.feedback.push(...fix.feedback);
       card.attempts++;
       if (card.attempts >= config.maxAttempts) return finishCard(card, cwd, 'failed');
       log(`card ${card.id} rejected (attempt ${card.attempts}/${config.maxAttempts}): ${card.feedback.at(-1)}`);
-      // Retry: keep the worktree, rerun the tasks with feedback in their prompt.
-      resetTasks(card);
+      // Retry: keep the worktree and the finished tasks; append one fix task that addresses the feedback.
+      card.tasks.push(fixTask(card, fix.title, fix.feedback));
       card.status = 'in_progress';
       save('card_retry', { cardId: card.id, message: card.feedback.at(-1) });
     }
+  }
+
+  function fixTask(card: Card, title: string, feedback: string[]): Task {
+    const n = card.tasks.filter((t) => t.kind === 'fix').length + 1;
+    return {
+      id: `fix${n}`, cardId: card.id, kind: 'fix', title, feedback,
+      instructions: feedback.join('\n'), status: 'pending', attempts: 0,
+    };
   }
 
   function finishCard(card: Card, cwd: string, status: 'done' | 'failed', feedback: string[] = []): void {

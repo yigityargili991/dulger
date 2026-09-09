@@ -49,7 +49,6 @@ Working rules:
 export function workerPrompt(board: Board, card: Card, task: Task, context: string): string {
   const idx = card.tasks.findIndex((t) => t.id === task.id);
   const earlier = card.tasks.slice(0, idx).filter((t) => t.result).map((t) => `- ${t.id} ${t.title}: ${t.result!.summary}`);
-  const feedback = card.feedback.length ? `\n## Feedback from the previous attempt (fix these)\n\n${card.feedback.map((f) => `- ${f}`).join('\n')}\n` : '';
   const doneCards = board.cards.filter((c) => c.status === 'done' && c.summary).map((c) => `- ${c.id} ${c.title}: ${c.summary}`);
   return `${context}
 
@@ -59,7 +58,7 @@ ${card.description}
 
 Acceptance criteria for the whole card:
 ${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
-${earlier.length ? `\nTasks already completed on this card:\n${earlier.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}${feedback}
+${earlier.length ? `\nTasks already completed on this card:\n${earlier.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
 ## Your task
 
 Task id: ${task.id}

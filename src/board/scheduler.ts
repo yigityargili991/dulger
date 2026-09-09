@@ -50,11 +50,3 @@ export function readyCards(board: Board, concurrency: number): Card[] {
     .filter((c) => c.status === 'backlog' && c.dependsOn.every((d) => byId.get(d)?.status === 'done'))
     .slice(0, free);
 }
-
-/** Reset the tasks of a card so it can be attempted again. */
-export function resetTasks(card: Card): void {
-  for (const t of card.tasks) {
-    t.status = 'pending';
-    t.result = undefined;
-  }
-}

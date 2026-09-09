@@ -124,7 +124,6 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       if (!r.ok || !r.output) {
         task.status = 'failed';
         save('task_failed', { cardId: card.id, taskId: task.id, message: r.error });
-        markFailed(registry, task.id);
         log(`task ${card.id}/${task.id} failed: ${r.error}`);
         return undefined;
       }

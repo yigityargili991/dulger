@@ -63,25 +63,27 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
     o.registry.onChange(status, e);
   };
 
+  let result: AdapterResult;
   try {
-    const result = await o.adapter.run({ ...o.run, onEvent, signal: ctrl.signal, logFile: join(o.logDir, o.logName + '.jsonl') });
-    if (stalled) return { ...result, ok: false, error: `no output for ${o.stallTimeoutSec}s; killed as stalled` };
-    if (o.parentSignal.aborted) return { ...result, ok: false, error: 'aborted' };
-    return result;
+    result = await o.adapter.run({ ...o.run, onEvent, signal: ctrl.signal, logFile: join(o.logDir, o.logName + '.jsonl') });
+    if (stalled) result = { ...result, ok: false, error: `no output for ${o.stallTimeoutSec}s; killed as stalled` };
+    else if (o.parentSignal.aborted) result = { ...result, ok: false, error: 'aborted' };
   } catch (err) {
-    return { ok: false, text: '', exitCode: -1, error: (err as Error).message };
+    result = { ok: false, text: '', exitCode: -1, error: (err as Error).message };
   } finally {
     if (timer) clearTimeout(timer);
     o.parentSignal.removeEventListener('abort', onParentAbort);
-    status.endedAt = Date.now();
-    status.state = stalled ? 'stalled' : status.state === 'failed' ? 'failed' : 'done';
-    o.registry.onChange(status);
   }
+  status.endedAt = Date.now();
+  status.state = stalled ? 'stalled' : result.ok ? 'done' : 'failed';
+  o.registry.onChange(status);
+  return result;
 }
 
-export function markFailed(registry: AgentRegistry, taskOrCardId: string): void {
+/** Show a card's finished agents as failed (the card did not make it, e.g. the checker gave up on it). */
+export function markFailed(registry: AgentRegistry, cardId: string): void {
   for (const s of registry.statuses.values()) {
-    if ((s.taskId === taskOrCardId || s.cardId === taskOrCardId) && s.state === 'done') s.state = 'failed';
+    if (s.cardId === cardId && s.state === 'done') s.state = 'failed';
   }
 }
 

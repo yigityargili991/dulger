@@ -6,6 +6,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadConfig, STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
+import { resetInterrupted } from './board/scheduler.ts';
 import * as git from './git/worktree.ts';
 import { createBoard, createOrchestrator } from './runner/orchestrator.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
@@ -82,12 +83,8 @@ async function main(argv: string[]): Promise<void> {
       const runId = arg ?? store.listRuns(repoRoot).at(-1);
       if (!runId) fail('no runs found');
       const board = store.loadBoard(repoRoot, runId);
-      let reset = 0;
-      for (const c of board.cards) {
-        if (c.status === 'in_progress' || c.status === 'review') { c.status = 'backlog'; c.tasks.forEach((t) => { if (t.status !== 'done') t.status = 'pending'; }); reset++; }
-      }
-      if (board.docs?.status === 'running') board.docs = { status: 'pending' };
-      if (reset) console.log(yellow(`reset ${reset} interrupted card(s) to backlog (their worktrees are reused if present)`));
+      const reset = resetInterrupted(board);
+      if (reset.length) console.log(yellow(`reset ${reset.length} interrupted card(s) to backlog (their worktrees are reused if present)`));
       await runBoard(repoRoot, board, config, { yes: true, quiet: Boolean(v.quiet), merge: Boolean(v.merge), fresh: false });
       break;
     }

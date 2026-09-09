@@ -50,3 +50,21 @@ export function readyCards(board: Board, concurrency: number): Card[] {
     .filter((c) => c.status === 'backlog' && c.dependsOn.every((d) => byId.get(d)?.status === 'done'))
     .slice(0, free);
 }
+
+/**
+ * Prepare a board loaded from disk for `usta resume`: cards that were being worked on or reviewed
+ * when the run stopped go back to the backlog with their unfinished tasks pending (finished tasks
+ * and their worktrees are kept), and a docs agent that was running is scheduled again.
+ * Returns the cards that were reset.
+ */
+export function resetInterrupted(board: Board): Card[] {
+  const reset: Card[] = [];
+  for (const card of board.cards) {
+    if (card.status !== 'in_progress' && card.status !== 'review') continue;
+    card.status = 'backlog';
+    for (const t of card.tasks) if (t.status !== 'done') t.status = 'pending';
+    reset.push(card);
+  }
+  if (board.docs?.status === 'running') board.docs = { status: 'pending' };
+  return reset;
+}

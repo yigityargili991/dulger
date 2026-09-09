@@ -18,7 +18,7 @@ export interface Config {
   harness: HarnessName;
   roles: Partial<Record<AgentRole, RoleConfig>>;
   concurrency: number;
-  maxAttempts: number;       // checker-fail retries per card
+  maxAttempts: number;       // review rounds per card (each rejection adds a fix task)
   maxContinuations: number;  // "done:false" resumes per task
   stallTimeoutSec: number;
   docs: boolean;

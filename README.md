@@ -16,7 +16,9 @@ usta run "Add CSV export to the reports page"
 3. **Workers** execute tasks. Every card gets its own git branch and worktree, so cards run in parallel
    without touching each other. A worker that reports `done: false` is resumed in the same session.
 4. A **checker** reviews each finished card against its acceptance criteria (it can run the tests).
-   Rejections go back to the workers with feedback, up to `maxAttempts`.
+   A rejection appends a *fix task* to the card: one worker session that addresses the reviewer's
+   points in the same worktree, without redoing the finished tasks. The card is then reviewed again,
+   up to `maxAttempts` rounds. Merge conflicts with other cards' work are handled the same way.
 5. Passed cards are merged onto the result branch `usta/<runId>`. Failed cards block their dependents.
 6. A **documentation agent** updates README / docs / CHANGELOG for the merged work.
 7. A live terminal table shows the board and every agent's state, current tool and last message.
@@ -49,7 +51,7 @@ usta memory [list|add|rm|compact|path]   inspect and curate what agents learned 
 
 --harness <claude|codex|fake>   backend for all roles (default: claude)
 --concurrency <n>               parallel cards (default: 3)
---max-attempts <n>              checker retries per card (default: 2)
+--max-attempts <n>              review rounds per card (default: 2)
 --model <name>                  model for all roles
 --yes                           skip the board approval pause
 --no-docs                       skip the documentation agent

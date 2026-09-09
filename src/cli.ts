@@ -31,7 +31,7 @@ Usage:
 Options:
   --harness <claude|codex|fake>   backend for all roles (default: claude)
   --concurrency <n>               parallel cards (default: 3)
-  --max-attempts <n>              checker retries per card (default: 2)
+  --max-attempts <n>              review rounds per card (default: 2)
   --model <name>                  model for all roles
   --yes                           skip the board approval pause
   --no-docs                       skip the documentation agent

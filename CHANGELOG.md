@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.1 — 2026-09-10
+
+- `dulger init [path]`: `git init` when needed plus a first commit, so a fresh directory is ready for runs.
+  Outside a repository, or in one without commits, dulger now says so in one line instead of a stack trace.
+- Every setting is its own prompt command (`/harness`, `/model`, `/concurrency`, `/attempts`, `/replans`,
+  `/docs`, `/yes`, `/quiet`, `/dirty`, `/tui`, `/icons`); with no argument they show the current value.
+  `/set` remains as an alias.
+
 ## 0.2.0 — 2026-09-10
 
 - A full-screen run view on terminals: cards as columns with progress and the agent's current action,

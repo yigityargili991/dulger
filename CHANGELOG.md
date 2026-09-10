@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0 — 2026-09-10
 
 - A full-screen run view on terminals: cards as columns with progress and the agent's current action,
   the agents and the log below, keyboard navigation, and an open-card view with tasks, review remarks

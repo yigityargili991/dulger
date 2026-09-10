@@ -41,6 +41,8 @@ export interface AdapterResult {
   rateLimits?: RateLimits;
   /** Format drift noticed while parsing the harness output; logged, never fatal. */
   warnings?: string[];
+  /** Commands the harness refused to run for the agent; the agent worked around them or gave up. */
+  denied?: string[];
   exitCode: number;
   error?: string;
 }

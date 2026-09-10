@@ -7,6 +7,10 @@ Other agents may work in parallel on other cards in separate git worktrees.
 Never touch the .dulger/ directory. Do not run git commit, git push, git checkout or git branch; dulger manages git.
 When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
 
+/** How a card proves itself: commands dulger runs, not claims an agent makes. Shared by planning and replanning. */
+const VERIFY_RULES = (allowedCommands: string[]) => `- "verify" lists the shell commands that prove the card's acceptance criteria: the project's real build, test, lint or typecheck commands (e.g. "npm test", "cargo build", "cargo test"). dulger itself runs them in the card's worktree after the work is committed; any non-zero exit sends the card back to the implementer with the output, before a reviewer looks at it. They must be non-interactive, finish on their own, and not depend on services that are not there. Always include the build and the tests when the project has them; give an empty list only when nothing can be run.
+- The reviewer sees the verify results and may additionally run: ${allowedCommands.join(', ') || '(none)'}. Any criterion no command covers must be verifiable from the diff alone.`;
+
 export function plannerSystem(allowedCommands: string[]): string {
   return `[role:planner] You are the lead engineer planning a piece of work as a kanban board.
 
@@ -26,7 +30,7 @@ Planning rules:
 - Two parallel cards must not edit the same files. If they would, merge them into one card or add a dependency.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained: name the files, the functions, the behaviour, and how to verify it.
 - acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands (e.g. "npm test passes", "GET /health returns 200").
-- The reviewer can only run these commands: ${allowedCommands.join(', ') || '(none)'}. Any other check must be verifiable from the diff alone.
+${VERIFY_RULES(allowedCommands)}
 - Card ids: short slugs like c1, c2. Task ids: t1, t2 within a card.
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
@@ -51,9 +55,16 @@ Planning rules:
 - Cards run IN PARALLEL unless linked by dependsOn. Use dependsOn only when a card truly needs another card's output.
 - Two parallel cards must not edit the same files.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained.
-- acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands. The reviewer can only run: ${allowedCommands.join(', ') || '(none)'}.
+- acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands.
+${VERIFY_RULES(allowedCommands)}
 - Task ids: t1, t2 within a card.
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
+}
+
+/** The gate the card has to pass, so the implementer runs the same commands before reporting done. */
+function verifyLines(card: Card): string {
+  if (!card.verify.length) return '';
+  return `\nBefore review, dulger runs these commands in this worktree; the card goes back to you if any exits non-zero, so run them yourself before you report done:\n${card.verify.map((v) => `- ${v}`).join('\n')}\n`;
 }
 
 function cardDetail(c: Card): string {
@@ -132,7 +143,7 @@ ${card.description}
 
 Acceptance criteria for the whole card:
 ${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
-${earlier.length ? `\nTasks already completed on this card:\n${earlier.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
+${verifyLines(card)}${earlier.length ? `\nTasks already completed on this card:\n${earlier.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
 ## Your task
 
 Task id: ${task.id}
@@ -154,7 +165,7 @@ ${card.description}
 
 Acceptance criteria for the whole card:
 ${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
-${done.length ? `\nWork done so far on this card:\n${done.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
+${verifyLines(card)}${done.length ? `\nWork done so far on this card:\n${done.join('\n')}\n` : ''}${doneCards.length ? `\nCards already merged into the result branch (their changes are in your worktree):\n${doneCards.join('\n')}\n` : ''}
 ## Your task
 
 Task id: ${task.id}
@@ -183,7 +194,8 @@ ${RULES_COMMON}
 
 How to review:
 - You are in the card's worktree, which already contains the other cards' merged work. The diff is in your prompt; read the surrounding code as well, not just the changed lines, so you can judge whether the change fits the codebase and works in the combined state.
-- Run the checks. The only shell commands you may run are: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). One command per Bash call, no pipes, && or other commands; anything else is denied without being executed.
+- dulger has already run the card's verify commands (build, tests) in this worktree; their results are in your prompt. Treat them as evidence, not the implementer's claims as evidence. You may re-run them and the other allowed commands: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). One command per Bash call, no pipes, && or other commands; anything else is denied without being executed.
+- If a criterion needs a command you cannot run and nothing in the verify results covers it, say so in "notes" as unverified; never report it as met on the implementer's word.
 - Read the tests, do not just run them. Tests that restate the implementation, skip the edge cases, or cannot fail do not count as coverage.
 - Think like the person who will maintain and build on this code. Trace the main path and the failure paths by hand. Look for boundary and off-by-one errors, unhandled errors, races, leaked resources, and inputs the author did not consider.
 - Compare against the specification the implementer was given and the project context: conventions, architecture notes, and what the other cards expect from this one.
@@ -219,6 +231,10 @@ ${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
 
 ${spec.join('\n\n') || '(none)'}
 
+## Verification run by dulger
+
+${verificationBlock(card)}
+
 ## What the implementing agents reported
 
 ${summaries.join('\n') || '- (no reports)'}
@@ -230,6 +246,15 @@ ${diffText || '(empty diff — nothing was changed)'}
 \`\`\`
 
 Review the card and answer with the JSON result.`;
+}
+
+function verificationBlock(card: Card): string {
+  if (!card.verify.length) return '(the plan named no verify commands for this card)';
+  if (!card.verification?.length) return '(not run)';
+  return card.verification.map((r) => {
+    const tail = r.output.split('\n').slice(-12).join('\n');
+    return `- ${r.ok ? 'passed' : `FAILED (exit ${r.exitCode})`}: \`${r.command}\` in ${(r.durationMs / 1000).toFixed(1)}s${tail ? `\n\`\`\`\n${tail}\n\`\`\`` : ''}`;
+  }).join('\n');
 }
 
 export function docsSystem(): string {

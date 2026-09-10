@@ -24,7 +24,10 @@ export interface Config {
   maxContinuations: number;  // "done:false" resumes per task
   stallTimeoutSec: number;
   docs: boolean;
+  /** Bash prefixes the reviewer may run on top of a card's own verify commands. */
   checker: { allowedCommands: string[] };
+  /** Seconds one verify command may take before dulger kills it and counts it as failed. */
+  verifyTimeoutSec: number;
   /** Shell command run once in every new worktree before agents use it (e.g. "npm ci"). */
   worktreeSetup?: string;
   claude: { mcp: boolean };  // give the user's MCP servers to the agents that can use them (workers, docs); planner and checker never get them
@@ -43,7 +46,8 @@ export const DEFAULT_CONFIG: Config = {
   maxContinuations: 2,
   stallTimeoutSec: 600,
   docs: true,
-  checker: { allowedCommands: ['npm test', 'npm run test', 'npm run typecheck', 'npm run lint', 'npm run build', 'pytest', 'cargo test', 'go test'] },
+  checker: { allowedCommands: ['npm test', 'npm run test', 'npm run typecheck', 'npm run lint', 'npm run build', 'pytest', 'cargo test', 'cargo build', 'cargo check', 'cargo clippy', 'go test', 'go build', 'go vet'] },
+  verifyTimeoutSec: 600,
   claude: { mcp: true },
   codex: { bypassSandbox: false },
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },

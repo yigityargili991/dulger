@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- The verification gate: every card names the commands that prove it (`verify`, chosen by the planner
+  from the project's real build, test and lint commands). dulger runs them itself after the card's work
+  is committed and synced; a failure sends the card back with the output before any reviewer runs.
+  Results are on the board, in the reviewer's prompt, in the TUI and in the report. `verifyTimeoutSec`
+  bounds each command.
+- The reviewer's allow-list includes the card's verify commands, and `cargo build`, `cargo check`,
+  `cargo clippy`, `go build` and `go vet` by default. The reviewer is told to report criteria it could
+  not check as unverified rather than accept the implementer's word.
+- Commands Claude Code refuses to run for the planner or reviewer are logged, shown in the agent's
+  history, and recorded as a review note on the card.
+
 ## 0.2.1 — 2026-09-10
 
 - `dulger init [path]`: `git init` when needed plus a first commit, so a fresh directory is ready for runs.

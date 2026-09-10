@@ -12,6 +12,7 @@ import { CHECK_SCHEMA, WORKER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
 import { markFailed } from './agentProcess.ts';
 import type { Runtime } from './runtime.ts';
+import { runVerification, verificationFeedback, verificationSummary } from './verify.ts';
 import type { Card, CheckResult, Task, WorkerResult } from '../types.ts';
 
 const CONFLICT_FEEDBACK = (files: string) =>
@@ -97,6 +98,8 @@ async function reviewAndLand(rt: Runtime, card: Card, cwd: string): Promise<Outc
   return rt.integrate(async () => {
     const merged = git.mergeFrom(cwd, board.runBranch, { keepConflicts: true });
     if (!merged.ok) return { kind: 'conflict', files: merged.conflicts?.join(', ') ?? '' };
+    if (!verify(rt, card, cwd)) return { kind: 'rejected', verdict: { pass: false, feedback: verificationFeedback(card.verification ?? []), summary: '' } };
+    if (signal.aborted) return { kind: 'aborted' };
     const verdict = await check(rt, card, cwd);
     if (signal.aborted) return { kind: 'aborted' };
     if (!verdict.pass) return { kind: 'rejected', verdict };
@@ -174,16 +177,34 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
   return task.status === 'done' ? last : undefined;
 }
 
+/**
+ * The verification gate: run the card's verify commands in its worktree. False when one fails; the card
+ * then goes back to work with the output, without a reviewer looking at it first.
+ */
+function verify(rt: Runtime, card: Card, cwd: string): boolean {
+  if (!card.verify.length) { card.verification = undefined; return true; }
+  rt.log(`card ${card.id} verifying: ${card.verify.join(', ')}`);
+  card.verification = runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal });
+  const failed = card.verification.filter((r) => !r.ok);
+  if (!failed.length) return true;
+  rt.log(`card ${card.id} verification failed: ${verificationSummary(failed)}`);
+  rt.save('card_verify_failed', { cardId: card.id, message: verificationSummary(failed) });
+  return false;
+}
+
 /** Ask the checker to review the card's diff on top of the synced result branch. A checker that fails to run counts as a rejection. */
 async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult> {
   const { board, config } = rt;
   const diffText = git.diff(cwd, board.runBranch);
+  const allowedCommands = [...new Set([...config.checker.allowedCommands, ...card.verify])];
   const r = await rt.agent<CheckResult>('checker', {
     prompt: P.checkerPrompt(board, card, diffText, rt.context({ files: cardFiles(card, cwd), root: cwd })),
-    systemPrompt: P.checkerSystem(config.checker.allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
-    allowedCommands: config.checker.allowedCommands,
+    systemPrompt: P.checkerSystem(allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
+    allowedCommands,
   }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
   rt.addCost(card, r.costUsd, r.usage);
+  // A reviewer that could not run something worked from trust instead of evidence; that belongs on the board.
+  if (r.denied?.length) card.reviewNotes = [...(card.reviewNotes ?? []), `reviewer was denied: ${r.denied.join('; ')}`];
   return r.ok && r.output ? r.output : { pass: false, feedback: [`checker failed to run: ${r.error}`], summary: '' };
 }
 

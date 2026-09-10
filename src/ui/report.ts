@@ -35,7 +35,8 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
       const why = c.status === 'failed' ? `failed after ${c.attempts} review round${c.attempts === 1 ? '' : 's'}` : c.status === 'blocked' ? 'blocked by a failed dependency' : c.status;
       out.push(`  ${bold(c.id)} ${c.title} ${red(`— ${why}`)}`);
       const last = c.feedback.at(-1);
-      if (last) out.push(`     ${dim('last feedback:')} ${last}`);
+      if (last) out.push(`     ${dim('last feedback:')} ${last.split('\n')[0]}`);
+      out.push(...verifiedLine(c));
       if (c.review) out.push(`     ${dim('review:')} ${c.review}`);
     }
   }
@@ -62,6 +63,13 @@ function resetHint(rl: RateLimits): string {
   return dim(` (${label} resets ${t.toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' })})`);
 }
 
+/** What dulger itself established about the card, or that it established nothing. */
+function verifiedLine(c: Card): string[] {
+  if (!c.verify.length) return [yellow('     verified: nothing (the plan named no verify commands)')];
+  if (!c.verification?.length) return [];
+  return [`     ${dim('verified:')} ${c.verification.map((r) => (r.ok ? green(`✓ ${r.command}`) : red(`✗ ${r.command} (exit ${r.exitCode})`))).join(dim(' · '))}`];
+}
+
 function cardLines(c: Card): string[] {
   const lines = [`  ${bold(c.id)} ${c.title}`];
   for (const t of c.tasks) {
@@ -72,6 +80,7 @@ function cardLines(c: Card): string[] {
   if (files.length) lines.push(dim(`     files: ${files.join(', ')}`));
   if (c.costUsd > 0 || c.usage) lines.push(dim(`     spent: ${fmtSpendDetail(c)}`));
   if (c.attempts) lines.push(dim(`     review rounds: ${c.attempts + 1} (fix tasks: ${c.tasks.filter((t) => t.kind === 'fix').map((t) => t.title).join('; ')})`));
+  lines.push(...verifiedLine(c));
   if (c.review) lines.push(`     ${dim('review:')} ${c.review}`);
   for (const n of c.reviewNotes ?? []) lines.push(yellow(`     note: ${n}`));
   return lines;

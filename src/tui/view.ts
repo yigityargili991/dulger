@@ -273,6 +273,11 @@ function cardDetail(s: ViewState, card: Card, w: number): string[] {
   }
   for (let i = 0; i < Math.max(left.length, rightCol.length); i++) out.push(cell(left[i] ?? '', half) + '  ' + cell(rightCol[i] ?? '', half));
 
+  if (card.verification?.length) {
+    out.push('');
+    out.push(c.accent('Verification'));
+    for (const r of card.verification) out.push(fit(`${r.ok ? c.ok(g.check) : c.bad(g.cross)} ${r.command}${r.ok ? '' : c.bad(` exit ${r.exitCode}`)} ${c.muted(`${(r.durationMs / 1000).toFixed(1)}s`)}`, w));
+  }
   if (card.feedback.length || card.reviewNotes?.length || card.review) {
     out.push('');
     out.push(c.accent('Review'));

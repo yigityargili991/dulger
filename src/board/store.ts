@@ -33,6 +33,7 @@ export function saveBoard(repoRoot: string, board: Board): void {
 
 export function loadBoard(repoRoot: string, runId: string): Board {
   const board = JSON.parse(readFileSync(boardPath(repoRoot, runId), 'utf8')) as Board;
+  for (const c of board.cards) c.verify ??= []; // boards written before the verification gate
   validateBoard(board);
   return board;
 }
@@ -61,6 +62,7 @@ export function cardsFromPlan(plan: PlannerResult): Card[] {
     description: c.description,
     acceptanceCriteria: c.acceptanceCriteria ?? [],
     dependsOn: c.dependsOn ?? [],
+    verify: c.verify ?? [],
     status: 'backlog',
     attempts: 0,
     feedback: [],

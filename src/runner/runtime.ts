@@ -67,6 +67,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
+    if (r.denied?.length) hooks.log?.(yellow(`${role}${ids.cardId ? ` ${ids.cardId}` : ''} was denied ${r.denied.length === 1 ? 'a command' : `${r.denied.length} commands`}: ${r.denied.join('; ')}`));
     if (r.rateLimits) board.rateLimits = r.rateLimits; // a snapshot: the latest reading wins
     return { ...r, output: r.output as T | undefined };
   }

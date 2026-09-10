@@ -142,7 +142,7 @@ test('extractPaths / cardFiles only return paths that exist', () => {
   const repo = tempRepo();
   assert.deepEqual(extractPaths('edit src/app.ts and README.md; ignore src/nope.ts, e.g. foo.bar and /etc/passwd.', repo), ['src/app.ts', 'README.md']);
   const card: Card = {
-    id: 'c1', title: 't', description: 'Touch src/app.ts.', acceptanceCriteria: [], dependsOn: [], status: 'backlog', attempts: 0, feedback: [], costUsd: 0,
+    id: 'c1', title: 't', description: 'Touch src/app.ts.', acceptanceCriteria: [], dependsOn: [], verify: [], status: 'backlog', attempts: 0, feedback: [], costUsd: 0,
     tasks: [{ id: 't1', cardId: 'c1', title: 'x', instructions: 'see README.md', status: 'done', attempts: 1, result: { summary: '', filesChanged: ['src/new.ts'], done: true, remaining: [], learnings: [] } }],
   };
   assert.deepEqual(cardFiles(card, repo).sort(), ['README.md', 'src/app.ts', 'src/new.ts']);

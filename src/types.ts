@@ -19,6 +19,8 @@ export interface PlannerResult {
     description: string;
     acceptanceCriteria: string[];
     dependsOn: string[];
+    /** Shell commands dulger runs in the card's worktree before review; exit 0 means pass. */
+    verify?: string[];
     tasks: Array<{ id: string; title: string; instructions: string }>;
   }>;
 }
@@ -66,6 +68,10 @@ export interface Card {
   description: string;
   acceptanceCriteria: string[];
   dependsOn: string[];
+  /** Commands dulger itself runs before every review; a failure sends the card back without a reviewer. */
+  verify: string[];
+  /** The latest run of `verify`, in order. */
+  verification?: VerificationResult[];
   tasks: Task[];
   status: CardStatus;
   attempts: number;
@@ -97,6 +103,16 @@ export interface Board {
   replans?: number;
   /** What the planner decided on its own, what it left out, and the session to continue the conversation. */
   plan?: { sessionId?: string; assumptions: string[]; omitted: string[]; revisions: number };
+}
+
+/** One command of the verification gate as dulger ran it. */
+export interface VerificationResult {
+  command: string;
+  ok: boolean;
+  exitCode: number;
+  durationMs: number;
+  /** stdout and stderr, the tail of it when long. */
+  output: string;
 }
 
 /** Token usage of one agent call or a whole run: uncached input, prompt cache reads and writes, output. */
@@ -144,6 +160,8 @@ export type AgentEvent =
   | { type: 'text'; text: string }
   | { type: 'tool'; name: string; input?: unknown }
   | { type: 'tool_result' }
+  /** The harness refused a command the agent asked to run (its permission mode or allowlist said no). */
+  | { type: 'denied'; command: string }
   | { type: 'turn' }
   /** The harness output something dulger did not expect (format drift); the run goes on. */
   | { type: 'warning'; text: string }
@@ -154,7 +172,7 @@ export type AgentEvent =
 // Board-level events appended to events.jsonl.
 export type BoardEventType =
   | 'planned' | 'replanned' | 'replan_failed'
-  | 'card_started' | 'card_review' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
+  | 'card_started' | 'card_review' | 'card_verify_failed' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
   | 'task_started' | 'task_done' | 'task_failed' | 'task_retry' | 'learnings'
   | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'
   | 'aborted' | 'finished';

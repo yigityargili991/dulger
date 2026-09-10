@@ -39,6 +39,11 @@ test('claude parser reports format drift and errors instead of hiding them', () 
   if (failed?.type === 'result') { assert.equal(failed.isError, true); assert.equal(failed.error, 'Reached max turns'); }
   const parallel = parse('{"type":"user","message":{"content":[{"type":"tool_result"},{"type":"tool_result"}]}}');
   assert.equal(parallel.length, 2, 'one tool_result per block');
+  parse('{"type":"assistant","message":{"id":"m9","content":[{"type":"tool_use","id":"tu1","name":"Bash","input":{"command":"cargo build"}}]}}');
+  const denied = parse('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","is_error":true,"content":"Permission to use Bash has been denied because Claude Code is running in don\'t ask mode."}]}}');
+  assert.deepEqual(denied, [{ type: 'denied', command: 'cargo build' }, { type: 'tool_result' }], 'a refused command is reported by name');
+  const failedNotDenied = parse('{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu1","is_error":true,"content":"error: could not compile"}]}}');
+  assert.deepEqual(failedNotDenied.map((e) => e.type), ['tool_result'], 'a command that ran and failed is not a denial');
   assert.deepEqual(parse('{"type":"user","message":{"content":"the echoed prompt"}}'), []);
   assert.deepEqual(parse('{"type":"rate_limit_event"}'), [], 'no windows, no event');
   const rl = parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.35,"resetsAt":1789002000},"seven_day":{"utilization":0.23}}}}')[0];

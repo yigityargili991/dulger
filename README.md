@@ -29,12 +29,17 @@ From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm li
    and press Enter, or use `/order` to talk it through first.
 2. **Build.** Each card gets its own worktree and branch. Workers run its tasks in sequence; cards run
    in parallel.
-3. **Review.** One card at a time syncs the result branch, is reviewed in that combined state, and
-   lands by fast-forward. A rejection adds a fix task and a second review, up to `maxAttempts`.
-   Non-blocking remarks become notes on the board.
-4. **Replan.** If a card fails, the planner replans the remaining work once.
-5. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
-6. **Report.** What landed, what did not, files, reviewer notes, spend, next step.
+3. **Verify.** Each card names the commands that prove it (build, tests, lint); the planner picks
+   them from the project. Once the card's work is committed and synced with the result branch, dulger
+   runs them itself. A non-zero exit sends the card back to a worker with the output, without paying
+   for a review. Whether it builds is a fact dulger establishes, not a claim an agent makes.
+4. **Review.** One card at a time is reviewed in that combined state, with the verify results in
+   hand, and lands by fast-forward. A rejection adds a fix task and a second review, up to
+   `maxAttempts`. Non-blocking remarks become notes on the board, and so does every command the
+   reviewer asked for and was refused.
+5. **Replan.** If a card fails, the planner replans the remaining work once.
+6. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
+7. **Report.** What landed, what did not, what was verified, files, reviewer notes, spend, next step.
 
 Your checkout is untouched. The result is on `dulger/<runId>`; `git merge` it when you are happy.
 
@@ -85,7 +90,8 @@ dulger clean                  remove leftover worktrees and wip branches
   "maxReplans": 1,
   "stallTimeoutSec": 600,          // kill an agent that goes silent this long
   "docs": true,
-  "checker": { "allowedCommands": ["npm test", "npm run typecheck"] },   // the only shell commands the reviewer may run
+  "checker": { "allowedCommands": ["npm test", "npm run typecheck"] },   // what the reviewer may run, on top of the card's verify commands
+  "verifyTimeoutSec": 600,         // a verify command that runs longer is killed and counts as failed
   "worktreeSetup": "npm ci",       // run once in every new worktree
   "claude": { "mcp": true },       // workers get your MCP servers; the planner and reviewer never do
   "codex": { "bypassSandbox": false },
@@ -117,7 +123,10 @@ when a card lands.
 ## Safety
 
 - Workers write only inside their worktree (`bypassPermissions` / `workspace-write`). Planner and
-  reviewer are read-only, with an allow-list of commands.
+  reviewer are read-only, with an allow-list of commands. A refused command is logged and noted on
+  the card, so a review that had to take something on trust says so.
+- The verify commands come from the planner and run with your shell's privileges in the card's
+  worktree, the same access the workers already have there. Read them on the board before dispatching.
 - Agents never run git; dulger commits, merges, cleans up.
 - Ctrl-C stops the agents and saves the board. `dulger resume` picks it up.
 

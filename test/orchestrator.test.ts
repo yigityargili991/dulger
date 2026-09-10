@@ -311,3 +311,41 @@ test('abort stops dispatching and leaves the board resumable', async () => {
   assert.ok(board.cards.some((c) => c.status !== 'done'));
   assert.notEqual(board.docs?.status, 'done');
 });
+
+test('the verification gate sends a card back with the command output before any reviewer runs', async () => {
+  const plan: PlannerResult = {
+    cards: [{ id: 'c1', title: 'Gated', description: 'x', acceptanceCriteria: [], dependsOn: [], verify: ['test -f out/fixed.txt', 'echo hello'],
+      tasks: [{ id: 't1', title: 'first', instructions: 'Create the first file' }] }],
+  };
+  const checkerPrompts: string[] = [];
+  const script: FakeScript = {
+    planner: plan,
+    worker: (o, i) => {
+      // The fix task is the one that satisfies the gate; the first task does not.
+      if (/was not accepted/.test(o.prompt)) { writeFileSync(join(o.cwd, 'out', 'fixed.txt'), 'ok\n'); return { summary: 'fixed', filesChanged: ['out/fixed.txt'], done: true, remaining: [], learnings: [] }; }
+      return DEFAULT_FAKE_SCRIPT.worker!(o, i);
+    },
+    checker: (o) => { checkerPrompts.push(o.prompt); return { pass: true, feedback: [], notes: [], summary: 'ok' }; },
+    delayMs: 1,
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'gate', 'run-gate');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'done');
+  assert.equal(c1.attempts, 1, 'the failed gate costs a review round');
+  assert.equal(checkerPrompts.length, 1, 'no reviewer ran for the state that failed verification');
+  assert.match(c1.tasks[1]!.feedback![0]!, /`test -f out\/fixed.txt` failed \(exit 1\)/);
+  assert.ok(events.some((e) => /c1 verification failed: FAILED test -f out\/fixed.txt \(exit 1\)/.test(e)), events.join('\n'));
+  assert.deepEqual(c1.verification!.map((r) => [r.command, r.ok]), [['test -f out/fixed.txt', true], ['echo hello', true]], 'the latest run is what the board keeps');
+  assert.equal(c1.verification![1]!.output, 'hello');
+  assert.match(checkerPrompts[0]!, /## Verification run by dulger\n\n- passed: `test -f out\/fixed.txt`/, 'the reviewer sees what dulger established');
+  const saved = store.loadBoard(repo, 'run-gate');
+  assert.deepEqual(saved.cards[0]!.verify, c1.verify);
+  assert.match(buildReport(saved, {}), /verified:.*test -f out\/fixed.txt.*echo hello/);
+});

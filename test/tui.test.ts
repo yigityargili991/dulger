@@ -65,7 +65,7 @@ test('editor: typing, cursor keys, kill keys and history', () => {
 });
 
 function card(id: string, status: Card['status'], extra: Partial<Card> = {}): Card {
-  return { id, title: `Card ${id}`, description: 'does things', acceptanceCriteria: ['works'], dependsOn: [], status, attempts: 0, feedback: [], costUsd: 0,
+  return { id, title: `Card ${id}`, description: 'does things', acceptanceCriteria: ['works'], dependsOn: [], verify: [], status, attempts: 0, feedback: [], costUsd: 0,
     tasks: [{ id: 't1', cardId: id, title: 'task', instructions: '', status: status === 'done' ? 'done' : 'pending', attempts: 0 }], ...extra };
 }
 

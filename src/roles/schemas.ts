@@ -16,6 +16,7 @@ export const PLANNER_SCHEMA = {
           description: { type: 'string' },
           acceptanceCriteria: strArray,
           dependsOn: { ...strArray, description: 'ids of cards that must be done first' },
+          verify: { ...strArray, description: 'shell commands dulger runs in the card worktree before review, exit 0 = pass (build, tests, lint); non-interactive and finite; empty when nothing applies' },
           tasks: {
             type: 'array',
             items: {
@@ -26,7 +27,7 @@ export const PLANNER_SCHEMA = {
             },
           },
         },
-        required: ['id', 'title', 'description', 'acceptanceCriteria', 'dependsOn', 'tasks'],
+        required: ['id', 'title', 'description', 'acceptanceCriteria', 'dependsOn', 'verify', 'tasks'],
         additionalProperties: false,
       },
     },

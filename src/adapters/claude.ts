@@ -33,6 +33,7 @@ export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
  */
 export function createClaudeParser(): (line: string) => AgentEvent[] {
   let lastMessageId: string | undefined;
+  const commands = new Map<string, string>(); // tool_use id -> Bash command, to name what a denial refused
   return (line) => {
     const o = tryParseJson(line);
     if (!o) return [];
@@ -43,10 +44,10 @@ export function createClaudeParser(): (line: string) => AgentEvent[] {
         const id = (o.message as { id?: unknown } | undefined)?.id;
         const newMessage = typeof id !== 'string' || id !== lastMessageId;
         if (typeof id === 'string') lastMessageId = id;
-        return assistantEvents(o, newMessage);
+        return assistantEvents(o, newMessage, commands);
       }
       case 'user':
-        return toolResultEvents(o);
+        return toolResultEvents(o, commands);
       case 'result':
         return resultEvents(o);
       case 'rate_limit_event':
@@ -63,19 +64,38 @@ function initEvents(o: Record<string, unknown>): AgentEvent[] {
   return [{ type: 'init', sessionId: o.session_id }];
 }
 
-function assistantEvents(o: Record<string, unknown>, newMessage: boolean): AgentEvent[] {
+function assistantEvents(o: Record<string, unknown>, newMessage: boolean, commands: Map<string, string>): AgentEvent[] {
   const events: AgentEvent[] = [];
   for (const block of contentBlocks(o)) {
     if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) events.push({ type: 'text', text: block.text });
-    else if (block.type === 'tool_use' && typeof block.name === 'string') events.push({ type: 'tool', name: block.name, input: block.input });
+    else if (block.type === 'tool_use' && typeof block.name === 'string') {
+      events.push({ type: 'tool', name: block.name, input: block.input });
+      const command = (block.input as { command?: unknown } | undefined)?.command;
+      if (block.name === 'Bash' && typeof block.id === 'string' && typeof command === 'string') commands.set(block.id, command);
+    }
   }
   if (newMessage) events.push({ type: 'turn' });
   return events;
 }
 
-/** One event per tool result; a `user` line that echoes a prompt has none. */
-function toolResultEvents(o: Record<string, unknown>): AgentEvent[] {
-  return contentBlocks(o).filter((b) => b.type === 'tool_result').map(() => ({ type: 'tool_result' }));
+/** One event per tool result, preceded by a `denied` event when the harness refused the command; a `user` line that echoes a prompt has none. */
+function toolResultEvents(o: Record<string, unknown>, commands: Map<string, string>): AgentEvent[] {
+  const events: AgentEvent[] = [];
+  for (const b of contentBlocks(o)) {
+    if (b.type !== 'tool_result') continue;
+    const id = typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined;
+    if (b.is_error === true && DENIED.test(resultText(b.content))) events.push({ type: 'denied', command: (id && commands.get(id)) || 'a command' });
+    events.push({ type: 'tool_result' });
+  }
+  return events;
+}
+
+const DENIED = /permission to use \w+ has been denied|permission denied|not in the allowed/i;
+
+function resultText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) return content.map((c) => (typeof (c as { text?: unknown })?.text === 'string' ? (c as { text: string }).text : '')).join(' ');
+  return '';
 }
 
 function resultEvents(o: Record<string, unknown>): AgentEvent[] {
@@ -130,6 +150,7 @@ export const claudeAdapter: Adapter = {
     let final: Extract<AgentEvent, { type: 'result' }> | undefined;
     let rateLimits: RateLimits | undefined;
     const warnings: string[] = [];
+    const denied: string[] = [];
     const parse = createClaudeParser();
 
     const { exitCode, stderr } = await spawnLines({
@@ -143,6 +164,7 @@ export const claudeAdapter: Adapter = {
           if (ev.type === 'init') sessionId = ev.sessionId;
           if (ev.type === 'result') final = ev;
           if (ev.type === 'warning') warnings.push(ev.text);
+          if (ev.type === 'denied') denied.push(ev.command);
           if (ev.type === 'rate_limit') rateLimits = ev.limits;
           opts.onEvent(ev);
         }
@@ -161,6 +183,7 @@ export const claudeAdapter: Adapter = {
       usage: final?.usage,
       rateLimits,
       warnings: warnings.length ? warnings : undefined,
+      denied: denied.length ? denied : undefined,
       exitCode,
       error: ok ? undefined : final?.error || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
     };

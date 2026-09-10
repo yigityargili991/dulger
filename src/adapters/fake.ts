@@ -25,11 +25,11 @@ export const DEFAULT_FAKE_SCRIPT: FakeScript = {
   delayMs: 400,
   planner: {
     cards: [
-      { id: 'c1', title: 'Create greeting module', description: 'Add greet.js exporting greet(name).', acceptanceCriteria: ['greet("x") returns "Hello, x!"'], dependsOn: [],
+      { id: 'c1', title: 'Create greeting module', description: 'Add greet.js exporting greet(name).', acceptanceCriteria: ['greet("x") returns "Hello, x!"'], dependsOn: [], verify: [],
         tasks: [{ id: 't1', title: 'write module', instructions: 'Create greet.js' }] },
-      { id: 'c2', title: 'Add farewell module', description: 'Add bye.js exporting bye(name).', acceptanceCriteria: ['bye("x") returns "Bye, x!"'], dependsOn: [],
+      { id: 'c2', title: 'Add farewell module', description: 'Add bye.js exporting bye(name).', acceptanceCriteria: ['bye("x") returns "Bye, x!"'], dependsOn: [], verify: [],
         tasks: [{ id: 't1', title: 'write module', instructions: 'Create bye.js' }, { id: 't2', title: 'add test', instructions: 'Create bye.test.js' }] },
-      { id: 'c3', title: 'Wire CLI', description: 'cli.js prints greet + bye.', acceptanceCriteria: ['node cli.js x prints both lines'], dependsOn: ['c1', 'c2'],
+      { id: 'c3', title: 'Wire CLI', description: 'cli.js prints greet + bye.', acceptanceCriteria: ['node cli.js x prints both lines'], dependsOn: ['c1', 'c2'], verify: [],
         tasks: [{ id: 't1', title: 'write cli', instructions: 'Create cli.js' }] },
     ],
   },

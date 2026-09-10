@@ -1,7 +1,7 @@
 {
   "name": "@zamazingobjk/dulger",
   "version": "0.1.0",
-  "description": "dulger \u2014 a multi-agent kanban orchestrator that wraps Claude Code / Codex",
+  "description": "dulger — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
   "license": "MIT",
   "author": "Yigit Yargili",
   "repository": {
@@ -39,5 +39,9 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "chalk": "^6.0.0",
+    "string-width": "^8.2.2"
   }
 }

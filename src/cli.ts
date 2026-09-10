@@ -38,7 +38,7 @@ Options:
   --merge                         merge the result branch into the current branch when done
   --allow-dirty                   run even with uncommitted changes
   --repo <path>                   repository to work in (default: cwd)
-  --quiet                         no live table, log lines only
+  --quiet                         no full-screen view or live table, log lines only
   --version                       print dulger's version
 
 Per-role overrides live in <repo>/.dulger/config.json, e.g.

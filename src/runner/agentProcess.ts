@@ -30,7 +30,7 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
   const id = `a${++counter}`;
   const status: AgentStatus = {
     id, role: o.role, harness: o.harness, cardId: o.cardId, taskId: o.taskId,
-    state: 'starting', turns: 0, startedAt: Date.now(),
+    state: 'starting', turns: 0, history: [], startedAt: Date.now(),
   };
   o.registry.statuses.set(id, status);
   o.registry.onChange(status);
@@ -54,8 +54,14 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
     resetWatchdog();
     status.state = 'running';
     switch (e.type) {
-      case 'text': status.lastMessage = e.text; status.currentTool = undefined; break;
-      case 'tool': status.currentTool = e.name; status.lastMessage = describeTool(e); break;
+      case 'text': status.lastMessage = e.text; status.currentTool = undefined; remember(status, e.text); break;
+      case 'tool': {
+        const what = describeTool(e);
+        status.currentTool = e.name;
+        status.lastMessage = what;
+        remember(status, what === e.name ? e.name : `${e.name}  ${what}`);
+        break;
+      }
       case 'tool_result': status.currentTool = undefined; break;
       case 'turn': status.turns++; break;
       case 'warning': status.lastMessage = `warning: ${e.text}`; break;
@@ -86,6 +92,13 @@ export function markFailed(registry: AgentRegistry, cardId: string): void {
   for (const s of registry.statuses.values()) {
     if (s.cardId === cardId && s.state === 'done') s.state = 'failed';
   }
+}
+
+const HISTORY = 40;
+
+function remember(status: AgentStatus, line: string): void {
+  status.history.push(line.replace(/\s+/g, ' ').trim());
+  if (status.history.length > HISTORY) status.history.splice(0, status.history.length - HISTORY);
 }
 
 function describeTool(e: Extract<AgentEvent, { type: 'tool' }>): string {

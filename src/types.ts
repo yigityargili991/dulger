@@ -131,6 +131,8 @@ export interface AgentStatus {
   currentTool?: string;
   lastMessage?: string;
   turns: number;
+  /** The last few things the agent said or did, oldest first. */
+  history: string[];
   startedAt: number;
   endedAt?: number;
   costUsd?: number;

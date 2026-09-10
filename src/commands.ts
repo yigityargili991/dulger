@@ -6,7 +6,7 @@ import { STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
 import { resetInterrupted } from './board/scheduler.ts';
 import * as git from './git/worktree.ts';
-import { createOrchestrator } from './runner/orchestrator.ts';
+import { createOrchestrator, type Orchestrator } from './runner/orchestrator.ts';
 import { createBoard } from './board/create.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { worktreesDir } from './paths.ts';
@@ -14,7 +14,9 @@ import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow, fmtSpend } from './ui/ansi.ts';
-import type { Board } from './types.ts';
+import { createTui, tuiUsable } from './tui/tui.ts';
+import { resolveIcons } from './tui/theme.ts';
+import type { AgentStatus, Board } from './types.ts';
 
 export class CliError extends Error {}
 
@@ -32,57 +34,114 @@ export interface RunOutcome {
   aborted: boolean;
 }
 
-export async function runBoard(repoRoot: string, board: Board, config: Config, o: RunOptions): Promise<RunOutcome> {
-  console.log(`${bold(cyan('dulger'))} run ${board.runId} on ${dim(repoRoot)} (harness: ${config.harness}, concurrency: ${config.concurrency})`);
-  const quiet = o.quiet || !process.stdout.isTTY;
-  let view: LiveView | undefined;
-  const log = (msg: string) => (view ? view.note(msg) : console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`));
-  const orch = createOrchestrator(repoRoot, board, config, { log, onBoardChange: () => view?.update() });
-  const agents = () => orch.registry.statuses.values();
-  if (!quiet) view = createLiveView(() => board, agents);
+/**
+ * What a run shows while it happens: the full-screen view on a terminal, the redrawn table when the
+ * screen is too small, plain log lines when quiet or piped. Every variant can ask the person a question.
+ */
+interface RunUi {
+  update(): void;
+  note(msg: string): void;
+  setPhase(phase: string): void;
+  /** In the plain variants the board is printed and `intro` explains the choice; the full-screen view shows `hint` instead. */
+  ask(q: { label: string; intro: string; hint: string }): Promise<string | undefined>;
+  close(): void;
+}
 
-  let aborted = false;
-  const onSigint = () => {
-    aborted = true;
-    log(red('interrupted — stopping agents, saving board…'));
-    orch.abort();
+function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions, agents: () => Iterable<AgentStatus>, onInterrupt: () => void): RunUi {
+  const quiet = o.quiet || !process.stdout.isTTY;
+  if (!quiet && config.tui.enabled && tuiUsable()) {
+    const tui = createTui({ getBoard: () => board, getAgents: agents, icons: resolveIcons(config.tui.icons), onInterrupt });
+    return { update: tui.update, note: tui.note, setPhase: tui.setPhase, ask: (q) => tui.ask(q.label, q.hint), close: () => { tui.close(); } };
+  }
+  // The table is up while agents run and comes down for a question; the next phase brings it back.
+  let view: LiveView | undefined;
+  const show = () => { if (!quiet && !view) view = createLiveView(() => board, agents); };
+  const hide = () => { view?.stop(); view = undefined; };
+  process.on('SIGINT', onInterrupt);
+  show();
+  return {
+    update: () => view?.update(),
+    note: (msg) => (view ? view.note(msg) : console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`)),
+    setPhase: (phase) => { if (phase !== 'plan ready') show(); },
+    async ask(q) {
+      hide();
+      console.log();
+      printBoard(board);
+      console.log(`\n${q.intro}`);
+      return ask(`${bold(cyan(q.label))} ${dim('›')} `);
+    },
+    close() {
+      hide();
+      process.off('SIGINT', onInterrupt);
+    },
+  };
+}
+
+interface Run {
+  ui: RunUi;
+  orch: Orchestrator;
+  aborted: boolean;
+}
+
+function startRun(repoRoot: string, board: Board, config: Config, o: RunOptions): Run {
+  console.log(`${bold(cyan('dulger'))} run ${board.runId} on ${dim(repoRoot)} (harness: ${config.harness}, concurrency: ${config.concurrency})`);
+  const run = { aborted: false } as Run;
+  const onInterrupt = () => {
+    run.aborted = true;
+    run.ui.note(red('interrupted — stopping agents, saving board…'));
+    run.orch.abort();
     if (!o.interactive) setTimeout(() => process.exit(130), 3000).unref();
   };
-  process.once('SIGINT', onSigint);
+  let orch: Orchestrator | undefined;
+  run.ui = createUi(repoRoot, board, config, o, () => orch?.registry.statuses.values() ?? [], onInterrupt);
+  orch = createOrchestrator(repoRoot, board, config, { log: run.ui.note, onBoardChange: run.ui.update });
+  run.orch = orch;
+  return run;
+}
 
-  try {
-    if (o.fresh) {
-      await orch.plan();
-      view?.stop();
-      view = undefined;
-      printBoard(board);
-      if (!o.yes) {
-        const path = store.boardPath(repoRoot, board.runId);
-        console.log(`\nEdit ${cyan(path)} if you like, then press ${bold('Enter')} to dispatch (Ctrl-C to leave it in the backlog).`);
-        if (process.stdin.isTTY) {
-          const answer = await ask('');
-          if (answer === undefined) {
-            console.log(dim(`not dispatched; \`dulger resume ${board.runId}\` runs it later`));
-            return { landed: 0, aborted: true };
-          }
-        } else {
-          console.log('(non-interactive: continuing)');
-        }
-        board.cards = store.loadBoard(repoRoot, board.runId).cards;
-      }
-      if (!quiet) view = createLiveView(() => board, agents);
-    }
-    await orch.execute();
-  } finally {
-    view?.stop();
-    process.off('SIGINT', onSigint);
+const PLAN_INTRO = `${dim('Reply to change the plan (same planner session).')} ${bold('Enter')} or ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog.`;
+const PLAN_HINT = `${bold('⏎')} dispatch · type to revise the plan · ${bold('cancel')} · ${bold('^c')} keep in the backlog`;
+
+export type Reply = { kind: 'go' } | { kind: 'cancel' } | { kind: 'revise'; text: string };
+
+/** What a line typed at the plan prompt means: an empty line or a word of assent dispatches. */
+export function readReply(line: string): Reply {
+  const text = line.trim();
+  if (!text || /^(go|run|dispatch|yes|y)$/i.test(text)) return { kind: 'go' };
+  if (/^(cancel|abort|drop|discard)$/i.test(text)) return { kind: 'cancel' };
+  return { kind: 'revise', text };
+}
+
+/**
+ * The pause after planning, as a conversation: every reply revises the plan in the planner's own
+ * session until the person dispatches or cancels. Ctrl-C leaves the run in the backlog.
+ */
+async function converse(run: Run, repoRoot: string, board: Board): Promise<'go' | 'cancel' | 'backlog'> {
+  const intro = `${PLAN_INTRO} ${dim(`Edit ${store.boardPath(repoRoot, board.runId)} by hand if you prefer.`)}`;
+  while (true) {
+    run.ui.setPhase('plan ready');
+    const line = await run.ui.ask({ label: 'plan', intro, hint: PLAN_HINT });
+    if (line === undefined) return 'backlog';
+    const reply = readReply(line);
+    if (reply.kind !== 'revise') return reply.kind;
+    run.ui.setPhase('revising the plan');
+    await run.orch.plan(reply.text).catch((err: Error) => run.ui.note(red('error: ') + err.message));
   }
+}
 
+/** Dispatch the cards, then close the view and print what happened. */
+async function executeRun(run: Run, repoRoot: string, board: Board, o: RunOptions): Promise<RunOutcome> {
+  try {
+    run.ui.setPhase('running');
+    await run.orch.execute();
+  } finally {
+    run.ui.close();
+  }
   console.log();
   printBoard(board);
   const landed = board.cards.filter((c) => c.status === 'done').length;
   let mergedInto: string | undefined;
-  if (o.merge && landed > 0 && !aborted) {
+  if (o.merge && landed > 0 && !run.aborted) {
     git.git(repoRoot, ['merge', '--no-edit', board.runBranch]);
     mergedInto = git.currentBranch(repoRoot);
   }
@@ -90,7 +149,48 @@ export async function runBoard(repoRoot: string, board: Board, config: Config, o
   process.stdout.write(report(repoRoot, board, mergedInto));
   const failed = board.cards.filter((c) => c.status !== 'done' && c.status !== 'replaced');
   if (failed.length) console.log(dim(`  failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`));
-  return { landed, aborted };
+  return { landed, aborted: run.aborted };
+}
+
+function leaveInBacklog(run: Run, board: Board): RunOutcome {
+  run.ui.close();
+  console.log(dim(`not dispatched; \`dulger resume ${board.runId}\` runs it later`));
+  return { landed: 0, aborted: true };
+}
+
+function cancelRun(run: Run, repoRoot: string, board: Board): RunOutcome {
+  run.ui.close();
+  store.removeRun(repoRoot, board.runId);
+  git.deleteBranch(repoRoot, board.runBranch);
+  console.log(dim(`run ${board.runId} deleted`));
+  return { landed: 0, aborted: true };
+}
+
+/** Plan (when fresh), talk the plan through unless --yes, then execute. */
+export async function runBoard(repoRoot: string, board: Board, config: Config, o: RunOptions): Promise<RunOutcome> {
+  const run = startRun(repoRoot, board, config, o);
+  if (o.fresh) {
+    try {
+      run.ui.setPhase('planning');
+      await run.orch.plan();
+    } catch (err) {
+      run.ui.close();
+      throw err;
+    }
+    if (!o.yes && process.stdin.isTTY) {
+      switch (await converse(run, repoRoot, board)) {
+        case 'backlog': return leaveInBacklog(run, board);
+        case 'cancel': return cancelRun(run, repoRoot, board);
+        case 'go': board.cards = store.loadBoard(repoRoot, board.runId).cards; // the board file may have been edited by hand
+      }
+    }
+  }
+  return executeRun(run, repoRoot, board, o);
+}
+
+/** Plan a new run for the goal in a conversation with the planner, then execute it. */
+export function orderRun(repoRoot: string, goal: string, config: Config, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
+  return runBoard(repoRoot, createBoard(repoRoot, goal), config, { ...o, yes: false, fresh: true });
 }
 
 export async function resumeRun(repoRoot: string, config: Config, runId: string | undefined, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
@@ -215,39 +315,3 @@ export function printPlanNotes(board: Board): void {
   for (const o of p.omitted) console.log(red(`  left out: ${o}`));
 }
 
-/**
- * Plan with the planner in a conversation: show the board, take feedback, revise in the same session,
- * until the person says go (dispatch) or cancel (delete the run). Ctrl-C leaves the run in the backlog.
- */
-export async function orderRun(repoRoot: string, goal: string, config: Config, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
-  const board = createBoard(repoRoot, goal);
-  const log = (msg: string) => console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`);
-  const orch = createOrchestrator(repoRoot, board, config, { log });
-  await orch.plan();
-  while (true) {
-    console.log();
-    printBoard(board);
-    console.log(dim(`\nReply to change the plan (same planner session). ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog. Edit ${store.boardPath(repoRoot, board.runId)} by hand if you prefer.`));
-    const answer = await ask(`${bold(cyan('order'))} ${dim('›')} `);
-    if (answer === undefined) {
-      console.log(dim(`kept in the backlog; \`dulger resume ${board.runId}\` runs it later`));
-      return { landed: 0, aborted: true };
-    }
-    const text = answer.trim();
-    if (!text) continue;
-    if (/^\/?(go|run|dispatch|yes|y)$/i.test(text)) break;
-    if (/^\/?(cancel|abort|drop|discard)$/i.test(text)) {
-      store.removeRun(repoRoot, board.runId);
-      git.deleteBranch(repoRoot, board.runBranch);
-      console.log(dim(`run ${board.runId} deleted`));
-      return { landed: 0, aborted: true };
-    }
-    try {
-      await orch.plan(text);
-    } catch (err) {
-      console.error(red('error: ') + (err as Error).message);
-    }
-  }
-  board.cards = store.loadBoard(repoRoot, board.runId).cards;
-  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
-}

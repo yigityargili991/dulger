@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- A full-screen run view on terminals: cards as columns with progress and the agent's current action,
+  the agents and the log below, keyboard navigation, and an open-card view with tasks, review remarks
+  and the agent's recent actions. The dispatch pause and the `/order` conversation happen inside it.
+  Nerd Font icons on terminals that usually have one, Unicode elsewhere (`tui.icons`, `DULGER_ICONS`).
+- `dulger run` accepts plan revisions at its approval pause, the way `dulger order` does.
+- First dependencies: `chalk` (truecolor with fallbacks) and `string-width` (wide characters and icons
+  line up in the columns).
+
 ## 0.1.0 — 2026-09-10
 
 First release.

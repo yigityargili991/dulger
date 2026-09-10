@@ -3,7 +3,7 @@
 A kanban of coding agents. Give it a goal; a planner turns it into cards, workers build the cards in
 parallel git worktrees, a reviewer checks each one, and the result lands on a branch for you to merge.
 Every agent is a headless [Claude Code](https://claude.com/claude-code) or
-[Codex](https://github.com/openai/codex) process. No API keys, no dependencies.
+[Codex](https://github.com/openai/codex) process. No API keys, no build step.
 
 ```sh
 cd your-repo
@@ -37,6 +37,20 @@ From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm li
 6. **Report.** What landed, what did not, files, reviewer notes, spend, next step.
 
 Your checkout is untouched. The result is on `dulger/<runId>`; `git merge` it when you are happy.
+
+## The screen
+
+On a terminal a run takes the whole screen: the cards as columns, the agents under them with what
+each one is doing, the log, and a prompt line whenever the run asks you something. Arrow keys (or
+hjkl) select a card, Enter opens it (description, acceptance criteria, tasks, review remarks, the
+agent's last actions), Esc closes it, PgUp/PgDn scroll the log. Tab moves between the prompt and the
+board while a question is open. Ctrl-C stops the agents and saves the board. When the run ends the
+screen goes away and the report prints where you can scroll back to it.
+
+Icons come from a Nerd Font when the terminal is ghostty, kitty, WezTerm, Alacritty or foot, and are
+plain Unicode elsewhere; `"tui": { "icons": "nerd" }` in the config or `DULGER_ICONS=nerd` forces it,
+`ascii` works on anything. `--quiet`, a pipe, a screen under 80×16, or `"tui": { "enabled": false }`
+fall back to log lines.
 
 ## Commands
 
@@ -74,7 +88,8 @@ dulger clean                  remove leftover worktrees and wip branches
   "worktreeSetup": "npm ci",       // run once in every new worktree
   "claude": { "mcp": true },       // workers get your MCP servers; the planner and reviewer never do
   "codex": { "bypassSandbox": false },
-  "memory": { "location": "user", "maxItems": 40, "maxChars": 6000 }
+  "memory": { "location": "user", "maxItems": 40, "maxChars": 6000 },
+  "tui": { "enabled": true, "icons": "auto" }   // full-screen run view; icons nerd | unicode | ascii | auto
 }
 ```
 

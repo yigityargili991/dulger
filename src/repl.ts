@@ -1,6 +1,6 @@
 // The interactive prompt: type a goal to run it, slash-commands for everything else. The run itself
 // looks exactly like `dulger run`; between runs you decide whether the result merges into your branch.
-import { loadConfig, type Config } from './config.ts';
+import { DEFAULT_CONFIG, loadConfig, type Config } from './config.ts';
 import * as store from './board/store.ts';
 import { createBoard } from './board/create.ts';
 import * as git from './git/worktree.ts';
@@ -28,6 +28,7 @@ const HELP = `Type a goal to plan and run it. Commands:
   /clean              remove leftover worktrees and wip branches
   /set <key> <value>  harness claude|codex|fake · concurrency <n> · attempts <n> · replans <n>
                       model <name>|off · docs on|off · yes on|off · quiet on|off · dirty on|off
+                      tui on|off · icons nerd|unicode|ascii|auto
   /status             show the current settings
   /help               this text
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
@@ -141,11 +142,16 @@ function set(session: Session, key = '', value = ''): void {
     case 'yes': session.yes = on(value); return;
     case 'quiet': session.quiet = on(value); return;
     case 'dirty': session.allowDirty = on(value); return;
+    case 'tui': session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), enabled: on(value) }; return;
+    case 'icons':
+      if (!['nerd', 'unicode', 'ascii', 'auto'].includes(value)) throw new CliError('icons is nerd, unicode, ascii or auto');
+      session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), icons: value as Config['tui']['icons'] };
+      return;
     default: throw new CliError(`unknown setting "${key}" (see /help)`);
   }
 }
 
 function settingsLine(s: Session, c: Config): string {
-  const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs'].filter(Boolean).join(' ');
+  const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui'].filter(Boolean).join(' ');
   return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · model ${s.model ?? 'default'}${flags ? yellow(` · ${flags}`) : ''}`;
 }

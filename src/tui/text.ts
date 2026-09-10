@@ -1,0 +1,72 @@
+// Width-aware string helpers for the full-screen view. Everything here understands ANSI escapes and
+// wide characters, so a nerd-font glyph, an emoji and a CJK title all land in the right cell.
+import stringWidth from 'string-width';
+
+const ANSI = /(\x1b\[[0-9;?]*[A-Za-z])/;
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+export const width = (s: string): number => stringWidth(s);
+
+/** Cut to `w` cells, keeping escapes intact and ending with an ellipsis when something was dropped. */
+export function fit(s: string, w: number, ellipsis = '…'): string {
+  if (w <= 0) return '';
+  if (stringWidth(s) <= w) return s;
+  const budget = w - stringWidth(ellipsis);
+  let out = '';
+  let used = 0;
+  for (const part of s.split(ANSI)) {
+    if (part.startsWith('\x1b')) { out += part; continue; }
+    for (const { segment } of segmenter.segment(part)) {
+      const cw = stringWidth(segment);
+      if (used + cw > budget) return out + '\x1b[0m' + ellipsis;
+      out += segment;
+      used += cw;
+    }
+  }
+  return out + ellipsis;
+}
+
+/** Exactly `w` cells: cut or right-padded. */
+export function cell(s: string, w: number): string {
+  const cut = fit(s, w);
+  return cut + ' '.repeat(Math.max(0, w - stringWidth(cut)));
+}
+
+/** Left part and right part on one line of `w` cells, the right part kept whole when it fits. */
+export function spread(left: string, right: string, w: number): string {
+  const rw = stringWidth(right);
+  if (rw >= w) return cell(right, w);
+  return cell(left, w - rw) + right;
+}
+
+/** Word-wrap plain text to `w` cells; at most `maxLines` lines, the last one truncated. */
+export function wrap(text: string, w: number, maxLines = Infinity): string[] {
+  const lines: string[] = [];
+  for (const para of text.replace(/\s+/g, ' ').trim().split('\n')) {
+    let line = '';
+    for (const word of para.split(' ')) {
+      if (!word) continue;
+      const candidate = line ? `${line} ${word}` : word;
+      if (stringWidth(candidate) <= w) { line = candidate; continue; }
+      if (line) lines.push(line);
+      line = stringWidth(word) <= w ? word : fit(word, w);
+    }
+    if (line) lines.push(line);
+  }
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    kept[maxLines - 1] = fit(kept[maxLines - 1]! + ' ' + lines.slice(maxLines).join(' '), w);
+    return kept;
+  }
+  return lines;
+}
+
+export function repeat(ch: string, n: number): string {
+  return n > 0 ? ch.repeat(n) : '';
+}
+
+/** A bar of `w` cells, `ratio` of it lit. */
+export function bar(ratio: number, w: number, on: string, off: string, lit: (s: string) => string, dim: (s: string) => string): string {
+  const n = Math.round(Math.max(0, Math.min(1, ratio)) * w);
+  return lit(repeat(on, n)) + dim(repeat(off, w - n));
+}

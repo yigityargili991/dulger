@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentRole, HarnessName } from './types.ts';
+import type { IconSet } from './tui/theme.ts';
 
 export interface RoleConfig {
   harness?: HarnessName;
@@ -29,6 +30,8 @@ export interface Config {
   claude: { mcp: boolean };  // give the user's MCP servers to the agents that can use them (workers, docs); planner and checker never get them
   codex: { bypassSandbox: boolean };
   memory: MemoryConfig;
+  /** The full-screen run view on a terminal; icons: nerd | unicode | ascii | auto (nerd on ghostty, kitty, wezterm, alacritty, foot). */
+  tui: { enabled: boolean; icons: IconSet | 'auto' };
 }
 
 export const DEFAULT_CONFIG: Config = {
@@ -44,6 +47,7 @@ export const DEFAULT_CONFIG: Config = {
   claude: { mcp: true },
   codex: { bypassSandbox: false },
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },
+  tui: { enabled: true, icons: 'auto' },
 };
 
 export const STATE_DIR = '.dulger';
@@ -61,6 +65,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     claude: { ...DEFAULT_CONFIG.claude, ...fromFile.claude, ...overrides.claude },
     codex: { ...DEFAULT_CONFIG.codex, ...fromFile.codex, ...overrides.codex },
     memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
+    tui: { ...DEFAULT_CONFIG.tui, ...fromFile.tui, ...overrides.tui },
   };
 }
 

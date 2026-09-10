@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-10
 
 - The verification gate: every card names the commands that prove it (`verify`, chosen by the planner
   from the project's real build, test and lint commands). dulger runs them itself after the card's work

@@ -18,10 +18,9 @@ Node 24+, git, and `claude` or `codex` on your PATH.
 ```sh
 npx @zamazingobjk/dulger                    # run without installing
 npm install -g @zamazingobjk/dulger         # or install the `dulger` command
-npx gitlab:zamazingo99/dulger               # straight from the repository
 ```
 
-From a checkout: `npm install && npm link`.
+From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm link`.
 
 ## How a run works
 

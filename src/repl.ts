@@ -26,10 +26,13 @@ const HELP = `Type a goal to plan and run it. Commands:
   /merge [runId]      merge a run's result branch into the current branch
   /memory [list|add "<text>"|rm <id>|compact|path]
   /clean              remove leftover worktrees and wip branches
-  /set <key> <value>  harness claude|codex|fake · concurrency <n> · attempts <n> · replans <n>
-                      model <name>|off · docs on|off · yes on|off · quiet on|off · dirty on|off
-                      tui on|off · icons nerd|unicode|ascii|auto
   /status             show the current settings
+Settings (each shows its current value when given no argument):
+  /harness claude|codex|fake        /model <name>|off             /concurrency <n>
+  /attempts <n>                     /replans <n>                  /docs on|off
+  /yes on|off                       /quiet on|off                 /dirty on|off
+  /tui on|off                       /icons nerd|unicode|ascii|auto
+  /set <key> <value>  the same settings in one command
   /help               this text
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
 
@@ -65,7 +68,7 @@ export async function repl(repoRoot: string, session: Session, version: string):
 }
 
 async function goal(text: string, repoRoot: string, session: Session, config: Config): Promise<void> {
-  if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /set dirty on)');
+  if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
   const board = createBoard(repoRoot, text);
   const r = await runBoard(repoRoot, board, config, { yes: session.yes, quiet: session.quiet, merge: false, fresh: true, interactive: true });
   if (r.aborted) { console.log(dim(`run ${board.runId} stopped; /resume continues it`)); return; }
@@ -105,7 +108,7 @@ async function command(text: string, repoRoot: string, session: Session, config:
         if (!a?.trim()) return false;
         text = a.trim();
       }
-      if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /set dirty on)');
+      if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
       const r = await orderRun(repoRoot, text, config(), { quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot));
@@ -122,8 +125,44 @@ async function command(text: string, repoRoot: string, session: Session, config:
       memoryCommand(repoRoot, config(), sub, arg ? [arg] : []);
       return false;
     }
-    case 'set': set(session, args[0], args.slice(1).join(' ')); console.log(dim(settingsLine(session, config()))); return false;
-    default: throw new CliError(`unknown command /${cmd} (try /help)`);
+    case 'set':
+      if (!args[0]) console.log(settingsLine(session, config()));
+      else setting(session, config, args[0], args.slice(1).join(' '));
+      return false;
+    default:
+      if (SETTINGS.includes(cmd)) { setting(session, config, cmd, rest); return false; }
+      throw new CliError(`unknown command /${cmd} (try /help)`);
+  }
+}
+
+const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons'];
+
+/** Change a setting, or show its current value when no value is given. */
+function setting(session: Session, config: () => Config, key: string, value: string): void {
+  if (!value) {
+    if (!SETTINGS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
+    console.log(`${key} ${bold(currentValue(session, config(), key))}`);
+    return;
+  }
+  set(session, key, value);
+  console.log(dim(settingsLine(session, config())));
+}
+
+function currentValue(s: Session, c: Config, key: string): string {
+  const onOff = (b: boolean) => (b ? 'on' : 'off');
+  switch (key) {
+    case 'harness': return c.harness;
+    case 'concurrency': return String(c.concurrency);
+    case 'attempts': return String(c.maxAttempts);
+    case 'replans': return String(c.maxReplans);
+    case 'model': return s.model ?? 'default';
+    case 'docs': return onOff(c.docs);
+    case 'yes': return onOff(s.yes);
+    case 'quiet': return onOff(s.quiet);
+    case 'dirty': return onOff(s.allowDirty);
+    case 'tui': return onOff(c.tui.enabled);
+    case 'icons': return c.tui.icons;
+    default: return '?';
   }
 }
 

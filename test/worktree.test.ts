@@ -16,6 +16,13 @@ function tempRepo(): string {
   return dir;
 }
 
+test('hasCommits is false on an unborn branch and true after the first commit', () => {
+  const empty = mkdtempSync(join(tmpdir(), 'dulger-git-'));
+  wt.git(empty, ['init', '-q', '-b', 'main']);
+  assert.equal(wt.hasCommits(empty), false);
+  assert.equal(wt.hasCommits(tempRepo()), true);
+});
+
 test('worktree lifecycle: create, commit, merge-back, remove', () => {
   const repo = tempRepo();
   const base = wt.headRef(repo);
@@ -90,4 +97,22 @@ test('mergeFrom with keepConflicts leaves markers that commitAll can resolve', (
   assert.equal(wt.commitAll(w2, 'resolved'), true);
   assert.equal(wt.land(w2, 'dulger/run3'), true);
   assert.equal(wt.git(repo, ['show', 'dulger/run3:README.md']), 'from c1 and c2');
+});
+
+test('initRepo creates a repository with a first commit and is a no-op afterwards', async () => {
+  const { initRepo } = await import('../src/commands.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-init-'));
+  writeFileSync(join(dir, 'a.txt'), 'a\n');
+  const log = console.log;
+  console.log = () => {};
+  try {
+    initRepo(dir);
+    assert.equal(wt.hasCommits(dir), true);
+    assert.equal(wt.git(dir, ['ls-files']), 'a.txt');
+    const head = wt.headRef(dir);
+    initRepo(dir);
+    assert.equal(wt.headRef(dir), head);
+  } finally {
+    console.log = log;
+  }
 });

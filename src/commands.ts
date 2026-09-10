@@ -240,6 +240,36 @@ export function mergeRun(repoRoot: string, runId?: string): void {
   console.log(green(`merged ${board.runBranch} into ${git.currentBranch(repoRoot)}`));
 }
 
+/**
+ * Make `dir` something dulger can run in: a git repository with at least one commit. Creates the
+ * repository when there is none and commits whatever is there (except .dulger/) when the branch
+ * is still unborn. A repository that already has commits is left alone.
+ */
+export function initRepo(dir: string): void {
+  let repoRoot: string;
+  try {
+    repoRoot = git.repoRoot(dir);
+    console.log(dim(`already a git repository: ${repoRoot}`));
+  } catch {
+    git.git(dir, ['init', '--quiet']);
+    repoRoot = git.repoRoot(dir);
+    console.log(green(`initialised git repository in ${repoRoot}`));
+  }
+  git.excludeFromGit(repoRoot, [`${STATE_DIR}/*`, `!${STATE_DIR}/context`, `!${STATE_DIR}/config.json`], [`${STATE_DIR}/`]);
+  if (git.hasCommits(repoRoot)) { console.log(dim(`${git.currentBranch(repoRoot)} already has commits; nothing to do`)); return; }
+  git.git(repoRoot, ['add', '-A', '--', '.', `:(exclude)${STATE_DIR}`]);
+  const staged = git.git(repoRoot, ['diff', '--cached', '--name-only']).split('\n').filter(Boolean);
+  try {
+    git.git(repoRoot, ['commit', '--quiet', '--no-verify', '--allow-empty', '-m', 'Initial commit']);
+  } catch (err) {
+    if (err instanceof git.GitError && /tell me who you are|user\.(name|email)/i.test(err.stderr)) {
+      throw new CliError('git has no identity configured; set user.name and user.email (git config --global user.name "…"), then rerun dulger init');
+    }
+    throw err;
+  }
+  console.log(green(`committed ${staged.length} file(s) as the initial commit on ${git.currentBranch(repoRoot)}`));
+}
+
 export function clean(repoRoot: string): void {
   for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('dulger-wip/'))) {
     git.removeWorktree(repoRoot, w.path);

@@ -55,7 +55,8 @@ fall back to log lines.
 ## Commands
 
 ```
-dulger                        interactive prompt (/order /board /report /runs /resume /merge /memory /set /help)
+dulger                        interactive prompt (/order /board /report /runs /resume /merge /memory /help, /harness /model … for settings)
+dulger init [path]            git init (if needed) plus a first commit, so runs have a base
 dulger run "<goal>"           plan, pause for approval, execute
 dulger order "<goal>"         plan in a conversation with the planner, then execute
 dulger resume [runId]         continue an interrupted run

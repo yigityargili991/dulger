@@ -36,6 +36,11 @@ export function currentBranch(cwd: string): string {
   return git(cwd, ['rev-parse', '--abbrev-ref', 'HEAD']);
 }
 
+/** False on a freshly initialised repository whose HEAD points at an unborn branch. */
+export function hasCommits(cwd: string): boolean {
+  return git(cwd, ['rev-parse', '--verify', '--quiet', 'HEAD'], { allowFail: true }) !== '';
+}
+
 export function isClean(cwd: string): boolean {
   return git(cwd, ['status', '--porcelain', '--untracked-files=no']) === '';
 }

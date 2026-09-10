@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { loadConfig, type Config } from './config.ts';
 import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
-import { CliError, clean, memoryCommand, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { repl } from './repl.ts';
 import { red, cursor } from './ui/ansi.ts';
 import type { HarnessName } from './types.ts';
@@ -14,6 +14,7 @@ const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / C
 
 Usage:
   dulger                          interactive prompt: type goals, /help for commands
+  dulger init [path]              create a git repository with a first commit, ready for runs
   dulger run "<goal>" [options]   plan a board for the goal, then execute it
   dulger order "<goal>" [options] plan in a conversation with the planner, then execute
   dulger resume <runId> [options] continue an interrupted run
@@ -48,6 +49,17 @@ function packageVersion(): string {
   return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
 }
 
+function findRepoRoot(dir: string): string {
+  try {
+    return git.repoRoot(dir);
+  } catch (err) {
+    if (err instanceof git.GitError && /not a git repository/i.test(err.stderr)) {
+      throw new CliError(`${dir} is not inside a git repository (dulger needs one for its branches and worktrees; dulger init sets one up)`);
+    }
+    throw err;
+  }
+}
+
 async function main(argv: string[]): Promise<void> {
   const { values: v, positionals } = parseArgs({
     args: argv,
@@ -63,7 +75,13 @@ async function main(argv: string[]): Promise<void> {
   if (v.help) { console.log(USAGE); return; }
   if (!cmd && !(process.stdin.isTTY && process.stdout.isTTY)) { console.log(USAGE); return; }
 
-  const repoRoot = git.repoRoot(v.repo ?? process.cwd());
+  if (cmd === 'init') { initRepo(arg ?? v.repo ?? process.cwd()); return; }
+
+  const repoRoot = findRepoRoot(v.repo ?? process.cwd());
+  // Runs branch off HEAD, so a repository without a single commit has nothing to work on yet.
+  if ((cmd === undefined || cmd === 'run' || cmd === 'order' || cmd === 'resume') && !git.hasCommits(repoRoot)) {
+    throw new CliError(`${repoRoot} has no commits yet; dulger init makes the first one`);
+  }
   const overrides: Partial<Config> = {};
   if (v.harness) overrides.harness = v.harness as HarnessName;
   if (v.concurrency) overrides.concurrency = Number(v.concurrency);

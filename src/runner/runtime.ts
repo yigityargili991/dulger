@@ -42,6 +42,8 @@ export interface Runtime {
   save(type: BoardEventType, extra?: Omit<BoardEvent, 'at' | 'type'>): void;
   /** Charge an agent call to the run and, when given, to its card. */
   addCost(card: Card | undefined, cost?: number, usage?: Usage): void;
+  /** The reason a card must stop now, when it has spent its budget. */
+  overBudget(card: Card): string | undefined;
   /** Run config.worktreeSetup in a freshly created worktree (installs dependencies and the like). */
   setupWorktree(cwd: string): void;
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
@@ -100,11 +102,16 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       if (cost) {
         board.costUsd += cost;
         if (card) card.costUsd += cost;
+        if (config.budgetUsd !== undefined && board.costUsd >= config.budgetUsd && !signal.aborted) hooks.halt?.(`run budget of $${config.budgetUsd} reached ($${board.costUsd.toFixed(2)} spent)`);
       }
       if (usage) {
         board.usage = addUsage(board.usage, usage);
         if (card) card.usage = addUsage(card.usage, usage);
       }
+    },
+    overBudget(card) {
+      const limit = config.cardBudgetUsd;
+      return limit !== undefined && card.costUsd >= limit ? `card budget of $${limit} reached ($${card.costUsd.toFixed(2)} spent)` : undefined;
     },
     setupWorktree(cwd) {
       if (!config.worktreeSetup) return;

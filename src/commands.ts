@@ -4,7 +4,7 @@ import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
-import { resetInterrupted } from './board/scheduler.ts';
+import { resetInterrupted, retryCard } from './board/scheduler.ts';
 import * as git from './git/worktree.ts';
 import { createOrchestrator, type Orchestrator } from './runner/orchestrator.ts';
 import { createBoard } from './board/create.ts';
@@ -16,7 +16,7 @@ import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow, fmtSpend } from './ui/ansi.ts';
 import { createTui, tuiUsable } from './tui/tui.ts';
 import { resolveIcons } from './tui/theme.ts';
-import type { AgentStatus, Board } from './types.ts';
+import type { AgentStatus, Board, Card } from './types.ts';
 
 export class CliError extends Error {}
 
@@ -200,6 +200,19 @@ export async function resumeRun(repoRoot: string, config: Config, runId: string 
   return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
 }
 
+/** Give one failed card another round (its last rejection is its first task), then run the board on. */
+export async function retryRun(repoRoot: string, config: Config, cardId: string | undefined, runId: string | undefined, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
+  if (!cardId) throw new CliError('dulger retry needs a card id, e.g. dulger retry c7');
+  const board = store.loadBoard(repoRoot, latestRun(repoRoot, runId));
+  let card: Card;
+  try { card = retryCard(board, cardId); } catch (err) { throw new CliError((err as Error).message); }
+  const fix = card.tasks.find((t) => t.status === 'pending' && t.kind === 'fix');
+  console.log(yellow(`card ${card.id} back in the backlog with one more review round${fix ? ` (first: ${fix.title}: ${fix.feedback?.at(-1)?.split('\n')[0] ?? ''})` : ''}`));
+  const reset = resetInterrupted(board);
+  if (reset.length) console.log(yellow(`reset ${reset.length} interrupted card(s) to backlog (their worktrees are reused if present)`));
+  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
+}
+
 export function latestRun(repoRoot: string, runId?: string): string {
   const id = runId ?? store.listRuns(repoRoot).at(-1);
   if (!id) throw new CliError('no runs found');
@@ -332,7 +345,8 @@ export function printBoard(board: Board): void {
     const deps = c.dependsOn.length ? dim(` after ${c.dependsOn.join(',')}`) : '';
     console.log(`  ${bold(c.id)} ${c.title}${deps}`);
     for (const t of c.tasks) console.log(dim(`     ${t.id} ${t.title}`));
-    for (const n of c.reviewNotes ?? []) console.log(yellow(`     note: ${n}`));
+    const notes = c.reviewNotes?.length ?? 0;
+    if (notes) console.log(yellow(`     ${notes} reviewer note${notes === 1 ? '' : 's'}`) + dim(' (dulger report lists them)'));
   }
   printPlanNotes(board);
 }

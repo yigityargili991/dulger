@@ -134,14 +134,14 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       if (byWork.length && (board.replans ?? 0) < config.maxReplans) await replan(byWork);
       if (ctrl.signal.aborted) break;
       for (const c of blockUnreachable(board)) {
-        log(`card ${c.id} blocked: ${c.feedback.at(-1)}`);
-        save('card_blocked', { cardId: c.id, message: c.feedback.at(-1) });
+        log(`card ${c.id} ${c.reason}`);
+        save('card_blocked', { cardId: c.id, message: c.reason });
       }
       for (const card of readyCards(board, config.concurrency)) {
         inFlight.set(card.id, runCard(rt, card).catch((err) => {
           card.status = 'failed';
           markFailed(rt.registry, card.id);
-          card.feedback.push(`internal error: ${(err as Error).message}`);
+          card.reason = `internal error: ${(err as Error).message}`;
           log(`card ${card.id} crashed: ${(err as Error).message}`);
           save('card_failed', { cardId: card.id, message: (err as Error).message });
         }).finally(() => inFlight.delete(card.id)));

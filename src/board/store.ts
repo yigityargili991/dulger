@@ -33,16 +33,26 @@ export function saveBoard(repoRoot: string, board: Board): void {
 
 export function loadBoard(repoRoot: string, runId: string): Board {
   const board = JSON.parse(readFileSync(boardPath(repoRoot, runId), 'utf8')) as Board;
-  for (const c of board.cards) {
-    // Boards from older versions.
-    c.verify ??= [];
-    if (c.status === 'failed' && (!c.failure || c.feedback.at(-1) === 'a task failed; see logs')) {
-      const agentNeverAnswered = c.tasks.some((t) => t.status === 'failed' && !t.result);
-      c.failure = c.feedback.some((f) => /^checker failed to run:/.test(f)) || agentNeverAnswered ? 'infrastructure' : 'work';
-    }
-  }
+  for (const c of board.cards) migrate(c);
   validateBoard(board);
   return board;
+}
+
+// Boards written before 0.4 had no verify list, no failure kind, and dulger's own status lines mixed into
+// the reviewer feedback. Read them into today's shape once, on load.
+const LEGACY_STATUS_LINE = /^(blocked:|replaced by replan|reviewer could not run:|checker failed to run:|task \S+ (could not run|was not finished)|a task failed|merge conflicts could not|internal error:)/;
+
+function migrate(c: Card): void {
+  c.verify ??= [];
+  const status = c.feedback.filter((f) => LEGACY_STATUS_LINE.test(f));
+  if (status.length) {
+    c.feedback = c.feedback.filter((f) => !LEGACY_STATUS_LINE.test(f));
+    if (c.status === 'failed' || c.status === 'blocked' || c.status === 'replaced') c.reason ??= status.at(-1);
+  }
+  if (c.status === 'failed' && (!c.failure || c.reason === 'a task failed; see logs')) {
+    const agentNeverAnswered = c.tasks.some((t) => t.status === 'failed' && !t.result);
+    c.failure = status.some((f) => /^checker failed to run:/.test(f)) || agentNeverAnswered ? 'infrastructure' : 'work';
+  }
 }
 
 /** Delete a run's directory (board, events, logs). The caller removes its branch. */
@@ -110,7 +120,7 @@ export function applyReplan(board: Board, plan: PlannerResult): { replaced: Card
   validateBoard({ ...board, cards: [...board.cards, ...added] });
   for (const c of replaced) {
     c.status = 'replaced';
-    c.feedback.push(`replaced by replan ${n}`);
+    c.reason = `replaced by replan ${n}`;
   }
   board.cards.push(...added);
   board.replans = n;

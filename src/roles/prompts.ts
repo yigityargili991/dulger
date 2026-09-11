@@ -13,6 +13,7 @@ const SIZE_RULES = `- Keep cards small: one card changes at most about 1000 line
 
 /** How a card proves itself: commands dulger runs, not claims an agent makes. Shared by planning and replanning. */
 const VERIFY_RULES = (allowedCommands: string[]) => `- "verify" lists the shell commands that prove the card's acceptance criteria: the project's real build, test, lint or typecheck commands (e.g. "npm test", "cargo build", "cargo test"). dulger itself runs them in the card's worktree after the work is committed; any non-zero exit sends the card back to the implementer with the output, before a reviewer looks at it. They must be non-interactive, finish on their own, and not depend on services that are not there. Always include the build and the tests when the project has them; give an empty list only when nothing can be run.
+- A card that produces a program with a user interface must also give the gate a way to prove it starts: a headless self-test entry point (e.g. a \`--self-test\` flag that builds the main window state, runs a few commands and exits 0) added by the card and listed in verify, or a virtual display wrapper such as \`xvfb-run -a\` when one exists. GUI code only a human can exercise is code the reviewer cannot pass on evidence.
 - The reviewer sees the verify results and may additionally run: ${allowedCommands.join(', ') || '(none)'}. Any criterion no command covers must be verifiable from the diff alone.`;
 
 export function plannerSystem(allowedCommands: string[]): string {
@@ -69,6 +70,19 @@ ${VERIFY_RULES(allowedCommands)}
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
 
+/** A retried task finds the previous session's leftovers in the worktree; say so, and what that session reported. */
+function earlierAttempts(task: Task): string {
+  if (task.attempts <= 1) return '';
+  const n = task.attempts - 1;
+  const reported = task.error
+    ? `It ended without an answer: ${task.error}.`
+    : task.result
+      ? `It reported: ${task.result.summary}${task.result.remaining.length ? ` Still to do: ${task.result.remaining.join('; ')}` : ''}`
+      : 'It left no report.';
+  return `\nThis task ran ${n === 1 ? 'once' : `${n} times`} before in this worktree and may have left partial, uncommitted work. ${reported}
+Look at what is there before redoing it: keep what is right, finish what is missing, and remove what is wrong. Do not treat existing files as proof the task is done.\n`;
+}
+
 /** The gate the card has to pass, so the implementer runs the same commands before reporting done. */
 function verifyLines(card: Card): string {
   if (!card.verify.length) return '';
@@ -77,7 +91,7 @@ function verifyLines(card: Card): string {
 
 function cardDetail(c: Card): string {
   const tasks = c.tasks.map((t) => `  - ${t.id} [${t.status}] ${t.title}${t.result?.summary ? `: ${t.result.summary}` : ''}`).join('\n');
-  const feedback = c.feedback.length ? `\n  Feedback:\n${c.feedback.map((f) => `  - ${f}`).join('\n')}` : '';
+  const feedback = (c.reason ? `\n  Stopped because: ${c.reason}` : '') + (c.feedback.length ? `\n  Feedback:\n${c.feedback.map((f) => `  - ${f}`).join('\n')}` : '');
   return `### ${c.id}: ${c.title} [${c.status}]${c.dependsOn.length ? ` (after ${c.dependsOn.join(', ')})` : ''}
 
 ${c.description}
@@ -157,7 +171,7 @@ ${verifyLines(card)}${earlier.length ? `\nTasks already completed on this card:\
 Task id: ${task.id}
 Card id: ${card.id}
 Title: ${task.title}
-
+${earlierAttempts(task)}
 ${task.instructions}`;
 }
 
@@ -179,7 +193,7 @@ ${verifyLines(card)}${done.length ? `\nWork done so far on this card:\n${done.jo
 Task id: ${task.id}
 Card id: ${card.id}
 Title: ${task.title}
-
+${earlierAttempts(task)}
 The card's changes are committed in this worktree; \`git diff ${board.runBranch}...HEAD\` shows them.
 The card was not accepted for these reasons:
 ${(task.feedback ?? []).map((f) => `- ${f}`).join('\n') || '- (no details given)'}
@@ -216,6 +230,8 @@ What blocks (pass=false):
 
 What does not block: style and naming preferences, alternatives that are not clearly better, problems that existed before this card (unless it made them worse), work that belongs to other cards. Put those in "notes"; they are recorded on the board without costing a rework round.
 
+Be consistent across rounds. Raise every blocking problem the first time you see the card: the implementer gets one session per round, and a card that meets a new bar each round never lands. In a later round, block only on what the fix failed to address or newly broke. What you recorded as a note in an earlier round stays a note now, unless the fix made it worse.
+
 Answer rules:
 - feedback: every blocking problem, each concrete and actionable (file, what is wrong, what to do). The implementing agent gets exactly this list and one session to address it, so be complete the first time.
 - notes: the non-blocking observations, if any.
@@ -224,6 +240,8 @@ Answer rules:
 
 export function checkerPrompt(board: Board, card: Card, diff: ReviewDiff, context: string): string {
   const summaries = card.tasks.filter((t) => t.result).map((t) => `- ${t.id} ${t.title}: ${t.result!.summary}`);
+  const reported = new Set(card.tasks.flatMap((t) => t.result?.filesChanged ?? []));
+  const unreported = diff.files.filter((f) => !reported.has(f));
   const spec = card.tasks.filter((t) => t.kind !== 'fix').map((t) => `### ${t.id} ${t.title}\n\n${t.instructions}`);
   const fixes = card.tasks.filter((t) => t.kind === 'fix' && t.result).map((t) => `- ${t.title}: ${(t.feedback ?? []).join(' / ')}`);
   return `${context}
@@ -246,7 +264,7 @@ ${verificationBlock(card)}
 ## What the implementing agents reported
 
 ${summaries.join('\n') || '- (no reports)'}
-${fixes.length ? `\nEarlier review rounds asked for these fixes (check they were addressed):\n${fixes.join('\n')}\n` : ''}
+${fixes.length ? `\nEarlier review rounds asked for these fixes (check they were addressed):\n${fixes.join('\n')}\n` : ''}${unreported.length ? `\nFiles in the diff that no task reported changing (look for unrelated churn such as reformatting, and for work outside the card):\n${unreported.map((f) => `- ${f}`).join('\n')}\n` : ''}${card.reviewNotes?.length ? `\n## Notes from earlier rounds (non-blocking then, non-blocking now)\n\n${card.reviewNotes.map((n) => `- ${n}`).join('\n')}\n` : ''}
 ## Diff against ${board.runBranch}
 
 ${diffSection(board, diff)}

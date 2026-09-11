@@ -4,7 +4,8 @@ import type { Adapter, AdapterResult, AdapterRunOptions } from './types.ts';
 import { spawnLines, tryParseJson, extractJson } from './process.ts';
 
 const READONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'];
-const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(git status)', 'Bash(ls *)', 'Bash(cat *)'];
+const PROBES = ['cargo --version', 'rustc --version', 'node --version', 'npm --version', 'python --version', 'python3 --version', 'go version', 'git --version'];
+const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(git status)', 'Bash(ls *)', 'Bash(cat *)', ...PROBES.map((p) => `Bash(${p})`)];
 
 // The prompt goes on stdin; argv strings are capped at 128 KiB.
 export function buildClaudeArgs(opts: AdapterRunOptions): string[] {

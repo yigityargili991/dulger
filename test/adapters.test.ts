@@ -94,6 +94,7 @@ test('arg builders encode access mode', () => {
   assert.ok(!buildClaudeArgs({ ...base, access: 'write', mcp: true }).includes('--strict-mcp-config'), 'write agents get them when MCP is on');
   assert.ok(buildClaudeArgs({ ...base, access: 'write', mcp: false }).includes('--strict-mcp-config'), 'and not when it is off');
   assert.ok(ro.join(' ').includes('Bash(npm test)'));
+  assert.ok(ro.join(' ').includes('Bash(cargo --version)'), 'version probes are allowed');
   const rw = buildClaudeArgs({ ...base, access: 'write', schema: { type: 'object' } });
   assert.ok(rw.includes('bypassPermissions') && rw.includes('--json-schema'));
   const resumed = buildClaudeArgs({ ...base, access: 'write', resumeSessionId: 'abc' });

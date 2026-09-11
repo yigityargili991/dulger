@@ -91,7 +91,7 @@ test('role choices override global pins in either order; reset restores the repo
   assert.match(output.at(-1)!, /repository reset/);
   await run('/model off');
   assert.equal(resolve('planner').model, 'gpt-6-astra');
-  assert.equal(resolve('checker').model, 'sonnet');
+  assert.equal(resolve('checker').model, 'claude-fable-5-1');
 });
 
 test('/set model uses the same parser, and bad commands leave the session unchanged', async (t) => {
@@ -159,4 +159,43 @@ test('a malformed existing config is never replaced by save', async (t) => {
   writeFileSync(file, '{ malformed');
   await assert.rejects(run('/config save'));
   assert.equal(readFileSync(file, 'utf8'), '{ malformed');
+});
+
+test('/provider defines a backend from the prompt and keeps its key in the user keys file', async (t) => {
+  const { session, run, output, file, resolve } = setup(t);
+  const home = mkdtempSync(join(tmpdir(), 'dulger-keys-'));
+  const oldXdg = process.env.XDG_CONFIG_HOME; const oldKey = process.env.OPENROUTER_API_KEY;
+  process.env.XDG_CONFIG_HOME = home; delete process.env.OPENROUTER_API_KEY;
+  t.after(() => { rmSync(home, { recursive: true, force: true }); if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg; if (oldKey !== undefined) process.env.OPENROUTER_API_KEY = oldKey; });
+  const { providerCommand } = await import('../src/replProviders.ts');
+  const { readKey, keysFile } = await import('../src/keys.ts');
+
+  const answers = ['', '', 'qwen/qwen3-coder'];
+  const secrets = ['sk-or-test-123'];
+  const asked: string[] = [];
+  const prompts = { ask: async (q: string) => { asked.push(q); return answers.shift(); }, askSecret: async (q: string) => { asked.push(q); return secrets.shift(); } };
+  const lines = await providerCommand(join(file, '..', '..'), session, ['openrouter'], prompts);
+  assert.match(asked[0]!, /Base URL.*openrouter\.ai\/api\/v1/);
+  assert.match(asked[1]!, /OPENROUTER_API_KEY/);
+  assert.match(asked[3]!, /API key for \$OPENROUTER_API_KEY/);
+  assert.match(lines.join('\n'), /openrouter: https:\/\/openrouter\.ai\/api\/v1 · qwen\/qwen3-coder · key in \$OPENROUTER_API_KEY[\s\S]*key stored in .*keys\.json \(mode 600\)/);
+  assert.equal(readKey('OPENROUTER_API_KEY'), 'sk-or-test-123');
+  assert.equal(keysFile(), join(home, 'dulger', 'keys.json'));
+  assert.equal(readFileSync(keysFile(), 'utf8').includes('sk-or-test-123'), true);
+  process.env.OPENROUTER_API_KEY = 'from-env';
+  assert.equal(readKey('OPENROUTER_API_KEY'), 'from-env', 'the environment wins');
+  delete process.env.OPENROUTER_API_KEY;
+
+  await run('/harness openrouter');
+  assert.equal(resolve('worker').harness, 'openrouter');
+  assert.equal(resolve('worker').model, 'qwen/qwen3-coder');
+  await run('/provider');
+  assert.match(output.at(-1)!, /openrouter.*openrouter\.ai.*qwen\/qwen3-coder.*\$OPENROUTER_API_KEY \(keys file\)/);
+  await run('/config save');
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  assert.equal(saved.providers.openrouter.apiKeyEnv, 'OPENROUTER_API_KEY');
+  assert.equal(JSON.stringify(saved).includes('sk-or-test-123'), false, 'the key never reaches the repository config');
+
+  assert.deepEqual(await providerCommand(join(file, '..', '..'), session, ['claude'], prompts), ['claude is a CLI backend and needs no provider entry']);
+  assert.deepEqual(await providerCommand(join(file, '..', '..'), session, ['x'], { ...prompts, ask: async () => undefined }), ['cancelled']);
 });

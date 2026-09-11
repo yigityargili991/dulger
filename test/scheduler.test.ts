@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readyCards, blockUnreachable, allTerminal, resetInterrupted } from '../src/board/scheduler.ts';
+import { readyCards, blockUnreachable, allTerminal, resetInterrupted, retryCard } from '../src/board/scheduler.ts';
 import { applyReplan, cardsFromPlan, validateBoard } from '../src/board/store.ts';
 import type { Board } from '../src/types.ts';
 
@@ -72,7 +72,7 @@ test('resetInterrupted retries a card that failed on dulger\'s side, drops its s
   bb.status = 'failed'; bb.failure = 'infrastructure'; bb.tasks[0]!.status = 'done';
   bb.tasks.push({ id: 'fix1', cardId: 'b', kind: 'fix', feedback: ['checker failed to run: spawn E2BIG'], title: 'fix', instructions: 'x', status: 'failed', attempts: 2 });
   c.status = 'failed'; c.failure = 'work';
-  d.status = 'blocked'; d.feedback.push('blocked: dependency b did not complete');
+  d.status = 'blocked'; d.reason = 'blocked: dependency b did not complete';
 
   assert.deepEqual(resetInterrupted(b).map((x) => x.id), ['b']);
   assert.deepEqual(b.cards.map((x) => x.status), ['done', 'backlog', 'failed', 'backlog']);
@@ -100,4 +100,27 @@ test('applyReplan replaces waiting cards, renames reused ids and rejects broken 
   assert.equal(b.replans, 1);
   assert.equal(allTerminal(b), false);
   assert.deepEqual(readyCards(b, 5).map((x) => x.id), [], 'b-r1 waits for c');
+});
+
+test('retryCard turns feedback no fix task covered into the fix task, and gives one round back', () => {
+  const b = board();
+  const [a, bb, , d] = b.cards as [Board['cards'][0], Board['cards'][0], Board['cards'][0], Board['cards'][0]];
+  a.status = 'done'; a.tasks[0]!.status = 'done';
+  bb.status = 'failed'; bb.failure = 'work'; bb.attempts = 2; bb.tasks[0]!.status = 'done';
+  bb.tasks.push({ id: 'fix1', cardId: 'b', kind: 'fix', feedback: ['round one'], title: 'fix', instructions: 'round one', status: 'done', attempts: 1 });
+  bb.feedback = ['round one', 'round two', 'round two more']; bb.reason = 'blocked: dependency a did not complete';
+  d.status = 'blocked';
+
+  b.docs = { status: 'done', summary: 'old' };
+  const card = retryCard(b, 'b');
+  assert.equal(card.status, 'backlog');
+  assert.equal(card.reason, undefined);
+  assert.deepEqual(b.docs, { status: 'pending' }, 'docs run again for what the retry lands');
+  assert.equal(card.attempts, 1);
+  assert.deepEqual(card.tasks.map((t) => [t.id, t.status]), [['t1', 'done'], ['fix1', 'done'], ['fix2', 'pending']]);
+  assert.deepEqual(card.tasks[2]!.feedback, ['round two', 'round two more']);
+  assert.equal(d.status, 'backlog');
+  // With a pending fix task already there, nothing is added.
+  card.status = 'failed';
+  assert.deepEqual(retryCard(b, 'b').tasks.map((t) => t.id), ['t1', 'fix1', 'fix2']);
 });

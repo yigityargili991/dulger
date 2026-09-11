@@ -1,5 +1,6 @@
 // Direct Chat Completions agent loop shared by Ollama, DeepSeek and OpenAI-compatible endpoints.
 import { randomUUID } from 'node:crypto';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { ApiConfig } from '../config.ts';
@@ -7,6 +8,7 @@ import type { AgentEvent, Usage } from '../types.ts';
 import type { Adapter, AdapterRunOptions } from './types.ts';
 import { extractJson } from './process.ts';
 import { apiTools, executeApiTool, ToolDenied } from './apiTools.ts';
+import { readKey } from '../keys.ts';
 
 interface ToolCall { id: string; type: 'function'; function: { name: string; arguments: string } }
 interface Message { role: string; content: string | null; tool_calls?: ToolCall[]; tool_call_id?: string; reasoning_content?: string }
@@ -28,14 +30,15 @@ export function createOpenAIAdapter(name: string, config: ApiConfig): Adapter {
     };
     try {
       opts.signal.throwIfAborted();
-      key = config.apiKeyEnv ? process.env[config.apiKeyEnv] : undefined;
-      if (config.apiKeyEnv && !key) throw new Error(`Set ${config.apiKeyEnv} for the ${name} provider`);
+      key = config.apiKeyEnv ? readKey(config.apiKeyEnv) : undefined;
+      if (config.apiKeyEnv && !key) throw new Error(`Set ${config.apiKeyEnv} for the ${name} provider (or enter it with /provider ${name} key)`);
       const model = opts.model ?? config.model;
       if (!model) throw new Error(`Set providers.${name}.model or --model to a model available on your endpoint`);
       if (opts.maxBudgetUsd !== undefined) throw new Error(`${name} does not report reliable prices; use maxTurns/maxTokens instead of maxBudgetUsd`);
-      for (const field of ['maxTurns', 'maxTokens', 'timeoutSec'] as const) {
+      for (const field of ['maxTurns', 'maxTokens', 'timeoutSec', 'commandTimeoutSec'] as const) {
         if (!Number.isInteger(config[field]) || config[field] <= 0) throw new Error(`providers.${name}.${field} must be a positive integer`);
       }
+      if (!Number.isInteger(config.retries) || config.retries < 0) throw new Error(`providers.${name}.retries must be a whole number`);
       const endpoint = new URL(config.baseUrl.replace(/\/+$/, '') + '/chat/completions');
       if (!['http:', 'https:'].includes(endpoint.protocol) || endpoint.username || endpoint.password || endpoint.search || endpoint.hash) throw new Error('baseUrl must be an HTTP(S) URL without credentials, query or fragment');
       const tokenParameter = config.tokenParameter ?? (endpoint.hostname === 'api.openai.com' ? 'max_completion_tokens' : 'max_tokens');
@@ -57,14 +60,8 @@ export function createOpenAIAdapter(name: string, config: ApiConfig): Adapter {
       emit({ type: 'init', sessionId });
       for (let turn = 0; turn < config.maxTurns; turn++) {
         opts.signal.throwIfAborted();
-        const response = await fetch(endpoint, {
-          method: 'POST', redirect: 'error',
-          headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
-          body: JSON.stringify({ model, messages, tools: apiTools(opts), [tokenParameter]: config.maxTokens, stream: false }),
-          signal: AbortSignal.any([opts.signal, AbortSignal.timeout(config.timeoutSec * 1000)]),
-        });
-        // Never log request headers or server bodies: either may echo credentials.
-        if (!response.ok) throw new Error(`${name} HTTP ${response.status}${response.status === 429 ? ' rate limit' : ''}; check endpoint, model and credentials`);
+        const body = JSON.stringify({ model, messages, tools: apiTools(opts), [tokenParameter]: config.maxTokens, stream: false });
+        const response = await request(name, endpoint, body, key, config, opts.signal);
         const data = await response.json() as Completion;
         const u = data.usage;
         if (u) {
@@ -90,7 +87,7 @@ export function createOpenAIAdapter(name: string, config: ApiConfig): Adapter {
               const args = JSON.parse(call.function.arguments) as Record<string, unknown>;
               if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error('tool arguments must be an object');
               emit({ type: 'tool', name: call.function.name, input: args });
-              result = await executeApiTool(call.function.name, args, opts);
+              result = await executeApiTool(call.function.name, args, opts, config.commandTimeoutSec);
             } catch (err) {
               if (opts.signal.aborted) throw err;
               if (err instanceof ToolDenied) { denied.push(err.message); emit({ type: 'denied', command: err.message }); }
@@ -119,6 +116,51 @@ export function createOpenAIAdapter(name: string, config: ApiConfig): Adapter {
       return { ok: false, text: redact(text), sessionId, usage, denied, exitCode: -1, error };
     }
   } };
+}
+
+const RETRIABLE = new Set([408, 429, 500, 502, 503, 504]);
+
+/** One request, retried with backoff on a transient status. Never logs headers or bodies: either may echo credentials. */
+async function request(name: string, endpoint: URL, body: string, key: string | undefined, config: ApiConfig, signal: AbortSignal): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const response = await fetch(endpoint, {
+      method: 'POST', redirect: 'error',
+      headers: { 'Content-Type': 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+      body,
+      signal: AbortSignal.any([signal, AbortSignal.timeout(config.timeoutSec * 1000)]),
+    });
+    if (response.ok) return response;
+    const limit = response.status === 429 ? ' rate limit' : '';
+    if (!RETRIABLE.has(response.status) || attempt >= config.retries) {
+      const detail = await errorDetail(response, key);
+      throw new Error(`${name} HTTP ${response.status}${limit}${detail ? ` (${detail})` : ''}${attempt ? ` after ${attempt} retries` : ''}; check endpoint, model and credentials`);
+    }
+    await sleep(retryDelayMs(response.headers.get('retry-after'), attempt), undefined, { signal });
+  }
+}
+
+/** Only the server's own error message, redacted and cut short; the rest of the body is never surfaced. */
+async function errorDetail(response: Response, key: string | undefined): Promise<string> {
+  try {
+    const body = JSON.parse(await response.text()) as { error?: { message?: unknown } | string; message?: unknown };
+    const raw = typeof body.error === 'object' && body.error ? body.error.message : body.error ?? body.message;
+    if (typeof raw !== 'string') return '';
+    const clean = (key ? raw.split(key).join('[REDACTED]') : raw).replace(/[\p{Cc}]+/gu, ' ').trim();
+    return clean.length > 200 ? clean.slice(0, 200) + '…' : clean;
+  } catch {
+    return '';
+  }
+}
+
+/** Retry-After when the server says (seconds or a date), else 1s, 3s, 9s…, capped at 30s. */
+export function retryDelayMs(retryAfter: string | null, attempt: number): number {
+  if (retryAfter !== null) {
+    const seconds = Number(retryAfter);
+    if (Number.isFinite(seconds)) return Math.min(30_000, Math.max(0, seconds * 1000));
+    const at = Date.parse(retryAfter);
+    if (Number.isFinite(at)) return Math.min(30_000, Math.max(0, at - Date.now()));
+  }
+  return Math.min(30_000, 1000 * 3 ** attempt);
 }
 
 /** Validate the JSON-schema subset used by dulger's role results before the runner consumes it. */

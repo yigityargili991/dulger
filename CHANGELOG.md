@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- `/provider <name>` in the prompt defines an OpenAI-style backend interactively, key included: the key
+  is typed without echo and kept in `~/.config/dulger/keys.json` (mode 600), read whenever the key's
+  environment variable is not set. `/provider` lists providers and key sources.
+
+- Any `providers.<name>` entry is a backend: `--harness openrouter` with its own key variable, model and
+  tier map, next to the built-in ollama, deepseek and openai. `--harness <name> --base-url ...` defines
+  one for a single run. A failed API request now carries the server's own error message, redacted.
+
+- Budgets: `budgetUsd` / `--budget` stops the run (resumable) at that spend, `cardBudgetUsd` /
+  `--card-budget` fails a card at that spend; `/budget` and `/card-budget` in the prompt.
+- A retried task is told that it ran before, what that session reported or why it died, and that the
+  worktree may hold its leftovers.
+- The reviewer sees which files in the diff no task reported changing, to catch reformatting and work
+  outside the card. Notes are no longer recorded twice, and the board printout shows a count of notes
+  instead of every one (the report still lists them).
+- The planner is told that a card producing a GUI must give the verify gate a headless self-test.
+- Read-only agents may run version probes such as `cargo --version`.
+
+- The reviewer is told to raise every blocking problem in the first round and, later, to block only on
+  what a fix failed to address or newly broke; its own earlier notes are shown to it as settled.
+- `dulger retry <card>` (and `/retry`): a card that failed on its work goes back to the backlog with one
+  more review round. The documentation agent runs again after a retry or resume lands more work. Its last rejection is kept on the card as a pending fix task, so the retry starts
+  by addressing exactly that, keeps finished tasks and the worktree, and unblocks the cards behind it.
+
+- The reviewer always runs on the high routing tier (fable, astra): review quality is the gate.
+- Direct API backends retry a request on HTTP 429 and 5xx with backoff (`providers.<name>.retries`,
+  default 3, `Retry-After` honoured) instead of failing the agent on the first transient answer. Their
+  shell tool's timeout is `providers.<name>.commandTimeoutSec` (default 600 s) instead of a fixed two
+  minutes.
+
 - Configure mixed backends/models in the REPL with `/model <role> <shorthand>` or an explicit
   backend/model pair. Show effective routing, restore automatic selection or repository role settings,
   and persist session configuration with `/config save`. Role choices take precedence over global pins.

@@ -11,6 +11,7 @@ import * as git from '../git/worktree.ts';
 import { CHECK_SCHEMA, WORKER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
 import { markFailed } from './agentProcess.ts';
+import { appendFixTask } from '../board/scheduler.ts';
 import type { Runtime } from './runtime.ts';
 import { runVerification, verificationFeedback, verificationSummary } from './verify.ts';
 import type { Card, CheckResult, Task, WorkerResult } from '../types.ts';
@@ -31,8 +32,10 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
     const tasks = await runPendingTasks(rt, card, cwd);
     if (tasks !== 'done') {
       if (rt.signal.aborted) return;
-      return finishCard(rt, card, cwd, 'failed', [tasks.reason], tasks.failure);
+      return finishCard(rt, card, cwd, 'failed', tasks.reason, tasks.failure);
     }
+    const spent = rt.overBudget(card);
+    if (spent) return finishCard(rt, card, cwd, 'failed', spent);
     const outcome = await reviewAndLand(rt, card, cwd);
     switch (outcome.kind) {
       case 'aborted':
@@ -44,13 +47,13 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
         break;
       case 'check_failed':
         // Not the card's fault: no round spent, no fix task. One retry, then resume takes it.
-        if (++checkFailures > 1) return finishCard(rt, card, cwd, 'failed', [`reviewer could not run: ${outcome.error}`], 'infrastructure');
+        if (++checkFailures > 1) return finishCard(rt, card, cwd, 'failed', `reviewer could not run: ${outcome.error}`, 'infrastructure');
         rt.log(`card ${card.id}: reviewer could not run (${outcome.error}); trying the review again`);
         rt.save('card_check_failed', { cardId: card.id, message: outcome.error });
         break;
       case 'conflict':
         // Each round means the result branch moved, so the number of rounds is bounded by the number of cards.
-        if (++conflicts > rt.board.cards.length) return finishCard(rt, card, cwd, 'failed', [`merge conflicts could not be resolved in ${outcome.files}`]);
+        if (++conflicts > rt.board.cards.length) return finishCard(rt, card, cwd, 'failed', `merge conflicts could not be resolved in ${outcome.files}`);
         conflicted(rt, card, outcome.files);
         break;
     }
@@ -88,6 +91,8 @@ type TasksOutcome = 'done' | { failure: 'work' | 'infrastructure'; reason: strin
 async function runPendingTasks(rt: Runtime, card: Card, cwd: string): Promise<TasksOutcome> {
   for (const task of card.tasks) {
     while (task.status !== 'done') {
+      const spent = rt.overBudget(card);
+      if (spent) return { failure: 'work', reason: spent };
       const r = await runTask(rt, card, task, cwd);
       if (rt.signal.aborted) return { failure: 'infrastructure', reason: 'aborted' };
       if (r.result) break;
@@ -137,9 +142,9 @@ function rejected(rt: Runtime, card: Card, verdict: CheckResult): boolean {
   const feedback = verdict.feedback.length ? verdict.feedback : [verdict.summary || 'checker rejected the card without details'];
   card.feedback.push(...feedback);
   card.attempts++;
+  appendFixTask(card, 'Address review feedback', feedback);
   if (card.attempts >= rt.config.maxAttempts) return false;
   rt.log(`card ${card.id} rejected (attempt ${card.attempts}/${rt.config.maxAttempts}): ${feedback.at(-1)}`);
-  appendFixTask(card, 'Address review feedback', feedback);
   rt.save('card_retry', { cardId: card.id, message: feedback.at(-1) });
   return true;
 }
@@ -172,10 +177,12 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
     task.sessionId = sessionId;
     if (!r.ok || !r.output) {
       task.status = 'failed';
+      task.error = r.error ?? 'no answer';
       save('task_failed', { cardId: card.id, taskId: task.id, message: r.error });
       log(`task ${card.id}/${task.id} failed: ${r.error}`);
-      return { error: r.error ?? 'no answer' };
+      return { error: task.error };
     }
+    task.error = undefined;
     last = r.output;
     if (last.done || !sessionId) break;
     log(`task ${card.id}/${task.id} not done (${last.remaining.length} items left), continuing…`);
@@ -229,29 +236,21 @@ async function check(rt: Runtime, card: Card, cwd: string): Promise<{ verdict: C
 /** Keep the reviewer's verdict on the card: the latest summary, and every non-blocking note (shown on the board, never sent back as work). */
 function recordReview(card: Card, verdict: CheckResult): void {
   if (verdict.summary) card.review = verdict.summary;
-  if (verdict.notes?.length) card.reviewNotes = [...(card.reviewNotes ?? []), ...verdict.notes];
+  const seen = new Set((card.reviewNotes ?? []).map((n) => n.trim()));
+  const fresh = (verdict.notes ?? []).filter((n) => n.trim() && !seen.has(n.trim()));
+  if (fresh.length) card.reviewNotes = [...(card.reviewNotes ?? []), ...fresh];
 }
 
-/** Put the card back to work with one fix task that carries `feedback`; finished tasks stay finished. */
-function appendFixTask(card: Card, title: string, feedback: string[]): void {
-  const n = card.tasks.filter((t) => t.kind === 'fix').length + 1;
-  card.tasks.push({
-    id: `fix${n}`, cardId: card.id, kind: 'fix', title, feedback,
-    instructions: feedback.join('\n'), status: 'pending', attempts: 0,
-  });
-  card.status = 'in_progress';
-}
-
-function finishCard(rt: Runtime, card: Card, cwd: string, status: 'done' | 'failed', feedback: string[] = [], failure: 'work' | 'infrastructure' = 'work'): void {
+function finishCard(rt: Runtime, card: Card, cwd: string, status: 'done' | 'failed', reason?: string, failure: 'work' | 'infrastructure' = 'work'): void {
   card.status = status;
-  card.feedback.push(...feedback);
+  card.reason = status === 'failed' ? reason : undefined;
   card.failure = status === 'failed' ? failure : undefined;
   if (status === 'done') {
     git.removeWorktree(rt.repoRoot, cwd, card.branch);
     rt.log(`card ${card.id} done → merged into ${rt.board.runBranch}`);
   } else {
     markFailed(rt.registry, card.id);
-    rt.log(`card ${card.id} FAILED: ${card.feedback.at(-1) ?? ''} (worktree kept at ${cwd})`);
+    rt.log(`card ${card.id} FAILED: ${card.reason ?? card.feedback.at(-1) ?? ''} (worktree kept at ${cwd})`);
   }
   rt.save(`card_${status}`, { cardId: card.id });
 }

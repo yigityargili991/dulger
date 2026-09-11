@@ -23,6 +23,10 @@ export interface ApiConfig {
   maxTokens: number;
   tokenParameter?: 'max_tokens' | 'max_completion_tokens';
   timeoutSec: number;
+  /** Retries of one request on HTTP 429 or 5xx, with backoff (Retry-After honoured). */
+  retries: number;
+  /** Seconds a tool-run shell command may take before it is killed. */
+  commandTimeoutSec: number;
 }
 
 export interface RoutingConfig {
@@ -45,6 +49,9 @@ export interface Config {
   checker: { allowedCommands: string[] };
   /** Seconds one verify command may take before dulger kills it and counts it as failed. */
   verifyTimeoutSec: number;
+  /** Stop the run (resumable) once its spend reaches this; a card that reaches cardBudgetUsd fails. Unset = no limit. */
+  budgetUsd?: number;
+  cardBudgetUsd?: number;
   /** Shell command run once in every new worktree before agents use it (e.g. "npm ci"). */
   worktreeSetup?: string;
   claude: { mcp: boolean };  // give the user's MCP servers to the agents that can use them (workers, docs); planner and checker never get them
@@ -53,6 +60,11 @@ export interface Config {
   /** The full-screen run view on a terminal; icons: nerd | unicode | ascii | auto (nerd on ghostty, kitty, wezterm, alacritty, foot). */
   tui: { enabled: boolean; icons: IconSet | 'auto' };
 }
+
+export const BUILTIN_HARNESSES = ['claude', 'codex', 'fake'];
+
+/** What a provider entry gets when the config names only its endpoint. */
+export const PROVIDER_DEFAULTS = { maxTurns: 40, maxTokens: 8192, timeoutSec: 300, retries: 3, commandTimeoutSec: 600 };
 
 export const DEFAULT_CONFIG: Config = {
   harness: 'claude',
@@ -65,9 +77,9 @@ export const DEFAULT_CONFIG: Config = {
     },
   },
   providers: {
-    ollama: { baseUrl: 'http://localhost:11434/v1', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
-    deepseek: { baseUrl: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
-    openai: { baseUrl: 'https://api.openai.com/v1', apiKeyEnv: 'OPENAI_API_KEY', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
+    ollama: { baseUrl: 'http://localhost:11434/v1', maxTurns: 40, maxTokens: 8192, timeoutSec: 300, retries: 3, commandTimeoutSec: 600 },
+    deepseek: { baseUrl: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTurns: 40, maxTokens: 8192, timeoutSec: 300, retries: 3, commandTimeoutSec: 600 },
+    openai: { baseUrl: 'https://api.openai.com/v1', apiKeyEnv: 'OPENAI_API_KEY', maxTurns: 40, maxTokens: 8192, timeoutSec: 300, retries: 3, commandTimeoutSec: 600 },
   },
   concurrency: 3,
   maxAttempts: 2,
@@ -98,7 +110,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     }
     for (const [name, provider] of Object.entries(source.providers ?? {})) {
       const key = name as HarnessName;
-      providers[key] = { ...providers[key], ...provider } as ApiConfig;
+      providers[key] = { ...PROVIDER_DEFAULTS, ...providers[key], ...provider } as ApiConfig;
     }
   }
   const config: Config = {
@@ -114,10 +126,18 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
     tui: { ...DEFAULT_CONFIG.tui, ...fromFile.tui, ...overrides.tui },
   };
+  for (const [name, provider] of Object.entries(config.providers)) {
+    if (typeof provider?.baseUrl !== 'string' || !provider.baseUrl) throw new Error(`providers.${name}.baseUrl is required`);
+  }
   for (const harness of [config.harness, ...Object.values(config.roles).map((r) => r.harness).filter(Boolean)]) {
-    if (!['claude', 'codex', 'fake', 'ollama', 'deepseek', 'openai'].includes(harness!)) throw new Error(`unknown harness: ${harness}`);
+    if (!harnessNames(config).includes(harness!)) throw new Error(`unknown harness: ${harness} (built in: ${BUILTIN_HARNESSES.join(', ')}; configured: ${Object.keys(config.providers).join(', ') || 'none'})`);
   }
   return config;
+}
+
+/** Every backend this config can run: the built-ins plus each configured API provider. */
+export function harnessNames(config: Pick<Config, 'providers'>): string[] {
+  return [...BUILTIN_HARNESSES, ...Object.keys(config.providers)];
 }
 
 /** Resolve which harness / model a given role should use. */
@@ -128,12 +148,11 @@ export function roleConfig(config: Config, role: AgentRole, context: { card?: Ca
   return { ...r, harness, model: r.model ?? (config.routing.enabled ? config.routing.models[harness]?.[tier] : undefined) ?? config.providers[harness]?.model };
 }
 
-/** Planning gets the strongest model; ordinary work/review gets medium. Retry one tier up. */
-export function modelTier(role: AgentRole, { card, task }: { card?: Card; task?: Task } = {}): ModelTier {
-  if (role === 'planner') return 'high';
+/** Planning and review get the strongest model: what they miss, nobody catches. Work runs at the task's complexity, one tier up per retry. */
+export function modelTier(role: AgentRole, { task }: { card?: Card; task?: Task } = {}): ModelTier {
+  if (role === 'planner' || role === 'checker') return 'high';
   if (role === 'docs') return 'low';
   const tiers: ModelTier[] = ['low', 'medium', 'high'];
-  if (role === 'checker') return card?.tasks.some((t) => t.complexity === 'high' || t.kind === 'fix') ? 'high' : 'medium';
   const base = tiers.indexOf(task?.complexity ?? 'medium');
   const escalation = task?.kind === 'fix' ? 1 : Math.max(0, (task?.attempts ?? 1) - 1);
   return tiers[Math.min(2, base + escalation)]!;

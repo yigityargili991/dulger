@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, symlinkSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createOpenAIAdapter } from '../src/adapters/openai.ts';
+import { createOpenAIAdapter, retryDelayMs } from '../src/adapters/openai.ts';
 import { executeApiTool } from '../src/adapters/apiTools.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import { getAdapter } from '../src/adapters/index.ts';
@@ -83,7 +83,7 @@ test('credentials use headers only; HTTP rate limits and missing credentials fai
     assert.equal((init.body as string).includes('test-secret'), false);
     return new Response('test-secret', { status: 429 });
   });
-  const adapter = createOpenAIAdapter('deepseek', { ...config, apiKeyEnv: 'DULGER_TEST_API_KEY' });
+  const adapter = createOpenAIAdapter('deepseek', { ...config, apiKeyEnv: 'DULGER_TEST_API_KEY', retries: 0 });
   const result = await adapter.run(opts);
   assert.match(result.error!, /429 rate limit/);
   assert.equal(readFileSync(join(cwd, 'log.jsonl'), 'utf8').includes('test-secret'), false);
@@ -134,6 +134,62 @@ test('API backend plans, routes tasks, edits a worktree, reviews and lands a com
   await orch.execute();
   assert.equal(board.cards[0]?.status, 'done');
   assert.equal(git.git(cwd, ['show', 'dulger/api-run:hello.txt']), 'hello');
-  assert.deepEqual(models, [['planner', 'strong'], ['worker', 'small'], ['worker', 'small'], ['checker', 'medium']]);
+  assert.deepEqual(models, [['planner', 'strong'], ['worker', 'small'], ['worker', 'small'], ['checker', 'strong']]);
   assert.equal([...orch.registry.statuses.values()].find((s) => s.role === 'worker')?.model, 'small');
+});
+
+test('transient HTTP errors are retried with backoff before the agent fails', async (t) => {
+  const { opts, config } = setup(t);
+  let calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => {
+    calls++;
+    if (calls <= 2) return new Response('busy', { status: calls === 1 ? 429 : 503, headers: { 'retry-after': '0' } });
+    return Response.json(final());
+  });
+  const result = await createOpenAIAdapter('ollama', { ...config, retries: 3 }).run(opts);
+  assert.equal(result.ok, true);
+  assert.equal(calls, 3);
+
+  calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response('busy', { status: 429, headers: { 'retry-after': '0' } }); });
+  const persistent = await createOpenAIAdapter('ollama', { ...config, retries: 2 }).run(opts);
+  assert.equal(persistent.ok, false);
+  assert.equal(calls, 3, 'the first try plus two retries');
+  assert.match(persistent.error!, /429 rate limit after 2 retries/);
+
+  calls = 0;
+  t.mock.method(globalThis, 'fetch', async () => { calls++; return new Response('nope', { status: 401 }); });
+  assert.match((await createOpenAIAdapter('ollama', config).run(opts)).error!, /HTTP 401;/);
+  assert.equal(calls, 1, 'a client error is not retried');
+
+  assert.equal(retryDelayMs(null, 0), 1000);
+  assert.equal(retryDelayMs(null, 2), 9000);
+  assert.equal(retryDelayMs(null, 9), 30_000);
+  assert.equal(retryDelayMs('2', 0), 2000);
+  assert.equal(retryDelayMs(new Date(Date.now() + 5000).toUTCString(), 0) > 3000, true);
+});
+
+test('run_command is killed after the configured timeout', async (t) => {
+  const { opts } = setup(t);
+  const started = Date.now();
+  const out = await executeApiTool('run_command', { command: 'sleep 5; echo late' }, opts, 1);
+  assert.match(out, /cancelled or timed out/);
+  assert.ok(!out.includes('late'));
+  assert.ok(Date.now() - started < 4000);
+});
+
+test('a failed request carries the server\'s own error message, redacted and cut short', async (t) => {
+  const { opts, config } = setup(t);
+  const old = process.env.DULGER_TEST_API_KEY;
+  process.env.DULGER_TEST_API_KEY = 'sk-secret-123';
+  t.after(() => { if (old === undefined) delete process.env.DULGER_TEST_API_KEY; else process.env.DULGER_TEST_API_KEY = old; });
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ error: { message: 'model not found: qwen/nope (key sk-secret-123)\n' + 'x'.repeat(300) } }, { status: 400 }));
+  const result = await createOpenAIAdapter('openrouter', { ...config, apiKeyEnv: 'DULGER_TEST_API_KEY' }).run(opts);
+  assert.match(result.error!, /^openrouter HTTP 400 \(model not found: qwen\/nope \(key \[REDACTED\]\) x+…\); check endpoint/);
+  assert.ok(!result.error!.includes('sk-secret-123'));
+  assert.ok(result.error!.length < 320);
+
+  t.mock.method(globalThis, 'fetch', async () => new Response('<html>bad gateway</html>', { status: 502 }));
+  const html = await createOpenAIAdapter('ollama', { ...config, retries: 0 }).run(opts);
+  assert.match(html.error!, /^ollama HTTP 502; check endpoint/, 'a body that is not JSON adds nothing');
 });

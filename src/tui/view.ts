@@ -237,7 +237,7 @@ function stateLine(s: ViewState, card: Card, w: number): string {
     }
     case 'review': return statusColour.review(`review · round ${card.attempts + 1}`);
     case 'done': return c.ok(fmtSpend(card));
-    case 'failed': case 'blocked': return c.bad(plainText(card.feedback.at(-1) ?? card.status));
+    case 'failed': case 'blocked': return c.bad(plainText(card.reason ?? card.feedback.at(-1) ?? card.status));
     case 'replaced': return c.faint('replaced by a replan');
   }
 }
@@ -284,9 +284,10 @@ function cardDetail(s: ViewState, card: Card, w: number): string[] {
     out.push(c.accent('Verification'));
     for (const r of card.verification) out.push(fit(`${r.ok ? c.ok(g.check) : c.bad(g.cross)} ${plainText(r.command)}${r.ok ? '' : c.bad(` exit ${r.exitCode}`)} ${c.muted(`${(r.durationMs / 1000).toFixed(1)}s`)}`, w));
   }
-  if (card.feedback.length || card.reviewNotes?.length || card.review) {
+  if (card.reason || card.feedback.length || card.reviewNotes?.length || card.review) {
     out.push('');
     out.push(c.accent('Review'));
+    if (card.reason) out.push(...wrap(card.reason, w - 2).map((l, i) => (i ? '  ' : `${c.bad(g.warn)} `) + c.bad(l)));
     for (const f of card.feedback) out.push(...wrap(f, w - 2).map((l, i) => (i ? '  ' : `${c.bad(g.warn)} `) + c.bad(l)));
     for (const n of card.reviewNotes ?? []) out.push(...wrap(n, w - 2).map((l, i) => (i ? '  ' : `${c.warn(g.note)} `) + c.warn(l)));
     if (card.review) out.push(...wrap(card.review, w).map((l) => c.muted(l)));

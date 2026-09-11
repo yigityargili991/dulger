@@ -12,7 +12,7 @@ import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/
 import { registerAdapter } from '../src/adapters/index.ts';
 import { openMemory } from '../src/context/memory.ts';
 import { buildReport } from '../src/ui/report.ts';
-import { resetInterrupted } from '../src/board/scheduler.ts';
+import { resetInterrupted, retryCard } from '../src/board/scheduler.ts';
 import * as store from '../src/board/store.ts';
 import type { PlannerResult } from '../src/types.ts';
 
@@ -140,16 +140,32 @@ test('a card that keeps failing blocks its dependents; docs still run for merged
   const byId = Object.fromEntries(board.cards.map((c) => [c.id, c]));
   assert.equal(byId.c1!.status, 'failed');
   assert.equal(byId.c1!.attempts, 2);
-  assert.deepEqual(byId.c1!.tasks.map((t) => t.id), ['t1', 'fix1'], 'one fix round before giving up; no fix task after the final rejection');
+  assert.deepEqual(byId.c1!.tasks.map((t) => [t.id, t.status]), [['t1', 'done'], ['fix1', 'done'], ['fix2', 'pending']], 'the final rejection stays on the card as a pending fix task');
+  assert.equal(byId.c1!.failure, 'work');
   assert.deepEqual(byId.c1!.feedback, ['never good enough', 'never good enough']);
   assert.equal(byId.c2!.status, 'done');
   assert.equal(byId.c3!.status, 'blocked');
-  assert.match(byId.c3!.feedback.at(-1)!, /dependency c1/);
+  assert.match(byId.c3!.reason!, /dependency c1/);
   const kept = store.worktreeDir(repo, 'run2', 'c1');
   assert.ok(existsSync(kept) && !kept.startsWith(repo), 'failed worktree is kept for inspection, outside the repo');
   assert.equal(board.docs?.status, 'done');
   const files = wt.git(repo, ['ls-tree', '-r', '--name-only', 'dulger/run2']).split('\n').sort();
   assert.deepEqual(files, ['DOCS.md', 'README.md', 'out/c2-t1.txt', 'out/c2-t2.txt']);
+  assert.match(buildReport(board, {}), /dulger retry c1 run2/);
+
+  // One more round: the pending fix task runs first, then the review; c3 is unblocked behind it.
+  assert.throws(() => retryCard(board, 'c2'), /card c2 is done, not failed/);
+  assert.throws(() => retryCard(board, 'nope'), /no card nope/);
+  const workerCalls: string[] = [];
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, worker: (o, i) => { workerCalls.push(o.prompt.match(/Task id: (\S+)\s+Card id: (\S+)/)!.slice(1, 3).reverse().join('/')); return DEFAULT_FAKE_SCRIPT.worker!(o, i); }, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const saved = store.loadBoard(repo, 'run2');
+  assert.equal(retryCard(saved, 'c1').attempts, 1, 'one round is given back');
+  assert.equal(saved.cards[2]!.status, 'backlog');
+  const orch2 = createOrchestrator(repo, saved, { ...config, maxReplans: 0 }, {});
+  await orch2.execute();
+  assert.deepEqual(saved.cards.map((c) => c.status), ['done', 'done', 'done']);
+  assert.deepEqual(workerCalls, ['c1/fix2', 'c3/t1'], 'only the pending fix task and the unblocked card ran');
+  assert.deepEqual(saved.cards[0]!.tasks.map((t) => t.status), ['done', 'done', 'done']);
 });
 
 test('a merge conflict with landed work is resolved by a fix task and does not cost an attempt', async () => {
@@ -220,7 +236,7 @@ test('a failed card triggers a replan that replaces the waiting cards', async ()
   assert.equal(byId.c1!.status, 'failed');
   assert.equal(byId.c2!.status, 'done');
   assert.equal(byId.c3!.status, 'replaced');
-  assert.match(byId.c3!.feedback.at(-1)!, /replaced by replan 1/);
+  assert.match(byId.c3!.reason!, /replaced by replan 1/);
   assert.equal(byId['c3-r1']!.status, 'done');
   assert.deepEqual(byId.c4!.dependsOn, ['c3-r1']);
   assert.equal(byId.c4!.status, 'done');
@@ -373,7 +389,7 @@ test('a reviewer that cannot run is an infrastructure failure: no round spent, n
   assert.equal(c1.failure, 'infrastructure');
   assert.equal(c1.attempts, 0, 'no review round was spent');
   assert.deepEqual(c1.tasks.map((t) => t.kind), [undefined], 'no fix task was sent to a worker');
-  assert.match(c1.feedback.at(-1)!, /reviewer could not run: spawn E2BIG/);
+  assert.match(c1.reason!, /reviewer could not run: spawn E2BIG/);
   assert.ok(events.some((e) => /card c1: reviewer could not run \(spawn E2BIG\); trying the review again/.test(e)), events.join('\n'));
   assert.ok(events.some((e) => /card c1 failed on dulger's side/.test(e)));
   assert.equal(plannerCalls, 1, 'no replan for an infrastructure failure');
@@ -521,7 +537,7 @@ test('a worker that answers but cannot finish is a work failure; an agent that n
   await orch.execute();
   assert.equal(board.cards[0]!.status, 'failed');
   assert.equal(board.cards[0]!.failure, 'work');
-  assert.match(board.cards[0]!.feedback.at(-1)!, /task t1 was not finished after 2 tries/);
+  assert.match(board.cards[0]!.reason!, /task t1 was not finished after 2 tries/);
 
   const crash: FakeScript['worker'] = (o, i) => { if (/Card id: c1\b/.test(o.prompt)) throw new Error('boom'); return DEFAULT_FAKE_SCRIPT.worker!(o, i); };
   registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker: crash, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
@@ -530,10 +546,93 @@ test('a worker that answers but cannot finish is a work failure; an agent that n
   await orch2.plan();
   await orch2.execute();
   assert.equal(board2.cards[0]!.failure, 'infrastructure');
-  assert.match(board2.cards[0]!.feedback.at(-1)!, /task t1 could not run: boom/);
+  assert.match(board2.cards[0]!.reason!, /task t1 could not run: boom/);
 
   // A board written before failures were classified: the failed task never got an answer.
   board2.cards[0]!.failure = undefined;
   store.saveBoard(repo, board2);
   assert.equal(store.loadBoard(repo, 'run-crash').cards[0]!.failure, 'infrastructure');
+});
+
+test('a later review round sees its earlier notes as settled', async () => {
+  const prompts: string[] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    checker: (o, i) => {
+      if (/Card under review: c1 /.test(o.prompt)) prompts.push(o.prompt);
+      return i === 0 ? { pass: false, feedback: ['fix the thing'], notes: ['the handle tolerance is in image pixels'], summary: '' } : { pass: true, feedback: [], notes: [], summary: 'ok' };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-notes');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, concurrency: 1 }, {});
+  await orch.plan();
+  await orch.execute();
+  assert.equal(prompts.length, 2);
+  assert.ok(!prompts[0]!.includes('Notes from earlier rounds'));
+  assert.match(prompts[1]!, /## Notes from earlier rounds \(non-blocking then, non-blocking now\)\n\n- the handle tolerance is in image pixels/);
+  assert.match(prompts[1]!, /Earlier review rounds asked for these fixes[\s\S]*fix the thing/);
+});
+
+test('a retried task is told about its earlier attempt; unreported files are shown to the reviewer; notes do not repeat', async () => {
+  const workerPrompts: string[] = [];
+  const checkerPrompts: string[] = [];
+  let c1Calls = 0;
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    worker: (o, i) => {
+      if (/Card id: c1\b/.test(o.prompt)) {
+        workerPrompts.push(o.prompt);
+        if (++c1Calls === 1) throw new Error('simulated agent crash');
+        writeFileSync(join(o.cwd, 'stray.txt'), 'reformatted\n');
+      }
+      return DEFAULT_FAKE_SCRIPT.worker!(o, i);
+    },
+    checker: (o, i) => {
+      if (/Card under review: c1 /.test(o.prompt)) checkerPrompts.push(o.prompt);
+      const notes = ['same note every round'];
+      return i === 0 ? { pass: false, feedback: ['once more'], notes, summary: '' } : { pass: true, feedback: [], notes, summary: 'ok' };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-context');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, concurrency: 1 }, {});
+  await orch.plan();
+  await orch.execute();
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'done');
+  assert.ok(!workerPrompts[0]!.includes('ran once before'));
+  assert.match(workerPrompts[1]!, /This task ran once before in this worktree[\s\S]*It ended without an answer: simulated agent crash/);
+  assert.match(checkerPrompts[0]!, /Files in the diff that no task reported changing[\s\S]*- stray\.txt/);
+  assert.ok(!/- out\/c1-t1\.txt/.test(checkerPrompts[0]!.split('no task reported')[1]!.split('##')[0]!), 'reported files are not listed');
+  assert.deepEqual(c1.reviewNotes, ['same note every round']);
+});
+
+test('budgets: a card over its budget fails, a run over its budget stops itself', async () => {
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-cardbudget');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, maxReplans: 0, cardBudgetUsd: 0.005, concurrency: 1 }, {});
+  await orch.plan();
+  await orch.execute();
+  const c2 = board.cards[1]!;
+  assert.equal(c2.status, 'failed');
+  assert.match(c2.reason!, /card budget of \$0\.005 reached \(\$0\.01 spent\)/);
+  assert.equal(c2.tasks[0]!.status, 'done');
+  assert.equal(c2.tasks[1]!.status, 'pending', 'the budget is checked before each task');
+  assert.equal(c2.attempts, 0, 'and before the review, so no reviewer ran');
+  assert.equal(c2.failure, 'work', 'retry can give it another go once the budget is raised');
+
+  const board2 = createBoard(repo, 'demo', 'run-budget');
+  const events: string[] = [];
+  const orch2 = createOrchestrator(repo, board2, { ...config, docs: false, budgetUsd: 0.03, concurrency: 1 }, { log: (m) => events.push(m) });
+  await orch2.plan();
+  await orch2.execute();
+  assert.match(board2.halted!.reason, /run budget of \$0\.03 reached/);
+  assert.ok(board2.cards.some((c) => c.status === 'backlog' || c.status === 'in_progress'), 'the rest waits for a resume');
+  assert.ok(events.some((e) => /stopping the run: run budget/.test(e)));
 });

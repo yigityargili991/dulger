@@ -2,10 +2,10 @@
 // dulger — command line entry point.
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { DEFAULT_CONFIG, loadConfig, type Config } from './config.ts';
+import { BUILTIN_HARNESSES, DEFAULT_CONFIG, PROVIDER_DEFAULTS, loadConfig, type Config } from './config.ts';
 import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
-import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { repl } from './repl.ts';
 import { red, cursor } from './ui/ansi.ts';
 import type { HarnessName } from './types.ts';
@@ -18,6 +18,8 @@ Usage:
   dulger run "<goal>" [options]   plan a board for the goal, then execute it
   dulger order "<goal>" [options] plan in a conversation with the planner, then execute
   dulger resume <runId> [options] continue an interrupted run
+  dulger retry <card> [runId]     give a failed card one more review round, then continue the run
+                                  (--max-attempts <n> for more rounds)
   dulger board [runId]            print a run's board (latest when omitted)
   dulger report [runId]           print what a run landed (latest when omitted)
   dulger runs                     list runs
@@ -29,7 +31,8 @@ Usage:
   dulger memory path              print the memory file's location
 
 Options:
-  --harness <claude|codex|ollama|deepseek|openai|fake>   backend for all roles (default: claude)
+  --harness <name>                backend for all roles: claude, codex, fake, or a providers.<name> entry
+                                  (ollama, deepseek, openai built in; default: claude)
   --concurrency <n>               parallel cards (default: 3)
   --max-attempts <n>              review rounds per card (default: 2)
   --max-replans <n>               replans after a card failed (default: 1)
@@ -41,6 +44,8 @@ Options:
   --no-docs                       skip the documentation agent
   --merge                         merge the result branch into the current branch when done
   --allow-dirty                   run even with uncommitted changes
+  --budget <usd>                  stop the run (resumable) once it has spent this much
+  --card-budget <usd>             fail a card once it has spent this much
   --repo <path>                   repository to work in (default: cwd)
   --quiet                         no full-screen view or live table, log lines only
   --version                       print dulger's version
@@ -63,6 +68,10 @@ function findRepoRoot(dir: string): string {
   }
 }
 
+function readConfig(repoRoot: string, overrides: Partial<Config>): Config {
+  try { return loadConfig(repoRoot, overrides); } catch (err) { throw new CliError(`config: ${(err as Error).message}`); }
+}
+
 async function main(argv: string[]): Promise<void> {
   const { values: v, positionals } = parseArgs({
     args: argv,
@@ -70,6 +79,7 @@ async function main(argv: string[]): Promise<void> {
     options: {
       harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
       'no-routing': { type: 'boolean' }, 'base-url': { type: 'string' }, 'api-key-env': { type: 'string' },
+      budget: { type: 'string' }, 'card-budget': { type: 'string' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
@@ -83,7 +93,7 @@ async function main(argv: string[]): Promise<void> {
 
   const repoRoot = findRepoRoot(v.repo ?? process.cwd());
   // Runs branch off HEAD, so a repository without a single commit has nothing to work on yet.
-  if ((cmd === undefined || cmd === 'run' || cmd === 'order' || cmd === 'resume') && !git.hasCommits(repoRoot)) {
+  if ((cmd === undefined || cmd === 'run' || cmd === 'order' || cmd === 'resume' || cmd === 'retry') && !git.hasCommits(repoRoot)) {
     throw new CliError(`${repoRoot} has no commits yet; dulger init makes the first one`);
   }
   const overrides: Partial<Config> = {};
@@ -92,14 +102,21 @@ async function main(argv: string[]): Promise<void> {
   if (v['max-attempts']) overrides.maxAttempts = Number(v['max-attempts']);
   if (v['max-replans']) overrides.maxReplans = Number(v['max-replans']);
   if (v['no-docs']) overrides.docs = false;
+  if (v.budget) overrides.budgetUsd = Number(v.budget);
+  if (v['card-budget']) overrides.cardBudgetUsd = Number(v['card-budget']);
   if (v['no-routing']) overrides.routing = { ...DEFAULT_CONFIG.routing, enabled: false };
-  const loaded = loadConfig(repoRoot, overrides);
   if (v['base-url'] || v['api-key-env']) {
-    const provider = loaded.providers[loaded.harness];
-    if (!provider) throw new CliError('--base-url and --api-key-env require ollama, deepseek or openai');
-    overrides.providers = { [loaded.harness]: { ...provider, ...(v['base-url'] ? { baseUrl: v['base-url'] } : {}), ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
+    // The harness may be a name this repo has never configured: --base-url defines it on the spot.
+    const { harness: _named, ...rest } = overrides;
+    const loaded = readConfig(repoRoot, rest);
+    const name = v.harness ?? loaded.harness;
+    const provider = loaded.providers[name];
+    if (!provider && !v['base-url']) throw new CliError(`${name} is not a configured API provider; give --base-url to define it`);
+    if (!provider && BUILTIN_HARNESSES.includes(name)) throw new CliError(`${name} is a CLI backend; --base-url and --api-key-env apply to API providers`);
+    const baseUrl = v['base-url'] ?? provider!.baseUrl;
+    overrides.providers = { [name]: { ...PROVIDER_DEFAULTS, ...provider, baseUrl, ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
   }
-  const config = loadConfig(repoRoot, overrides);
+  const config = readConfig(repoRoot, overrides);
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
   const runOpts = { quiet: Boolean(v.quiet), merge: Boolean(v.merge) };
 
@@ -118,6 +135,11 @@ async function main(argv: string[]): Promise<void> {
       if (!arg) throw new CliError('dulger order needs a goal');
       if (!v['allow-dirty'] && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them or pass --allow-dirty)');
       const r = await orderRun(repoRoot, arg, config, runOpts);
+      if (r.aborted) process.exitCode = 130;
+      break;
+    }
+    case 'retry': {
+      const r = await retryRun(repoRoot, config, arg, positionals[2], runOpts);
       if (r.aborted) process.exitCode = 130;
       break;
     }

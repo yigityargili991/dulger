@@ -1,13 +1,14 @@
 // The interactive prompt: type a goal to run it, slash-commands for everything else. The run itself
 // looks exactly like `dulger run`; between runs you decide whether the result merges into your branch.
-import { DEFAULT_CONFIG, type Config, type RoleConfig } from './config.ts';
+import { DEFAULT_CONFIG, harnessNames, type Config, type RoleConfig } from './config.ts';
 import * as store from './board/store.ts';
 import { createBoard } from './board/create.ts';
 import * as git from './git/worktree.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
-import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
+import { providerCommand } from './replProviders.ts';
 import type { AgentRole, HarnessName } from './types.ts';
 
 export interface Session {
@@ -26,6 +27,7 @@ const HELP = `Type a goal to plan and run it. Commands:
   /report [runId]     print what a run landed
   /runs               list runs
   /resume [runId]     continue an interrupted run
+  /retry <card> [runId]  give a failed card one more review round, then continue the run
   /merge [runId]      merge a run's result branch into the current branch
   /memory [list|add "<text>"|rm <id>|compact|path]
   /clean              remove leftover worktrees and wip branches
@@ -35,14 +37,18 @@ const HELP = `Type a goal to plan and run it. Commands:
   /model <role> <choice>             e.g. planner fable, worker deepseek, checker sonnet
   /model <role> <harness> [model]    e.g. worker ollama qwen3:8b
   /model <role> auto|reset           unpin on its backend | restore repository settings
-  /config save        persist settings to .dulger/config.json
+  /provider           list the API providers and where their keys come from
+  /provider <name>    define or edit one: base URL, key variable, model, and the key itself (not echoed)
+  /provider <name> key   enter or replace just the key
+  /config save        persist settings to .dulger/config.json (endpoints, never keys)
 Model shorthand: fable, opus, sonnet, haiku, astra, sol, luna.
 Role choices override global /model pins. Changes are session-only until /config save.
 Settings (each shows its current value when given no argument):
-  /harness claude|codex|ollama|deepseek|openai|fake        /model <name>|off             /concurrency <n>
+  /harness <name>  (claude, codex, fake, or a configured provider)   /model <name>|off
   /attempts <n>                     /replans <n>                  /docs on|off
   /yes on|off                       /quiet on|off                 /dirty on|off
   /routing on|off                   /tui on|off                   /icons nerd|unicode|ascii|auto
+  /budget <usd>|off                 /card-budget <usd>|off
   /set <key> <value>  the same settings in one command
   /help               this text
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
@@ -97,6 +103,9 @@ export async function command(text: string, repoRoot: string, session: Session, 
     case 'q': case 'quit': case 'exit': return true;
     case 'help': case '?': console.log(HELP); return false;
     case 'status': console.log(settingsLine(session, config()) + '\n' + modelOverview(repoRoot, session)); return false;
+    case 'provider':
+      for (const line of await providerCommand(repoRoot, session, args)) console.log(line);
+      return false;
     case 'config':
       if (rest !== 'save') throw new CliError('use /config save to persist the current session settings');
       console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet and dirty remain session-only)`));
@@ -108,6 +117,14 @@ export async function command(text: string, repoRoot: string, session: Session, 
       const r = await resumeRun(repoRoot, config(), args[0], { quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0]));
+        await offerMerge(repoRoot, board.runId, board.runBranch);
+      }
+      return false;
+    }
+    case 'retry': {
+      const r = await retryRun(repoRoot, config(), args[0], args[1], { quiet: session.quiet, merge: false, interactive: true });
+      if (!r.aborted && r.landed > 0) {
+        const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[1]));
         await offerMerge(repoRoot, board.runId, board.runBranch);
       }
       return false;
@@ -146,11 +163,12 @@ export async function command(text: string, repoRoot: string, session: Session, 
   }
 }
 
-const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing'];
+const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing', 'budget', 'card-budget'];
 
 /** Change a setting, or show its current value when no value is given. */
 function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): void {
   if (key === 'model') { console.log(configureModel(repoRoot, session, value)); return; }
+  if (key === 'harness' && value && !harnessNames(config()).includes(value)) throw new CliError(`harness is one of ${harnessNames(config()).join(', ')}`);
   if (!value) {
     if (!SETTINGS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
     console.log(`${key} ${bold(currentValue(session, config(), key))}`);
@@ -173,6 +191,8 @@ function currentValue(s: Session, c: Config, key: string): string {
     case 'quiet': return onOff(s.quiet);
     case 'dirty': return onOff(s.allowDirty);
     case 'routing': return onOff(c.routing.enabled);
+    case 'budget': return c.budgetUsd === undefined ? 'off' : `$${c.budgetUsd}`;
+    case 'card-budget': return c.cardBudgetUsd === undefined ? 'off' : `$${c.cardBudgetUsd}`;
     case 'tui': return onOff(c.tui.enabled);
     case 'icons': return c.tui.icons;
     default: return '?';
@@ -184,7 +204,6 @@ function set(session: Session, key = '', value = ''): void {
   const num = (v: string) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new CliError(`${key} takes a whole number`); return n; };
   switch (key) {
     case 'harness':
-      if (!['claude', 'codex', 'ollama', 'deepseek', 'openai', 'fake'].includes(value)) throw new CliError('harness is claude, codex, ollama, deepseek, openai or fake');
       session.overrides.harness = value as HarnessName; return;
     case 'concurrency': session.overrides.concurrency = Math.max(1, num(value)); return;
     case 'attempts': session.overrides.maxAttempts = Math.max(1, num(value)); return;
@@ -194,6 +213,12 @@ function set(session: Session, key = '', value = ''): void {
     case 'quiet': session.quiet = on(value); return;
     case 'dirty': session.allowDirty = on(value); return;
     case 'routing': session.overrides.routing = { ...(session.overrides.routing ?? DEFAULT_CONFIG.routing), enabled: on(value) }; return;
+    case 'budget': case 'card-budget': {
+      const usd = value === 'off' ? undefined : Number(value);
+      if (usd !== undefined && !(usd > 0)) throw new CliError(`${key} takes dollars or off`);
+      session.overrides[key === 'budget' ? 'budgetUsd' : 'cardBudgetUsd'] = usd;
+      return;
+    }
     case 'tui': session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), enabled: on(value) }; return;
     case 'icons':
       if (!['nerd', 'unicode', 'ascii', 'auto'].includes(value)) throw new CliError('icons is nerd, unicode, ascii or auto');

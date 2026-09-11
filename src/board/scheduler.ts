@@ -32,8 +32,7 @@ export function blockUnreachable(board: Board): Card[] {
       });
       if (deadDep) {
         card.status = 'blocked';
-        const why = `blocked: dependency ${deadDep} did not complete`;
-        if (card.feedback.at(-1) !== why) card.feedback.push(why);
+        card.reason = `blocked: dependency ${deadDep} did not complete`;
         newlyBlocked.push(card);
         changed = true;
       }
@@ -59,6 +58,39 @@ export function readyCards(board: Board, concurrency: number): Card[] {
  * a docs agent that was running is scheduled again.
  * Returns the cards that were reset.
  */
+/**
+ * Put a failed card back to work with one more review round: its pending fix task (the last rejection)
+ * runs first, finished tasks and the worktree are kept, and the cards blocked behind it get another chance.
+ */
+export function retryCard(board: Board, cardId: string): Card {
+  const card = board.cards.find((c) => c.id === cardId);
+  if (!card) throw new Error(`no card ${cardId}`);
+  if (card.status !== 'failed') throw new Error(`card ${cardId} is ${card.status.replace('_', ' ')}, not failed`);
+  card.status = 'backlog';
+  card.failure = undefined;
+  card.reason = undefined;
+  card.attempts = Math.max(0, card.attempts - 1);
+  // A card rejected before fix tasks were kept on failure: its uncovered feedback becomes the fix task now.
+  const covered = new Set(card.tasks.flatMap((t) => t.feedback ?? []));
+  const uncovered = card.feedback.filter((f) => !covered.has(f));
+  if (card.tasks.every((t) => t.status === 'done') && uncovered.length) { appendFixTask(card, 'Address review feedback', uncovered); card.status = 'backlog'; }
+  for (const t of card.tasks) if (t.status !== 'done') { t.status = 'pending'; t.attempts = 0; }
+  for (const c of board.cards) if (c.status === 'blocked') { c.status = 'backlog'; c.reason = undefined; }
+  board.halted = undefined;
+  if (board.docs?.status === 'done') board.docs = { status: 'pending' };
+  return card;
+}
+
+/** Put the card back to work with one fix task that carries `feedback`; finished tasks stay finished. */
+export function appendFixTask(card: Card, title: string, feedback: string[]): void {
+  const n = card.tasks.filter((t) => t.kind === 'fix').length + 1;
+  card.tasks.push({
+    id: `fix${n}`, cardId: card.id, kind: 'fix', title, feedback,
+    instructions: feedback.join('\n'), status: 'pending', attempts: 0,
+  });
+  card.status = 'in_progress';
+}
+
 export function resetInterrupted(board: Board): Card[] {
   const reset: Card[] = [];
   for (const card of board.cards) {
@@ -66,6 +98,7 @@ export function resetInterrupted(board: Board): Card[] {
     if (card.status !== 'in_progress' && card.status !== 'review' && !infra) continue;
     card.status = 'backlog';
     card.failure = undefined;
+    card.reason = undefined;
     if (infra) {
       const before = card.tasks.length;
       card.tasks = card.tasks.filter((t) => t.status === 'done' || t.kind !== 'fix');
@@ -76,8 +109,8 @@ export function resetInterrupted(board: Board): Card[] {
     reset.push(card);
   }
   // blockUnreachable() re-blocks what is still unreachable.
-  if (reset.length) for (const card of board.cards) if (card.status === 'blocked') card.status = 'backlog';
-  if (board.docs?.status === 'running' || board.halted) board.docs = { status: 'pending' };
+  if (reset.length) for (const card of board.cards) if (card.status === 'blocked') { card.status = 'backlog'; card.reason = undefined; }
+  if (board.docs?.status === 'running' || board.halted || (reset.length && board.docs?.status === 'done')) board.docs = { status: 'pending' };
   board.halted = undefined;
   return reset;
 }

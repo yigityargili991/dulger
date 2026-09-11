@@ -46,7 +46,7 @@ function requiredString(args: Record<string, unknown>, key: string): string {
   return args[key];
 }
 
-export async function executeApiTool(name: string, args: Record<string, unknown>, opts: AdapterRunOptions): Promise<string> {
+export async function executeApiTool(name: string, args: Record<string, unknown>, opts: AdapterRunOptions, timeoutSec = 600): Promise<string> {
   opts.signal.throwIfAborted();
   if (!apiTools(opts).some((t) => t.function.name === name)) throw new ToolDenied(`tool ${name} is not allowed for ${opts.access} access`);
   switch (name) {
@@ -76,19 +76,19 @@ export async function executeApiTool(name: string, args: Record<string, unknown>
       const path = args.path === undefined ? '.' : await safePath(opts.cwd, requiredString(args, 'path'));
       const start = args.line === undefined ? 0 : Number(args.line) - 1;
       if (!Number.isInteger(start) || start < 0) throw new Error('line must be a positive integer');
-      const output = await command('git', ['--no-pager', 'diff', '--no-ext-diff', '--no-textconv', base ? `${base}...HEAD` : 'HEAD', '--', path], opts, 2_000_000);
+      const output = await command('git', ['--no-pager', 'diff', '--no-ext-diff', '--no-textconv', base ? `${base}...HEAD` : 'HEAD', '--', path], opts, timeoutSec, 2_000_000);
       return output.split('\n').slice(start).join('\n').slice(0, LIMIT);
     }
     case 'run_command': {
       const cmd = requiredString(args, 'command').trim();
       if (opts.access === 'readonly' && !opts.allowedCommands?.includes(cmd)) throw new ToolDenied(`command not approved: ${cmd}`);
-      return command('/bin/sh', ['-c', cmd], opts);
+      return command('/bin/sh', ['-c', cmd], opts, timeoutSec);
     }
     default: throw new ToolDenied(`unknown tool: ${name}`);
   }
 }
 
-function command(bin: string, args: string[], opts: AdapterRunOptions, limit = LIMIT): Promise<string> {
+function command(bin: string, args: string[], opts: AdapterRunOptions, timeoutSec: number, limit = LIMIT): Promise<string> {
   return new Promise((resolve, reject) => {
     opts.signal.throwIfAborted();
     const child = spawn(bin, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
@@ -98,7 +98,7 @@ function command(bin: string, args: string[], opts: AdapterRunOptions, limit = L
       stopped = true;
       try { if (process.platform !== 'win32') process.kill(-child.pid!, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* already exited */ }
     };
-    const timer = setTimeout(stop, 120_000);
+    const timer = setTimeout(stop, timeoutSec * 1000);
     opts.signal.addEventListener('abort', stop, { once: true });
     const collect = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-limit); };
     child.stdout.on('data', collect);

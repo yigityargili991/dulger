@@ -4,7 +4,8 @@
 export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked' | 'replaced';
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
 export type AgentRole = 'planner' | 'worker' | 'checker' | 'docs';
-export type HarnessName = 'claude' | 'codex' | 'fake' | 'ollama' | 'deepseek' | 'openai';
+/** The built-in backends, or the name of any entry under config.providers (an OpenAI-style API). */
+export type HarnessName = 'claude' | 'codex' | 'fake' | 'ollama' | 'deepseek' | 'openai' | (string & {});
 export type ModelTier = 'low' | 'medium' | 'high';
 
 // ---- Structured results returned by each role (enforced via JSON schema) ----
@@ -59,6 +60,8 @@ export interface Task {
   attempts: number;
   sessionId?: string;
   result?: WorkerResult;
+  /** Why the last attempt produced no answer (crash, stall, limit); cleared when an attempt answers. */
+  error?: string;
   /** Set on tasks dulger appends after a rejection: they address `feedback` instead of implementing new work. */
   kind?: 'fix';
   feedback?: string[];
@@ -78,7 +81,10 @@ export interface Card {
   status: CardStatus;
   attempts: number;
   branch?: string;
+  /** What reviewers said had to change, every round. */
   feedback: string[];
+  /** Why dulger itself stopped the card: blocked, replaced, over budget, a step it could not run. */
+  reason?: string;
   /** Non-blocking observations from reviews, shown on the board. */
   reviewNotes?: string[];
   /** The final reviewer's summary of what the card does and why it passed or failed. */

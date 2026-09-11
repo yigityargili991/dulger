@@ -27,13 +27,11 @@ export function getAdapter(name: HarnessName, config: Config): Adapter {
     case 'claude': a = claudeAdapter; break;
     case 'codex': a = createCodexAdapter({ bypassSandbox: config.codex.bypassSandbox }); break;
     case 'fake': a = createFakeAdapter(); break;
-    case 'ollama': case 'deepseek': case 'openai': {
+    default: {
       const provider = config.providers[name];
-      if (!provider) throw new Error(`missing providers.${name} configuration`);
+      if (!provider) throw new Error(`unknown harness: ${name}`);
       a = createOpenAIAdapter(name, provider);
-      break;
     }
-    default: throw new Error(`unknown harness: ${name as string}`);
   }
   adapters.set(name, a);
   return a;

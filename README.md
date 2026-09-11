@@ -69,12 +69,13 @@ dulger init [path]            git init (if needed) plus a first commit, so runs 
 dulger run "<goal>"           plan, pause for approval, execute
 dulger order "<goal>"         plan in a conversation with the planner, then execute
 dulger resume [runId]         continue an interrupted run
+dulger retry <card> [runId]   give a failed card one more review round, then continue the run
 dulger board | report [runId] print a run's board / what it landed
 dulger runs                   list runs
 dulger memory [list|add|rm|compact|path]
 dulger clean                  remove leftover worktrees and wip branches
 
---harness claude|codex|ollama|deepseek|openai|fake   --model <name>        --concurrency <n>     --max-attempts <n>
+--harness <name>              --model <name>        --concurrency <n>     --max-attempts <n>
 --yes                         --no-docs             --merge               --allow-dirty
 --base-url <url>              --api-key-env <name>  --no-routing
 --repo <path>                 --quiet               --max-replans <n>     --version
@@ -97,6 +98,8 @@ dulger clean                  remove leftover worktrees and wip branches
   "docs": true,
   "checker": { "allowedCommands": ["npm test", "npm run typecheck"] },   // what the reviewer may run, on top of the card's verify commands
   "verifyTimeoutSec": 600,         // a verify command that runs longer is killed and counts as failed
+  "budgetUsd": 200,                // stop the run (resumable) at this spend; --budget on the command line
+  "cardBudgetUsd": 50,             // fail a card at this spend; --card-budget
   "worktreeSetup": "npm ci",       // run once in every new worktree
   "claude": { "mcp": true },       // workers get your MCP servers; the planner and reviewer never do
   "codex": { "bypassSandbox": false },
@@ -115,9 +118,9 @@ Automatic routing is on by default. The planner labels each task `low`, `medium`
 | Medium: routine features, fixes, tests | `sonnet` | `gpt-5.6-sol` |
 | High: architecture, security, difficult debugging | `claude-fable-5-1` | `gpt-6-astra` |
 
-Planning uses high, documentation uses low, and review uses medium (high for complex cards or fixes).
+Planning and review always use high: what the reviewer misses lands unseen. Documentation uses low.
 Unlabelled tasks on older boards use medium. A failed worker attempt retries one tier up; continuations
-keep the same model and session. Review fixes and merge conflicts use high by default. Selected models
+keep the same model and session. Fix tasks and merge-conflict resolution run one tier up. Selected models
 appear in the log and live agent list. The Fable model ID follows the
 [Claude Code configuration docs](https://support.claude.com/en/articles/11940350-claude-code-model-configuration).
 You can use `opus` as the high tier by changing the map. Availability depends on your account and installed CLI.
@@ -201,6 +204,30 @@ dulger run "Add CSV export" --harness openai --model your-model \
   --base-url https://your-provider.example/v1 --api-key-env MY_LLM_KEY
 ```
 
+Any name under `providers` is a backend. Give it a `baseUrl`, the **environment variable name** holding
+its key, and a default model; the rest is filled from the defaults. So OpenRouter, Together, Groq or a
+self-hosted vLLM sit next to the built-in three under their own names, each with its own tier map:
+
+```json
+{
+  "harness": "openrouter",
+  "providers": {
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKeyEnv": "OPENROUTER_API_KEY", "model": "qwen/qwen3-coder" }
+  },
+  "routing": { "models": { "openrouter": { "low": "qwen/qwen3-coder", "medium": "qwen/qwen3-coder", "high": "anthropic/claude-sonnet-4.5" } } }
+}
+```
+
+`dulger run "..." --harness openrouter --base-url https://openrouter.ai/api/v1 --api-key-env OPENROUTER_API_KEY --model qwen/qwen3-coder`
+defines the same thing for one run without touching the file. A rejected request reports the server's
+own error message (with the key redacted), so a wrong model name reads as such.
+
+In the prompt, `/provider openrouter` asks for the base URL, the key variable and the model, and when
+the variable is not set, for the key itself, typed without echo and stored in
+`~/.config/dulger/keys.json` (mode 600, never in a repository; an exported variable always wins).
+`/provider` lists every provider and where its key comes from; `/provider <name> key` replaces a key.
+`/config save` then writes the endpoint and the variable name to the repository config.
+
 Persist endpoint settings in `.dulger/config.json`. Store the **environment variable name**, never the
 key itself: this file is committable. `/harness ollama`, `/harness deepseek` and `/harness openai` also
 work in the interactive prompt. The base URL is the prefix before `/chat/completions`.
@@ -216,7 +243,9 @@ work in the interactive prompt. The base URL is the prefix before `/chat/complet
       "maxTurns": 40,
       "maxTokens": 8192,
       "tokenParameter": "max_tokens",
-      "timeoutSec": 300
+      "timeoutSec": 300,
+      "retries": 3,
+      "commandTimeoutSec": 600
     },
     "ollama": { "baseUrl": "http://localhost:11434/v1", "model": "your-local-coder" }
   }
@@ -231,6 +260,9 @@ are opt-in; you choose the model IDs available on your endpoint. Partial configu
 `maxTurns` bounds the tool/answer loop; `maxTokens` caps each response. OpenAI uses the
 `max_completion_tokens` request field on `api.openai.com`; other hosts default to `max_tokens`.
 Set `tokenParameter` explicitly if your endpoint requires a different spelling. Calls are cancelled on interrupt or timeout.
+A 429 or 5xx answer is retried up to `retries` times with backoff (`Retry-After` honoured); only a limit
+that persists through the retries stops the run. Shell commands the agent runs are killed after
+`commandTimeoutSec`.
 API runs report tokens, not estimated dollars; `maxBudgetUsd` is rejected because these providers do
 not supply reliable cost figures. API conversation transcripts are saved with private file permissions
 alongside the run logs so planner revisions and worker continuations can resume.

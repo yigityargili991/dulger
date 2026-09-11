@@ -2,14 +2,14 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, loadConfig, roleConfig, STATE_DIR, type Config, type RoleConfig } from './config.ts';
+import { DEFAULT_CONFIG, harnessNames, loadConfig, roleConfig, STATE_DIR, type Config, type RoleConfig } from './config.ts';
 import { CliError } from './commands.ts';
 import { plainText } from './tui/text.ts';
+import { keySource } from './keys.ts';
 import type { Session } from './repl.ts';
 import type { AgentRole, HarnessName, ModelTier } from './types.ts';
 
 export const MODEL_ROLES: AgentRole[] = ['planner', 'worker', 'checker', 'docs'];
-const HARNESSES: HarnessName[] = ['claude', 'codex', 'deepseek', 'ollama', 'openai', 'fake'];
 const ALIASES: Record<string, { harness: HarnessName; model: string }> = {
   fable: { harness: 'claude', model: DEFAULT_CONFIG.routing.models.claude!.high! },
   opus: { harness: 'claude', model: 'opus' },
@@ -44,11 +44,11 @@ type ModelCommand =
   | { kind: 'global'; model?: string }
   | { kind: 'role'; role: AgentRole; choice: RoleChoice };
 
-function parseRoleChoice(words: string[]): RoleChoice {
+function parseRoleChoice(words: string[], harnesses: string[]): RoleChoice {
   const [name, model, ...extra] = words;
   if (words.length === 1 && (name === 'auto' || name === 'reset')) return name;
   if (!name || extra.length) throw new CliError('use /model <role> <harness> [model|auto]');
-  if (HARNESSES.includes(name as HarnessName)) return { harness: name as HarnessName, model: model === 'auto' ? undefined : model };
+  if (harnesses.includes(name)) return { harness: name as HarnessName, model: model === 'auto' ? undefined : model };
   if (!model && Object.hasOwn(ALIASES, name)) return { ...ALIASES[name]! };
   const known = !model && Object.values(ALIASES).find((alias) => alias.model === name);
   if (known) return { ...known };
@@ -57,13 +57,13 @@ function parseRoleChoice(words: string[]): RoleChoice {
 
 /** /model, /model <role>, /model <role> <choice>, and the existing global /model <name>|off. */
 export function configureModel(repoRoot: string, session: Session, input: string): string {
-  const command = parseModelCommand(input);
+  const command = parseModelCommand(input, harnessNames(sessionConfig(repoRoot, session)));
   applyModelCommand(repoRoot, session, command);
   return modelOverview(repoRoot, session, command.kind === 'global' ? undefined : command.role);
 }
 
 /** Parse and validate the complete input before touching session state. */
-function parseModelCommand(input: string): ModelCommand {
+function parseModelCommand(input: string, harnesses: string[]): ModelCommand {
   const [target, ...args] = input.trim().split(/\s+/).filter(Boolean);
   if (!target) return { kind: 'show' };
 
@@ -74,7 +74,7 @@ function parseModelCommand(input: string): ModelCommand {
   }
 
   if (!args.length) return { kind: 'show', role };
-  return { kind: 'role', role, choice: parseRoleChoice(args) };
+  return { kind: 'role', role, choice: parseRoleChoice(args, harnesses) };
 }
 
 function applyModelCommand(repoRoot: string, session: Session, command: ModelCommand): void {
@@ -136,7 +136,7 @@ function describeRoleModel(config: Config, session: Session, role: AgentRole): R
     source: roleModelSource(session, role),
     disabled: role === 'docs' && !config.docs,
     tiers,
-    missingKeyEnv: provider?.apiKeyEnv && !process.env[provider.apiKeyEnv] ? provider.apiKeyEnv : undefined,
+    missingKeyEnv: provider?.apiKeyEnv && keySource(provider.apiKeyEnv) === 'missing' ? provider.apiKeyEnv : undefined,
   };
 }
 
@@ -167,7 +167,7 @@ function formatRoleModel(summary: RoleModelSummary): string[] {
     lines.push(`          ${tiers.join(' · ')}`);
   }
   if (summary.missingKeyEnv) {
-    lines.push(`          set ${plainText(summary.missingKeyEnv)} in your environment before running`);
+    lines.push(`          set ${plainText(summary.missingKeyEnv)} in your environment, or /provider ${plainText(summary.harness)} key, before running`);
   }
   return lines;
 }

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { DEFAULT_CONFIG, loadConfig, roleConfig } from '../src/config.ts';
+import { DEFAULT_CONFIG, harnessNames, loadConfig, roleConfig } from '../src/config.ts';
+import { getAdapter } from '../src/adapters/index.ts';
 import { cardsFromPlan } from '../src/board/store.ts';
 import type { Task } from '../src/types.ts';
 
@@ -42,8 +43,27 @@ test('config merges provider and tier overrides without mutating defaults', (t) 
   assert.equal(DEFAULT_CONFIG.providers.ollama?.model, undefined);
 });
 
-test('planned task difficulty survives board creation and affects review', () => {
-  const card = cardsFromPlan({ cards: [{ id: 'c1', title: '', description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: '', instructions: '', complexity: 'high' }] }] })[0]!;
-  assert.equal(card.tasks[0]?.complexity, 'high');
+test('planned task difficulty survives board creation; the reviewer is always on the high tier', () => {
+  const card = cardsFromPlan({ cards: [{ id: 'c1', title: '', description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: '', instructions: '', complexity: 'low' }] }] })[0]!;
+  assert.equal(card.tasks[0]?.complexity, 'low');
   assert.equal(roleConfig(DEFAULT_CONFIG, 'checker', { card }).model, 'claude-fable-5-1');
+  assert.equal(roleConfig(DEFAULT_CONFIG, 'worker', { card, task: card.tasks[0] }).model, 'haiku');
+});
+
+test('any providers.<name> entry is a harness, with endpoint-only entries filled from the defaults', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'dulger-cfg-'));
+  mkdirSync(join(repo, '.dulger'));
+  writeFileSync(join(repo, '.dulger', 'config.json'), JSON.stringify({
+    harness: 'openrouter',
+    providers: { openrouter: { baseUrl: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', model: 'qwen/qwen3-coder' } },
+    roles: { docs: { harness: 'openai' } },
+  }));
+  const config = loadConfig(repo);
+  assert.equal(config.harness, 'openrouter');
+  assert.deepEqual(config.providers.openrouter, { baseUrl: 'https://openrouter.ai/api/v1', apiKeyEnv: 'OPENROUTER_API_KEY', model: 'qwen/qwen3-coder', maxTurns: 40, maxTokens: 8192, timeoutSec: 300, retries: 3, commandTimeoutSec: 600 });
+  assert.equal(roleConfig(config, 'worker').model, 'qwen/qwen3-coder');
+  assert.deepEqual(harnessNames(config), ['claude', 'codex', 'fake', 'ollama', 'deepseek', 'openai', 'openrouter']);
+  assert.equal(getAdapter('openrouter', config).name, 'openrouter');
+  assert.throws(() => loadConfig(repo, { harness: 'mistral' }), /unknown harness: mistral \(built in: claude, codex, fake; configured: ollama, deepseek, openai, openrouter\)/);
+  assert.throws(() => loadConfig(repo, { providers: { broken: {} as never } }), /providers\.broken\.baseUrl is required/);
 });

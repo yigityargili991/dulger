@@ -34,6 +34,7 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
     for (const c of notLanded) {
       const why = c.status === 'failed' && c.failure === 'infrastructure' ? 'dulger could not run a step; resume retries it' : c.status === 'failed' ? `failed after ${c.attempts} review round${c.attempts === 1 ? '' : 's'}` : c.status === 'blocked' ? 'blocked by a failed dependency' : c.status;
       out.push(`  ${bold(c.id)} ${c.title} ${red(`— ${why}`)}`);
+      if (c.reason) out.push(`     ${dim('reason:')} ${c.reason.split('\n')[0]}`);
       const last = c.feedback.at(-1);
       if (last) out.push(`     ${dim('last feedback:')} ${last.split('\n')[0]}`);
       out.push(...verifiedLine(c));
@@ -49,7 +50,9 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
   if (opts.mergedInto) out.push(`  the result is on ${green(opts.mergedInto)}`);
   else if (landed.length) out.push(`  git merge ${green(board.runBranch)}     ${dim(`# or: git diff ${board.baseBranch}...${board.runBranch}`)}`);
   else out.push(dim('  nothing landed'));
-  if (notLanded.length) out.push(`  dulger resume ${board.runId}      ${dim('# retry the cards that did not land')}`);
+  const retryable = notLanded.filter((c) => c.status === 'failed' && c.failure !== 'infrastructure');
+  for (const c of retryable) out.push(`  dulger retry ${c.id} ${board.runId}      ${dim('# one more review round for it, then the rest of the run (--max-attempts <n> for more)')}`);
+  if (notLanded.some((c) => !retryable.includes(c))) out.push(`  dulger resume ${board.runId}      ${dim('# continue with the cards that were interrupted')}`);
   const notes = landed.reduce((n, c) => n + (c.reviewNotes?.length ?? 0), 0);
   if (notes) out.push(dim(notes === 1 ? '  the reviewer note above is worth a follow-up run' : `  the ${notes} reviewer notes above are worth a follow-up run`));
   return out.join('\n') + '\n';
@@ -80,7 +83,8 @@ function cardLines(c: Card): string[] {
   const files = [...new Set(c.tasks.flatMap((t) => t.result?.filesChanged ?? []))].sort();
   if (files.length) lines.push(dim(`     files: ${files.join(', ')}`));
   if (c.costUsd > 0 || c.usage) lines.push(dim(`     spent: ${fmtSpendDetail(c)}`));
-  if (c.attempts) lines.push(dim(`     review rounds: ${c.attempts + 1} (fix tasks: ${c.tasks.filter((t) => t.kind === 'fix').map((t) => t.title).join('; ')})`));
+  const fixes = c.tasks.filter((t) => t.kind === 'fix').map((t) => t.title);
+  if (c.attempts) lines.push(dim(`     review rounds: ${c.attempts + 1}${fixes.length ? ` (fix tasks: ${fixes.join('; ')})` : ''}`));
   lines.push(...verifiedLine(c));
   if (c.review) lines.push(`     ${dim('review:')} ${c.review}`);
   for (const n of c.reviewNotes ?? []) lines.push(yellow(`     note: ${n}`));

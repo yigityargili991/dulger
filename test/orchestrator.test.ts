@@ -64,21 +64,29 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.equal(learnings.length, 1);
 
   assert.equal(c1.review, 'looks good', 'the final review summary is kept on the card');
-  const report = buildReport(board, { diffStat: ' 3 files changed' }).replace(/\x1b\[[0-9;]*m/g, '');
+  const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
+  const report = strip(buildReport(board, { diffStat: ' 3 files changed' }));
+  const full = strip(buildReport(board, { diffStat: ' 3 files changed', full: true }));
   assert.match(report, /^Run run1  main @ [0-9a-f]{7} → dulger\/run1\nGoal: demo\nLanded 3 of 3 cards, docs updated · spent \$0\.1\d · \d+k tokens \(74% cached, \d+ out\)/);
-  assert.match(report, /spent: \$0\.0\d · \dk tokens \(74% cached/);
   assert.deepEqual(board.usage, { input: 2200, cacheRead: 7700, cacheWrite: 550, output: 550 });
   assert.match(report, /Plan windows at the end of the run: 5h 35% · 7d 23%/);
   assert.equal(board.rateLimits?.windows.length, 2, 'the latest reading is kept on the board');
-  assert.match(report, /\nLanded\n  c1 .*\n     t1 .*Wrote c1-t1\.txt/);
-  assert.match(report, /files: out\/c1-fix1\.txt, out\/c1-t1\.txt/);
-  assert.match(report, /review rounds: 2 \(fix tasks: Address review feedback\)/);
-  assert.match(report, /review: looks good/);
-  assert.match(report, /note: Fake note: consider a helper/);
+  // Compact: three lines per card, nothing verbose.
+  assert.match(report, /\nLanded\n  c1 Create greeting module\n     review: looks good\n     spent: \$0\.0\d · \dk tokens · review rounds: 2 · verified: nothing · 1 note\n  c2 /);
+  assert.ok(!report.includes('Wrote c1-t1.txt') && !report.includes('note: Fake note') && !report.includes('files:'));
   assert.match(report, /\nDocumentation\n  Wrote DOCS\.md/);
   assert.match(report, /\nChanges\n  3 files changed/);
   assert.match(report, /\nNext\n  git merge dulger\/run1/);
+  assert.match(report, /the reviewer note is worth a follow-up run \(dulger report --full lists them\)/);
   assert.ok(!report.includes('Not landed'));
+  // Full: everything, wrapped.
+  assert.match(full, /spent: \$0\.0\d · \dk tokens \(74% cached/);
+  assert.match(full, /\nLanded\n  c1 .*\n     t1 write module: Wrote c1-t1\.txt/);
+  assert.match(full, /files: out\/c1-fix1\.txt, out\/c1-t1\.txt/);
+  assert.match(full, /review rounds: 2 \(fix tasks: Address review feedback\)/);
+  assert.match(full, /review: looks good/);
+  assert.match(full, /note: Fake note: consider a helper/);
+  assert.match(full, /the reviewer note above is worth a follow-up run/);
   assert.match(learnings[0]!.text, /Fake learning/);
   assert.ok(learnings[0]!.seen >= 4, `seen ${learnings[0]!.seen}`);
   assert.ok(learnings[0]!.files.includes('out/c1-t1.txt'));
@@ -364,7 +372,8 @@ test('the verification gate sends a card back with the command output before any
   assert.match(checkerPrompts[0]!, /## Verification run by dulger\n\n- passed: `test -f out\/fixed.txt`/, 'the reviewer sees what dulger established');
   const saved = store.loadBoard(repo, 'run-gate');
   assert.deepEqual(saved.cards[0]!.verify, c1.verify);
-  assert.match(buildReport(saved, {}), /verified:.*test -f out\/fixed.txt.*echo hello/);
+  assert.match(buildReport(saved, { full: true }), /verified:.*test -f out\/fixed.txt.*echo hello/);
+  assert.match(buildReport(saved, {}).replace(/\x1b\[[0-9;]*m/g, ''), /verified: ✓ 2/);
 });
 
 test('a reviewer that cannot run is an infrastructure failure: no round spent, no fix task, no replan, and resume retries it', async () => {

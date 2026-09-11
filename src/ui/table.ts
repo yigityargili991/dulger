@@ -1,6 +1,7 @@
 // Live terminal view: kanban columns on top, one row per agent below.
 // Redraws in place on a TTY; prints one log line per change otherwise.
 import { bold, dim, red, green, yellow, cyan, magenta, cursor, pad, truncate, fmtDuration, fmtSpend, fmtWindows } from './ansi.ts';
+import { logLine } from '../tui/text.ts';
 import type { AgentStatus, Board, Card, CardStatus } from '../types.ts';
 
 const COLUMNS: Array<{ title: string; statuses: CardStatus[] }> = [
@@ -98,7 +99,7 @@ export function createLiveView(getBoard: () => Board, getAgents: () => Iterable<
       dim('─'.repeat(width)),
       ...renderAgents(getAgents(), width),
     ];
-    if (notes.length) lines.push(dim('─'.repeat(width)), ...notes.slice(-6).map(dim));
+    if (notes.length) lines.push(dim('─'.repeat(width)), ...notes.slice(-6).map((n) => dim(logLine(n, width))));
     return lines.join('\n');
   };
 
@@ -125,7 +126,7 @@ export function createLiveView(getBoard: () => Board, getAgents: () => Iterable<
     },
     note(msg) {
       const line = `${dim(new Date().toISOString().slice(11, 19))} ${msg}`;
-      if (isTTY) { notes.push(line); draw(); } else out.write(line + '\n');
+      if (isTTY) { notes.push(line); draw(); } else out.write(logLine(line, 200) + '\n');
     },
   };
 }

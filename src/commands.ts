@@ -13,7 +13,8 @@ import { worktreesDir } from './paths.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
-import { bold, cyan, dim, green, red, yellow, fmtSpend } from './ui/ansi.ts';
+import { bold, cyan, dim, green, red, yellow, fmtSpend, terminalWidth } from './ui/ansi.ts';
+import { fit, logLine, wrap } from './tui/text.ts';
 import { createTui, tuiUsable } from './tui/tui.ts';
 import { resolveIcons } from './tui/theme.ts';
 import type { AgentStatus, Board, Card } from './types.ts';
@@ -61,7 +62,7 @@ function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions,
   show();
   return {
     update: () => view?.update(),
-    note: (msg) => (view ? view.note(msg) : console.log(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`)),
+    note: (msg) => (view ? view.note(msg) : console.log(logLine(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`, terminalWidth(200)))),
     setPhase: (phase) => { if (phase !== 'plan ready') show(); },
     async ask(q) {
       hide();
@@ -137,8 +138,6 @@ async function executeRun(run: Run, repoRoot: string, board: Board, o: RunOption
   } finally {
     run.ui.close();
   }
-  console.log();
-  printBoard(board);
   const landed = board.cards.filter((c) => c.status === 'done').length;
   let mergedInto: string | undefined;
   if (o.merge && landed > 0 && !run.aborted) {
@@ -146,7 +145,7 @@ async function executeRun(run: Run, repoRoot: string, board: Board, o: RunOption
     mergedInto = git.currentBranch(repoRoot);
   }
   console.log();
-  process.stdout.write(report(repoRoot, board, mergedInto));
+  process.stdout.write(report(repoRoot, board, { mergedInto }));
   const failed = board.cards.filter((c) => c.status !== 'done' && c.status !== 'replaced');
   if (failed.length) console.log(dim(`  failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`));
   return { landed, aborted: run.aborted || Boolean(board.halted) };
@@ -221,17 +220,17 @@ export function latestRun(repoRoot: string, runId?: string): string {
 }
 
 /** The end-of-run report, with the diff stat when the result branch still exists. */
-export function report(repoRoot: string, board: Board, mergedInto?: string): string {
+export function report(repoRoot: string, board: Board, o: { mergedInto?: string; full?: boolean } = {}): string {
   const diffStat = git.branchExists(repoRoot, board.runBranch) ? git.diffStat(repoRoot, board.baseRef, board.runBranch) : undefined;
-  return buildReport(board, { diffStat, mergedInto });
+  return buildReport(board, { diffStat, mergedInto: o.mergedInto, full: o.full, width: terminalWidth() });
 }
 
 export function showBoard(repoRoot: string, runId?: string): void {
   printBoard(store.loadBoard(repoRoot, latestRun(repoRoot, runId)));
 }
 
-export function showReport(repoRoot: string, runId?: string): void {
-  process.stdout.write(report(repoRoot, store.loadBoard(repoRoot, latestRun(repoRoot, runId))));
+export function showReport(repoRoot: string, runId?: string, o: { full?: boolean } = {}): void {
+  process.stdout.write(report(repoRoot, store.loadBoard(repoRoot, latestRun(repoRoot, runId)), o));
 }
 
 export function showRuns(repoRoot: string): void {
@@ -240,7 +239,7 @@ export function showRuns(repoRoot: string): void {
   for (const id of ids) {
     const b = store.loadBoard(repoRoot, id);
     const done = b.cards.filter((c) => c.status === 'done').length;
-    console.log(`${id}  ${done}/${b.cards.length} done  ${fmtSpend(b)}  ${dim(b.goal)}`);
+    console.log(fit(`${id}  ${done}/${b.cards.length} done  ${fmtSpend(b)}  ${dim(b.goal)}`, terminalWidth()));
   }
 }
 
@@ -338,23 +337,27 @@ function formatLearning(l: Learning): string {
   return `${cyan(l.id)} ${meta}\n  ${l.text}${files ? dim(`  [${files}]`) : ''}`;
 }
 
-export function printBoard(board: Board): void {
-  console.log(bold(`Board ${board.runId}`) + dim(`  goal: ${board.goal}`));
-  console.log(renderBoard(board, Math.max(60, process.stdout.columns ?? 100)).join('\n'));
+export function printBoard(board: Board, width = terminalWidth()): void {
+  console.log(fit(bold(`Board ${board.runId}`) + dim(`  goal: ${board.goal}`), width));
+  console.log(renderBoard(board, width).join('\n'));
   for (const c of board.cards) {
     const deps = c.dependsOn.length ? dim(` after ${c.dependsOn.join(',')}`) : '';
-    console.log(`  ${bold(c.id)} ${c.title}${deps}`);
-    for (const t of c.tasks) console.log(dim(`     ${t.id} ${t.title}`));
+    console.log(fit(`  ${bold(c.id)} ${c.title}${deps}`, width));
+    for (const t of c.tasks) console.log(fit(dim(`     ${t.id} ${t.title}`), width));
     const notes = c.reviewNotes?.length ?? 0;
-    if (notes) console.log(yellow(`     ${notes} reviewer note${notes === 1 ? '' : 's'}`) + dim(' (dulger report lists them)'));
+    if (notes) console.log(yellow(`     ${notes} reviewer note${notes === 1 ? '' : 's'}`) + dim(' (dulger report --full lists them)'));
   }
-  printPlanNotes(board);
+  printPlanNotes(board, width);
 }
 
 /** What the planner decided on its own and what it left out: read this before dispatching. */
-export function printPlanNotes(board: Board): void {
+export function printPlanNotes(board: Board, width = terminalWidth()): void {
   const p = board.plan;
   if (!p) return;
-  for (const a of p.assumptions) console.log(yellow(`  assumes: ${a}`));
-  for (const o of p.omitted) console.log(red(`  left out: ${o}`));
+  const hanging = (label: string, text: string, paint: (s: string) => string) => {
+    const indent = ' '.repeat(label.length + 3);
+    for (const [i, line] of wrap(text, width - indent.length).entries()) console.log(paint(i ? indent + line : `  ${label} ${line}`));
+  };
+  for (const a of p.assumptions) hanging('assumes:', a, yellow);
+  for (const o of p.omitted) hanging('left out:', o, red);
 }

@@ -70,7 +70,7 @@ dulger run "<goal>"           plan, pause for approval, execute
 dulger order "<goal>"         plan in a conversation with the planner, then execute
 dulger resume [runId]         continue an interrupted run
 dulger retry <card> [runId]   give a failed card one more review round, then continue the run
-dulger board | report [runId] print a run's board / what it landed
+dulger board | report [runId] print a run's board / what it landed (report --full: every summary, review and note)
 dulger runs                   list runs
 dulger memory [list|add|rm|compact|path]
 dulger clean                  remove leftover worktrees and wip branches

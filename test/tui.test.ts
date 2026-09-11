@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import chalk from 'chalk';
 import { parseKeys } from '../src/tui/screen.ts';
-import { cell, fit, plainText, spread, width, wrap } from '../src/tui/text.ts';
+import { cell, fit, logLine, plainText, spread, width, wrap } from '../src/tui/text.ts';
 import { createEditor, edit, submit } from '../src/tui/editor.ts';
 import { columns, render, type ViewState } from '../src/tui/view.ts';
 import { glyphs, resolveIcons } from '../src/tui/theme.ts';
@@ -19,6 +19,16 @@ test('parseKeys: sequences, control keys and multi-byte characters', () => {
   assert.deepEqual(parseKeys('\x1b[Z'), [{ name: 'shift-tab' }]);
   assert.deepEqual(parseKeys('aé😀'), [{ name: 'char', ch: 'a' }, { name: 'char', ch: 'é' }, { name: 'char', ch: '😀' }]);
   assert.deepEqual(parseKeys('\x1b[99z'), [], 'unknown sequences are dropped, not typed');
+});
+
+test('logLine keeps the first line, marks the rest, fits the width and closes colours', () => {
+  assert.equal(logLine('a\nb', 20), 'a …');
+  assert.equal(logLine('only one line', 20), 'only one line');
+  assert.equal(logLine('a\n\n', 20), 'a', 'blank continuation lines do not count');
+  assert.equal(width(logLine('x'.repeat(50), 20)), 20);
+  const coloured = logLine('\x1b[33mwarn\ndetail\x1b[0m', 20);
+  assert.ok(coloured.endsWith('\x1b[0m'), 'a colour opened on line one is closed');
+  assert.equal(plainText(coloured), 'warn …');
 });
 
 test('fit and cell respect escapes and wide characters', () => {

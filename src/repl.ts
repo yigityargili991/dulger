@@ -24,7 +24,7 @@ export interface Session {
 const HELP = `Type a goal to plan and run it. Commands:
   /order [goal]       plan with the planner in a conversation, then dispatch
   /board [runId]      print a run's board (latest when omitted)
-  /report [runId]     print what a run landed
+  /report [runId] [full]  print what a run landed (full: every summary, review and note)
   /runs               list runs
   /resume [runId]     continue an interrupted run
   /retry <card> [runId]  give a failed card one more review round, then continue the run
@@ -111,7 +111,11 @@ export async function command(text: string, repoRoot: string, session: Session, 
       console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet and dirty remain session-only)`));
       return false;
     case 'board': showBoard(repoRoot, args[0]); return false;
-    case 'report': showReport(repoRoot, args[0]); return false;
+    case 'report': {
+      const full = args.some((a) => a === 'full' || a === '--full');
+      showReport(repoRoot, args.find((a) => a !== 'full' && a !== '--full'), { full });
+      return false;
+    }
     case 'runs': showRuns(repoRoot); return false;
     case 'resume': {
       const r = await resumeRun(repoRoot, config(), args[0], { quiet: session.quiet, merge: false, interactive: true });

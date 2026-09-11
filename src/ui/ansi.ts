@@ -79,6 +79,11 @@ export function fmtWindows(rl: RateLimits): string {
 }
 
 /** "$1.23 · 45k tokens (91% cached, 2k out)": the spend with the usage split that explains it. */
+/** Columns to lay out for: the terminal's, or `fallback` when the output is not one. Never under 60. */
+export function terminalWidth(fallback = 100, out: { columns?: number } = process.stdout): number {
+  return Math.max(60, out.columns ?? fallback);
+}
+
 export function fmtSpendDetail(x: { costUsd: number; usage?: Usage }): string {
   const u = x.usage;
   if (!u) return fmtSpend(x);

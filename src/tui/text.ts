@@ -38,6 +38,13 @@ export function fit(s: string, w: number, ellipsis = '…'): string {
 }
 
 /** Exactly `w` cells: cut or right-padded. */
+/** A log message as one line of at most `w` cells: its first line, with an ellipsis when more followed. */
+export function logLine(msg: string, w: number): string {
+  const [first = '', ...rest] = msg.split('\n');
+  const cut = fit(rest.some((l) => l.trim()) ? `${first} …` : first, w);
+  return cut.includes('\x1b[') && !cut.endsWith('\x1b[0m') ? cut + '\x1b[0m' : cut;
+}
+
 export function cell(s: string, w: number): string {
   const cut = fit(s, w);
   return cut + ' '.repeat(Math.max(0, w - stringWidth(cut)));

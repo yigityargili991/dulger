@@ -21,7 +21,7 @@ Usage:
   dulger retry <card> [runId]     give a failed card one more review round, then continue the run
                                   (--max-attempts <n> for more rounds)
   dulger board [runId]            print a run's board (latest when omitted)
-  dulger report [runId]           print what a run landed (latest when omitted)
+  dulger report [runId] [--full]  print what a run landed (latest when omitted; --full: every summary, review and note)
   dulger runs                     list runs
   dulger clean                    remove leftover worktrees and wip branches
   dulger memory [list]            show what agents learned about this repo
@@ -79,7 +79,7 @@ async function main(argv: string[]): Promise<void> {
     options: {
       harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
       'no-routing': { type: 'boolean' }, 'base-url': { type: 'string' }, 'api-key-env': { type: 'string' },
-      budget: { type: 'string' }, 'card-budget': { type: 'string' },
+      budget: { type: 'string' }, 'card-budget': { type: 'string' }, full: { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
@@ -149,7 +149,7 @@ async function main(argv: string[]): Promise<void> {
       break;
     }
     case 'board': showBoard(repoRoot, arg); break;
-    case 'report': showReport(repoRoot, arg); break;
+    case 'report': showReport(repoRoot, arg, { full: Boolean(v.full) }); break;
     case 'runs': showRuns(repoRoot); break;
     case 'clean': clean(repoRoot); break;
     case 'memory': memoryCommand(repoRoot, config, arg ?? 'list', positionals.slice(2)); break;

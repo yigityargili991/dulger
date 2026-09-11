@@ -161,6 +161,12 @@ test('a malformed existing config is never replaced by save', async (t) => {
   assert.equal(readFileSync(file, 'utf8'), '{ malformed');
 });
 
+test('/report full is a flag, not a run id', async (t) => {
+  const { run } = setup(t);
+  await assert.rejects(run('/report full'), /no runs found/);
+  await assert.rejects(run('/report --full'), /no runs found/);
+});
+
 test('/provider defines a backend from the prompt and keeps its key in the user keys file', async (t) => {
   const { session, run, output, file, resolve } = setup(t);
   const home = mkdtempSync(join(tmpdir(), 'dulger-keys-'));

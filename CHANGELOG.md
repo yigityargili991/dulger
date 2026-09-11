@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The report is compact by default: three lines per landed card (title, the reviewer's first sentence,
+  spend / rounds / verify / note count), one reason line per card that did not land, the diff-stat
+  total, and the next steps. `dulger report --full` (and `/report full`) prints every task summary,
+  review, note and diff-stat line, wrapped to the terminal. Everything is fitted to the terminal width,
+  the board is printed once per run (at the approval pause, assumptions wrapped) rather than again after
+  it, and log lines are one line each.
+
 ## 0.4.0 — 2026-09-12
 
 Runs

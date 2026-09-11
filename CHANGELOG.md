@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Configure mixed backends/models in the REPL with `/model <role> <shorthand>` or an explicit
+  backend/model pair. Show effective routing, restore automatic selection or repository role settings,
+  and persist session configuration with `/config save`. Role choices take precedence over global pins.
+
 - Route individual tasks to low, medium or high model tiers: Haiku/Sonnet/Fable for Claude,
   GPT-5.6 Luna/Sol and GPT-6 Astra for Codex. Retries escalate; explicit model pins take precedence.
 - Add direct Ollama, DeepSeek and configurable OpenAI-compatible Chat Completions agents, with coding

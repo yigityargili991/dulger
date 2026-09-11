@@ -1,17 +1,20 @@
 // The interactive prompt: type a goal to run it, slash-commands for everything else. The run itself
 // looks exactly like `dulger run`; between runs you decide whether the result merges into your branch.
-import { DEFAULT_CONFIG, loadConfig, type Config } from './config.ts';
+import { DEFAULT_CONFIG, type Config, type RoleConfig } from './config.ts';
 import * as store from './board/store.ts';
 import { createBoard } from './board/create.ts';
 import * as git from './git/worktree.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
 import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
-import type { HarnessName } from './types.ts';
+import { configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
+import type { AgentRole, HarnessName } from './types.ts';
 
 export interface Session {
   overrides: Partial<Config>;
   model?: string;
+  /** Explicit role choices override a global pin; reset restores the repository role. */
+  modelRoles?: Partial<Record<AgentRole, RoleConfig | 'reset'>>;
   yes: boolean;
   quiet: boolean;
   allowDirty: boolean;
@@ -26,7 +29,15 @@ const HELP = `Type a goal to plan and run it. Commands:
   /merge [runId]      merge a run's result branch into the current branch
   /memory [list|add "<text>"|rm <id>|compact|path]
   /clean              remove leftover worktrees and wip branches
-  /status             show the current settings
+  /status             show settings and effective models
+  /model              show every role's backend, model and routing
+  /model <role>       show one role: planner | worker | checker | docs
+  /model <role> <choice>             e.g. planner fable, worker deepseek, checker sonnet
+  /model <role> <harness> [model]    e.g. worker ollama qwen3:8b
+  /model <role> auto|reset           unpin on its backend | restore repository settings
+  /config save        persist settings to .dulger/config.json
+Model shorthand: fable, opus, sonnet, haiku, astra, sol, luna.
+Role choices override global /model pins. Changes are session-only until /config save.
 Settings (each shows its current value when given no argument):
   /harness claude|codex|ollama|deepseek|openai|fake        /model <name>|off             /concurrency <n>
   /attempts <n>                     /replans <n>                  /docs on|off
@@ -37,11 +48,7 @@ Settings (each shows its current value when given no argument):
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
 
 export async function repl(repoRoot: string, session: Session, version: string): Promise<void> {
-  const config = () => {
-    const c = loadConfig(repoRoot, session.overrides);
-    if (session.model) for (const role of ['planner', 'worker', 'checker', 'docs'] as const) c.roles[role] = { ...c.roles[role], model: session.model };
-    return c;
-  };
+  const config = () => sessionConfig(repoRoot, session);
   console.log(`${bold(cyan('dulger'))} ${dim(version)}  ${dim(repoRoot)} ${dim('on')} ${git.currentBranch(repoRoot)}`);
   console.log(dim(`${settingsLine(session, config())}\ntype a goal, or /help`));
 
@@ -83,13 +90,17 @@ async function offerMerge(repoRoot: string, runId: string, runBranch: string): P
 }
 
 /** Returns true when the prompt should end. */
-async function command(text: string, repoRoot: string, session: Session, config: () => Config): Promise<boolean> {
+export async function command(text: string, repoRoot: string, session: Session, config: () => Config = () => sessionConfig(repoRoot, session)): Promise<boolean> {
   const [cmd = '', ...args] = text.slice(1).split(/\s+/);
   const rest = text.slice(1 + cmd.length).trim();
   switch (cmd) {
     case 'q': case 'quit': case 'exit': return true;
     case 'help': case '?': console.log(HELP); return false;
-    case 'status': console.log(settingsLine(session, config())); return false;
+    case 'status': console.log(settingsLine(session, config()) + '\n' + modelOverview(repoRoot, session)); return false;
+    case 'config':
+      if (rest !== 'save') throw new CliError('use /config save to persist the current session settings');
+      console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet and dirty remain session-only)`));
+      return false;
     case 'board': showBoard(repoRoot, args[0]); return false;
     case 'report': showReport(repoRoot, args[0]); return false;
     case 'runs': showRuns(repoRoot); return false;
@@ -127,10 +138,10 @@ async function command(text: string, repoRoot: string, session: Session, config:
     }
     case 'set':
       if (!args[0]) console.log(settingsLine(session, config()));
-      else setting(session, config, args[0], args.slice(1).join(' '));
+      else setting(repoRoot, session, config, args[0], args.slice(1).join(' '));
       return false;
     default:
-      if (SETTINGS.includes(cmd)) { setting(session, config, cmd, rest); return false; }
+      if (SETTINGS.includes(cmd)) { setting(repoRoot, session, config, cmd, rest); return false; }
       throw new CliError(`unknown command /${cmd} (try /help)`);
   }
 }
@@ -138,7 +149,8 @@ async function command(text: string, repoRoot: string, session: Session, config:
 const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing'];
 
 /** Change a setting, or show its current value when no value is given. */
-function setting(session: Session, config: () => Config, key: string, value: string): void {
+function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): void {
+  if (key === 'model') { console.log(configureModel(repoRoot, session, value)); return; }
   if (!value) {
     if (!SETTINGS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
     console.log(`${key} ${bold(currentValue(session, config(), key))}`);
@@ -177,7 +189,6 @@ function set(session: Session, key = '', value = ''): void {
     case 'concurrency': session.overrides.concurrency = Math.max(1, num(value)); return;
     case 'attempts': session.overrides.maxAttempts = Math.max(1, num(value)); return;
     case 'replans': session.overrides.maxReplans = num(value); return;
-    case 'model': session.model = value && value !== 'off' ? value : undefined; return;
     case 'docs': session.overrides.docs = on(value); return;
     case 'yes': session.yes = on(value); return;
     case 'quiet': session.quiet = on(value); return;
@@ -194,5 +205,5 @@ function set(session: Session, key = '', value = ''): void {
 
 function settingsLine(s: Session, c: Config): string {
   const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui'].filter(Boolean).join(' ');
-  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')}${flags ? yellow(` · ${flags}`) : ''}`;
+  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · global model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')}${flags ? yellow(` · ${flags}`) : ''}`;
 }

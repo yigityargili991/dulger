@@ -138,6 +138,50 @@ Use `--no-routing`, `/routing off`, or `"routing": { "enabled": false }` to use 
 }
 ```
 
+## Choose models in the REPL
+
+Configure a mixed-model run without editing JSON:
+
+```text
+/model planner fable
+/model worker deepseek
+/model checker sonnet
+/model docs haiku
+/model
+```
+
+Use `astra` instead of `fable` for Codex planning. Shorthand names are `fable`, `opus`, `sonnet`,
+`haiku`, `astra`, `sol` and `luna`; their known full model IDs also work. A backend name alone,
+such as `deepseek` or `codex`, uses that backend's tier routing or configured default model.
+Custom model names use an explicit backend/model pair:
+
+```text
+/model worker ollama qwen3:8b
+/model worker openai vendor/custom-model
+/model worker auto
+/model worker reset
+/config save
+```
+
+- `/model` shows every role's effective backend, model, pin/routing mode and source. `/model worker`
+  shows just one role; `/status` includes the overview. Missing API-key environment variables and
+  missing provider models are shown before you start a run.
+- `/model worker auto` removes the worker's model pin on its current backend. It follows `/routing`:
+  tier routing when enabled, provider/harness defaults when disabled. APIs without a tier map use
+  their configured default model.
+- `/model worker reset` restores the repository's role harness/model (or repository defaults),
+  bypassing the session's global model pin for that role. Other shared settings still apply.
+- `/model <name>` sets a global fallback pin; explicit session role choices and resets take precedence,
+  regardless of command order. `/model off` clears that global pin and keeps the role choices.
+  The overview always shows which setting applies. `/set model ...` accepts the same arguments.
+- Changes remain session-only until `/config save`. Saving writes explicit configuration changes,
+  including the effective model mix, to `.dulger/config.json` and preserves unrelated settings.
+  `yes`, `quiet` and `dirty` remain session-only. API keys stay in environment variables; saving
+  provider settings persists only the configured environment-variable name, not its value.
+
+The saved file is committable, like a hand-written configuration. API endpoint settings passed through
+`--base-url` and `--api-key-env` can also be saved this way.
+
 ## Direct API backends
 
 Use a model with Chat Completions function/tool calling support. These backends have a built-in coding

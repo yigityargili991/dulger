@@ -18,7 +18,11 @@ export interface RunHooks {
   onBoardChange?: (board: Board) => void;
   /** Human-readable progress line. */
   log?: (msg: string) => void;
+  /** Stop the run: an agent reported that the account cannot run anything more right now. */
+  halt?: (reason: string) => void;
 }
+
+export const USAGE_LIMIT = /hit your \w+ limit|usage limit|rate.?limit|too many requests|\b429\b/i;
 
 /** What a step passes to run an agent; model, budget, logging and cancellation are filled in per role. */
 export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd'>;
@@ -59,7 +63,10 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
   const memory = openMemory(repoRoot, config.memory);
 
   async function agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>> {
-    const rc = roleConfig(config, role);
+    const card = board.cards.find((c) => c.id === ids.cardId);
+    const task = card?.tasks.find((t) => t.id === ids.taskId);
+    const rc = roleConfig(config, role, { card, task });
+    hooks.log?.(`${role}${ids.cardId ? ` ${ids.cardId}${ids.taskId ? `/${ids.taskId}` : ''}` : ''} → ${rc.harness}${rc.model ? ` / ${rc.model}` : ''}`);
     const r = await runAgent({
       registry, adapter: getAdapter(rc.harness, config), role, harness: rc.harness,
       cardId: ids.cardId, taskId: ids.taskId, logDir, logName: ids.logName,
@@ -67,6 +74,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
+    if (!r.ok && r.error && USAGE_LIMIT.test(r.error) && !signal.aborted) hooks.halt?.(r.error);
     if (r.denied?.length) hooks.log?.(yellow(`${role}${ids.cardId ? ` ${ids.cardId}` : ''} was denied ${r.denied.length === 1 ? 'a command' : `${r.denied.length} commands`}: ${r.denied.join('; ')}`));
     if (r.rateLimits) board.rateLimits = r.rateLimits; // a snapshot: the latest reading wins
     return { ...r, output: r.output as T | undefined };

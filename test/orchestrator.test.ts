@@ -4,7 +4,8 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
-import { createOrchestrator } from '../src/runner/orchestrator.ts';
+import { REVIEW_DIFF_MAX_CHARS } from '../src/git/worktree.ts';
+import { createOrchestrator, planWarnings } from '../src/runner/orchestrator.ts';
 import { createBoard } from '../src/board/create.ts';
 import { DEFAULT_CONFIG, type Config } from '../src/config.ts';
 import { createFakeAdapter, DEFAULT_FAKE_SCRIPT, type FakeScript } from '../src/adapters/fake.ts';
@@ -348,4 +349,191 @@ test('the verification gate sends a card back with the command output before any
   const saved = store.loadBoard(repo, 'run-gate');
   assert.deepEqual(saved.cards[0]!.verify, c1.verify);
   assert.match(buildReport(saved, {}), /verified:.*test -f out\/fixed.txt.*echo hello/);
+});
+
+test('a reviewer that cannot run is an infrastructure failure: no round spent, no fix task, no replan, and resume retries it', async () => {
+  let checkerCalls = 0;
+  let plannerCalls = 0;
+  const broken: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    planner: (o, i) => { plannerCalls++; return DEFAULT_FAKE_SCRIPT.planner as PlannerResult; },
+    checker: (o) => { checkerCalls++; if (/Card under review: c1 /.test(o.prompt)) throw new Error('spawn E2BIG'); return { pass: true, feedback: [], notes: [], summary: 'ok' }; },
+  };
+  registerAdapter('fake', createFakeAdapter(broken));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-infra');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'failed');
+  assert.equal(c1.failure, 'infrastructure');
+  assert.equal(c1.attempts, 0, 'no review round was spent');
+  assert.deepEqual(c1.tasks.map((t) => t.kind), [undefined], 'no fix task was sent to a worker');
+  assert.match(c1.feedback.at(-1)!, /reviewer could not run: spawn E2BIG/);
+  assert.ok(events.some((e) => /card c1: reviewer could not run \(spawn E2BIG\); trying the review again/.test(e)), events.join('\n'));
+  assert.ok(events.some((e) => /card c1 failed on dulger's side/.test(e)));
+  assert.equal(plannerCalls, 1, 'no replan for an infrastructure failure');
+  assert.equal(board.cards[2]!.status, 'blocked');
+  assert.match(buildReport(board, {}), /c1 .*dulger could not run a step; resume retries it/);
+  const worktree = store.worktreeDir(repo, 'run-infra', 'c1');
+  assert.ok(existsSync(join(worktree, 'out', 'c1-t1.txt')), 'the finished work is kept');
+
+  // Resume with a working reviewer.
+  const workerCalls: string[] = [];
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, worker: (o, i) => { workerCalls.push(o.prompt.match(/Card id: (\S+)/)![1]!); return DEFAULT_FAKE_SCRIPT.worker!(o, i); }, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const saved = store.loadBoard(repo, 'run-infra');
+  assert.deepEqual(resetInterrupted(saved).map((c) => c.id), ['c1']);
+  assert.equal(saved.cards[2]!.status, 'backlog', 'the blocked dependant gets another chance');
+  const orch2 = createOrchestrator(repo, saved, { ...config, docs: false }, {});
+  await orch2.execute();
+  assert.deepEqual(saved.cards.map((c) => c.status), ['done', 'done', 'done']);
+  assert.deepEqual(workerCalls, ['c3'], 'c1 needed no worker: its tasks were done');
+  assert.equal(saved.cards[0]!.failure, undefined);
+});
+
+test('a replan agent that dies gets one more session before the replan counts as failed', async () => {
+  const plannerCalls: number[] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    checker: (opts) => (/Card under review: c1 /.test(opts.prompt) ? { pass: false, feedback: ['never good enough'], summary: '' } : { pass: true, feedback: [], summary: 'ok' }),
+    planner: (opts, i) => {
+      plannerCalls.push(i);
+      if (i === 0) return DEFAULT_FAKE_SCRIPT.planner as PlannerResult;
+      if (i === 1) throw new Error('no output for 600s; killed as stalled');
+      return { cards: [{ id: 'c4', title: 'Smoke test', description: '', acceptanceCriteria: [], dependsOn: ['c2'], verify: [], tasks: [{ id: 't1', title: 'test', instructions: '' }] }] };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-retry');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(plannerCalls, [0, 1, 2]);
+  assert.ok(events.some((e) => /replan agent failed \(no output for 600s; killed as stalled\); trying again/.test(e)), events.join('\n'));
+  assert.equal(board.replans, 1);
+  assert.equal(board.cards.find((c) => c.id === 'c4')?.status, 'done');
+});
+
+test('planWarnings flags cards too big to review and foundation cards that do too much', () => {
+  const card = (id: string, tasks: number, dependsOn: string[] = []) => ({
+    id, title: id, description: '', acceptanceCriteria: [], dependsOn, verify: [], status: 'backlog' as const, attempts: 0, feedback: [], costUsd: 0,
+    tasks: Array.from({ length: tasks }, (_, i) => ({ id: `t${i + 1}`, cardId: id, title: '', instructions: '', status: 'pending' as const, attempts: 0 })),
+  });
+  assert.deepEqual(planWarnings([card('c1', 2), card('c2', 3, ['c1']), card('c3', 1, ['c1'])]), []);
+  const w = planWarnings([card('c1', 4), card('c2', 1, ['c1']), card('c3', 1, ['c1']), card('c4', 1, ['c1'])]);
+  assert.equal(w.length, 2);
+  assert.match(w[0]!, /c1 has 4 tasks; a card this big/);
+  assert.match(w[1]!, /c1 has 4 tasks and 3 cards wait for it/);
+});
+
+test('a diff too large for one prompt is reviewed file by file from the worktree', async () => {
+  const checkerPrompts: string[] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    worker: (o, i) => {
+      const r = DEFAULT_FAKE_SCRIPT.worker!(o, i);
+      if (/Card id: c1\b/.test(o.prompt)) writeFileSync(join(o.cwd, 'out', 'big.txt'), 'x'.repeat(REVIEW_DIFF_MAX_CHARS + 1000) + '\n');
+      return r;
+    },
+    checker: (o) => { checkerPrompts.push(o.prompt); return { pass: true, feedback: [], notes: [], summary: 'ok' }; },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-bigdiff');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, concurrency: 1 }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(board.cards.map((c) => c.status), ['done', 'done', 'done']);
+  const c1Prompt = checkerPrompts.find((p) => /Card under review: c1 /.test(p))!;
+  assert.match(c1Prompt, /too large to include here\. Read it in the worktree one file at a time with\n`git diff dulger\/run-bigdiff\.\.\.HEAD -- <path>`/);
+  assert.match(c1Prompt, /out\/big\.txt\s+\|/, 'the file list is the stat');
+  assert.ok(!c1Prompt.includes('xxxxxxxxxx'), 'the content itself is not in the prompt');
+  assert.ok(c1Prompt.length < 20_000, `prompt stays small (${c1Prompt.length} chars)`);
+  const c2Prompt = checkerPrompts.find((p) => /Card under review: c2 /.test(p))!;
+  assert.match(c2Prompt, /```diff\n[\s\S]*written by fake worker/, 'a small diff is still inline');
+  assert.ok(events.some((e) => /card c1: diff is \d+ KB over 2 files; the reviewer reads it file by file/.test(e)), events.join('\n'));
+});
+
+test('an agent hitting the usage limit stops the run; nothing else is dispatched and resume continues it', async () => {
+  const limit = "You've hit your session limit · resets 3:40am (Europe/Berlin)";
+  const started: string[] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 5,
+    worker: (o, i) => {
+      const card = o.prompt.match(/Card id: (\S+)/)![1]!;
+      started.push(card);
+      if (card === 'c2') throw new Error(limit);
+      return DEFAULT_FAKE_SCRIPT.worker!(o, i);
+    },
+    checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }),
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-limit');
+  const events: string[] = [];
+  const orch = createOrchestrator(repo, board, { ...config, concurrency: 1 }, { log: (m) => events.push(m) });
+  await orch.plan();
+  await orch.execute();
+
+  assert.equal(board.halted?.reason, limit);
+  assert.ok(events.some((e) => /stopping the run: You've hit your session limit/.test(e)), events.join('\n'));
+  const byId = Object.fromEntries(board.cards.map((c) => [c.id, c]));
+  assert.equal(byId.c1!.status, 'done');
+  assert.equal(byId.c2!.status, 'in_progress', 'the card that hit the limit is not failed');
+  assert.equal(byId.c2!.tasks[0]!.attempts, 1, 'no retry into the same wall');
+  assert.equal(byId.c3!.status, 'backlog');
+  assert.deepEqual(started, ['c1', 'c2'], 'nothing was dispatched after the limit');
+  assert.equal(board.docs?.status, 'pending', 'docs did not run');
+  const log = readFileSync(join(repo, '.dulger', 'runs', 'run-limit', 'events.jsonl'), 'utf8');
+  assert.match(log, /"type":"halted"/);
+  assert.ok(!/"type":"aborted"/.test(log));
+  assert.match(buildReport(board, {}), /the run stopped itself: You've hit your session limit/);
+
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const saved = store.loadBoard(repo, 'run-limit');
+  assert.deepEqual(resetInterrupted(saved).map((c) => c.id), ['c2']);
+  assert.equal(saved.halted, undefined);
+  const orch2 = createOrchestrator(repo, saved, config, {});
+  await orch2.execute();
+  assert.deepEqual(saved.cards.map((c) => c.status), ['done', 'done', 'done']);
+  assert.equal(saved.docs?.status, 'done');
+});
+
+test('a worker that answers but cannot finish is a work failure; an agent that never answers is an infrastructure failure', async () => {
+  const notDone: FakeScript['worker'] = (o, i) => (/Card id: c1\b/.test(o.prompt)
+    ? { summary: 'stuck', filesChanged: [], done: false, remaining: ['everything'], learnings: [] }
+    : DEFAULT_FAKE_SCRIPT.worker!(o, i));
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker: notDone, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-notdone');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, maxReplans: 0, maxContinuations: 0 }, {});
+  await orch.plan();
+  await orch.execute();
+  assert.equal(board.cards[0]!.status, 'failed');
+  assert.equal(board.cards[0]!.failure, 'work');
+  assert.match(board.cards[0]!.feedback.at(-1)!, /task t1 was not finished after 2 tries/);
+
+  const crash: FakeScript['worker'] = (o, i) => { if (/Card id: c1\b/.test(o.prompt)) throw new Error('boom'); return DEFAULT_FAKE_SCRIPT.worker!(o, i); };
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, worker: crash, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
+  const board2 = createBoard(repo, 'demo', 'run-crash');
+  const orch2 = createOrchestrator(repo, board2, { ...config, docs: false, maxReplans: 0 }, {});
+  await orch2.plan();
+  await orch2.execute();
+  assert.equal(board2.cards[0]!.failure, 'infrastructure');
+  assert.match(board2.cards[0]!.feedback.at(-1)!, /task t1 could not run: boom/);
+
+  // A board written before failures were classified: the failed task never got an answer.
+  board2.cards[0]!.failure = undefined;
+  store.saveBoard(repo, board2);
+  assert.equal(store.loadBoard(repo, 'run-crash').cards[0]!.failure, 'infrastructure');
 });

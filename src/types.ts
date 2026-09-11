@@ -4,7 +4,8 @@
 export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked' | 'replaced';
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
 export type AgentRole = 'planner' | 'worker' | 'checker' | 'docs';
-export type HarnessName = 'claude' | 'codex' | 'fake';
+export type HarnessName = 'claude' | 'codex' | 'fake' | 'ollama' | 'deepseek' | 'openai';
+export type ModelTier = 'low' | 'medium' | 'high';
 
 // ---- Structured results returned by each role (enforced via JSON schema) ----
 
@@ -21,7 +22,7 @@ export interface PlannerResult {
     dependsOn: string[];
     /** Shell commands dulger runs in the card's worktree before review; exit 0 means pass. */
     verify?: string[];
-    tasks: Array<{ id: string; title: string; instructions: string }>;
+    tasks: Array<{ id: string; title: string; instructions: string; complexity?: ModelTier }>;
   }>;
 }
 
@@ -49,6 +50,7 @@ export interface DocsResult {
 // ---- Kanban ----
 
 export interface Task {
+  complexity?: ModelTier;
   id: string;
   cardId: string;
   title: string;
@@ -81,6 +83,8 @@ export interface Card {
   reviewNotes?: string[];
   /** The final reviewer's summary of what the card does and why it passed or failed. */
   review?: string;
+  /** infrastructure = dulger could not run a step; resume retries it, nothing replans it. */
+  failure?: 'work' | 'infrastructure';
   summary?: string;
   costUsd: number;
   usage?: Usage;
@@ -101,6 +105,8 @@ export interface Board {
   rateLimits?: RateLimits;
   /** Times the planner was asked to replan after a card failed. */
   replans?: number;
+  /** Set when dulger stopped the run itself (the harness account hit its usage limit); resume clears it. */
+  halted?: { reason: string; at: string };
   /** What the planner decided on its own, what it left out, and the session to continue the conversation. */
   plan?: { sessionId?: string; assumptions: string[]; omitted: string[]; revisions: number };
 }
@@ -138,6 +144,7 @@ export interface RateLimits {
 export type AgentState = 'starting' | 'running' | 'done' | 'failed' | 'stalled';
 
 export interface AgentStatus {
+  model?: string;
   id: string;
   role: AgentRole;
   harness: HarnessName;
@@ -162,6 +169,7 @@ export type AgentEvent =
   | { type: 'tool_result' }
   /** The harness refused a command the agent asked to run (its permission mode or allowlist said no). */
   | { type: 'denied'; command: string }
+  | { type: 'thinking' }
   | { type: 'turn' }
   /** The harness output something dulger did not expect (format drift); the run goes on. */
   | { type: 'warning'; text: string }
@@ -172,10 +180,10 @@ export type AgentEvent =
 // Board-level events appended to events.jsonl.
 export type BoardEventType =
   | 'planned' | 'replanned' | 'replan_failed'
-  | 'card_started' | 'card_review' | 'card_verify_failed' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
+  | 'card_started' | 'card_review' | 'card_verify_failed' | 'card_check_failed' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
   | 'task_started' | 'task_done' | 'task_failed' | 'task_retry' | 'learnings'
   | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'
-  | 'aborted' | 'finished';
+  | 'aborted' | 'halted' | 'finished';
 
 export interface BoardEvent {
   at: string;

@@ -32,7 +32,8 @@ export function blockUnreachable(board: Board): Card[] {
       });
       if (deadDep) {
         card.status = 'blocked';
-        card.feedback.push(`blocked: dependency ${deadDep} did not complete`);
+        const why = `blocked: dependency ${deadDep} did not complete`;
+        if (card.feedback.at(-1) !== why) card.feedback.push(why);
         newlyBlocked.push(card);
         changed = true;
       }
@@ -53,18 +54,30 @@ export function readyCards(board: Board, concurrency: number): Card[] {
 
 /**
  * Prepare a board loaded from disk for `dulger resume`: cards that were being worked on or reviewed
- * when the run stopped go back to the backlog with their unfinished tasks pending (finished tasks
- * and their worktrees are kept), and a docs agent that was running is scheduled again.
+ * when the run stopped, and cards that failed on dulger's side rather than on their work, go back to
+ * the backlog with their unfinished tasks pending (finished tasks and their worktrees are kept), and
+ * a docs agent that was running is scheduled again.
  * Returns the cards that were reset.
  */
 export function resetInterrupted(board: Board): Card[] {
   const reset: Card[] = [];
   for (const card of board.cards) {
-    if (card.status !== 'in_progress' && card.status !== 'review') continue;
+    const infra = card.status === 'failed' && card.failure === 'infrastructure';
+    if (card.status !== 'in_progress' && card.status !== 'review' && !infra) continue;
     card.status = 'backlog';
+    card.failure = undefined;
+    if (infra) {
+      const before = card.tasks.length;
+      card.tasks = card.tasks.filter((t) => t.status === 'done' || t.kind !== 'fix');
+      card.attempts = Math.max(0, card.attempts - (before - card.tasks.length));
+      for (const t of card.tasks) if (t.status !== 'done') t.attempts = 0;
+    }
     for (const t of card.tasks) if (t.status !== 'done') t.status = 'pending';
     reset.push(card);
   }
-  if (board.docs?.status === 'running') board.docs = { status: 'pending' };
+  // blockUnreachable() re-blocks what is still unreachable.
+  if (reset.length) for (const card of board.cards) if (card.status === 'blocked') card.status = 'backlog';
+  if (board.docs?.status === 'running' || board.halted) board.docs = { status: 'pending' };
+  board.halted = undefined;
   return reset;
 }

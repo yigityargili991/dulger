@@ -65,6 +65,23 @@ test('resetInterrupted sends interrupted cards back to the backlog and keeps fin
   assert.deepEqual(b.docs, { status: 'pending' });
 });
 
+test('resetInterrupted retries a card that failed on dulger\'s side, drops its stale fix task and unblocks its dependants', () => {
+  const b = board();
+  const [a, bb, c, d] = b.cards as [Board['cards'][0], Board['cards'][0], Board['cards'][0], Board['cards'][0]];
+  a.status = 'done'; a.tasks[0]!.status = 'done';
+  bb.status = 'failed'; bb.failure = 'infrastructure'; bb.tasks[0]!.status = 'done';
+  bb.tasks.push({ id: 'fix1', cardId: 'b', kind: 'fix', feedback: ['checker failed to run: spawn E2BIG'], title: 'fix', instructions: 'x', status: 'failed', attempts: 2 });
+  c.status = 'failed'; c.failure = 'work';
+  d.status = 'blocked'; d.feedback.push('blocked: dependency b did not complete');
+
+  assert.deepEqual(resetInterrupted(b).map((x) => x.id), ['b']);
+  assert.deepEqual(b.cards.map((x) => x.status), ['done', 'backlog', 'failed', 'backlog']);
+  assert.equal(bb.failure, undefined);
+  assert.deepEqual(bb.tasks.map((t) => t.id), ['t1'], 'the fix task that asked a worker to fix dulger is gone');
+  assert.equal(c.status, 'failed', 'a card that failed on its work stays failed');
+  assert.deepEqual(blockUnreachable(b), [], 'd is reachable again');
+});
+
 test('applyReplan replaces waiting cards, renames reused ids and rejects broken plans', () => {
   const b = board();
   const [a, bb, c, d] = b.cards;

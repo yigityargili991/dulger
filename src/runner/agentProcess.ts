@@ -29,7 +29,7 @@ let counter = 0;
 export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
   const id = `a${++counter}`;
   const status: AgentStatus = {
-    id, role: o.role, harness: o.harness, cardId: o.cardId, taskId: o.taskId,
+    id, role: o.role, harness: o.harness, model: o.run.model, cardId: o.cardId, taskId: o.taskId,
     state: 'starting', turns: 0, history: [], startedAt: Date.now(),
   };
   o.registry.statuses.set(id, status);
@@ -38,6 +38,7 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
   const ctrl = new AbortController();
   const onParentAbort = () => ctrl.abort();
   o.parentSignal.addEventListener('abort', onParentAbort, { once: true });
+  if (o.parentSignal.aborted) ctrl.abort();
 
   let stalled = false;
   let timer: NodeJS.Timeout | undefined;
@@ -64,6 +65,7 @@ export async function runAgent(o: RunAgentOptions): Promise<AdapterResult> {
       }
       case 'tool_result': status.currentTool = undefined; break;
       case 'denied': status.lastMessage = `denied: ${e.command}`; remember(status, `denied  ${e.command}`); break;
+      case 'thinking': if (!status.currentTool) status.lastMessage = 'thinking…'; break;
       case 'turn': status.turns++; break;
       case 'warning': status.lastMessage = `warning: ${e.text}`; break;
       case 'result': if (e.costUsd !== undefined) status.costUsd = e.costUsd; break;

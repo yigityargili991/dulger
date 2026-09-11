@@ -33,7 +33,14 @@ export function saveBoard(repoRoot: string, board: Board): void {
 
 export function loadBoard(repoRoot: string, runId: string): Board {
   const board = JSON.parse(readFileSync(boardPath(repoRoot, runId), 'utf8')) as Board;
-  for (const c of board.cards) c.verify ??= []; // boards written before the verification gate
+  for (const c of board.cards) {
+    // Boards from older versions.
+    c.verify ??= [];
+    if (c.status === 'failed' && (!c.failure || c.feedback.at(-1) === 'a task failed; see logs')) {
+      const agentNeverAnswered = c.tasks.some((t) => t.status === 'failed' && !t.result);
+      c.failure = c.feedback.some((f) => /^checker failed to run:/.test(f)) || agentNeverAnswered ? 'infrastructure' : 'work';
+    }
+  }
   validateBoard(board);
   return board;
 }
@@ -72,6 +79,7 @@ export function cardsFromPlan(plan: PlannerResult): Card[] {
       cardId: c.id,
       title: t.title,
       instructions: t.instructions,
+      complexity: t.complexity,
       status: 'pending',
       attempts: 0,
     })),
@@ -119,6 +127,7 @@ export function validateBoard(board: Board): void {
     if (!Array.isArray(card.tasks) || card.tasks.length === 0) throw new Error(`card ${card.id} has no tasks`);
     const taskIds = new Set<string>();
     for (const t of card.tasks) {
+      if (t.complexity !== undefined && !['low', 'medium', 'high'].includes(t.complexity)) throw new Error(`task ${card.id}/${t.id} has invalid complexity`);
       if (!t.id) throw new Error(`card ${card.id} has a task without an id`);
       if (taskIds.has(t.id)) throw new Error(`card ${card.id} has duplicate task id ${t.id}`);
       taskIds.add(t.id);

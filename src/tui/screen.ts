@@ -53,7 +53,7 @@ export function parseKeys(data: string): Key[] {
 export interface Screen {
   rows: number;
   cols: number;
-  /** Paint a full frame: exactly `rows` lines, each cut or padded to `cols`. */
+  /** Paint trusted renderer output: exactly `rows` lines, each cut or padded to `cols`. */
   paint(lines: string[], cursor?: { row: number; col: number }): void;
   onKey(fn: (k: Key) => void): void;
   onResize(fn: () => void): void;
@@ -69,10 +69,11 @@ export function openScreen(out: NodeJS.WriteStream = process.stdout, inp: NodeJS
   const onResize = () => { prev = []; out.write('\x1b[2J'); resizeHandler(); };
   // Whatever ends the process, leave the terminal usable.
   let closed = false;
-  const restore = () => { if (!closed) out.write('\x1b[0m\x1b[?1049l\x1b[?25h'); };
+  const wasRaw = Boolean(inp.isRaw);
+  const restore = () => { if (!closed) { inp.setRawMode?.(wasRaw); out.write('\x1b[0m\x1b[?7h\x1b[?1049l\x1b[?25h'); } };
   process.on('exit', restore);
 
-  out.write('\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H');
+  out.write('\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[2J\x1b[H');
   inp.setRawMode?.(true);
   inp.resume();
   inp.setEncoding('utf8');
@@ -80,9 +81,10 @@ export function openScreen(out: NodeJS.WriteStream = process.stdout, inp: NodeJS
   out.on('resize', onResize);
 
   const screen: Screen = {
-    get rows() { return Math.max(10, out.rows ?? 24); },
-    get cols() { return Math.max(40, out.columns ?? 80); },
+    get rows() { return Math.max(1, out.rows ?? 24); },
+    get cols() { return Math.max(1, out.columns ?? 80); },
     paint(lines, cursor) {
+      if (closed) return;
       const { rows, cols } = screen;
       let buf = '\x1b[?25l';
       for (let r = 0; r < rows; r++) {
@@ -92,19 +94,20 @@ export function openScreen(out: NodeJS.WriteStream = process.stdout, inp: NodeJS
         prev[r] = line;
       }
       prev.length = rows;
-      if (cursor) buf += `\x1b[${cursor.row + 1};${cursor.col + 1}H\x1b[?25h`;
+      if (cursor) buf += `\x1b[${Math.max(1, Math.min(rows, cursor.row + 1))};${Math.max(1, Math.min(cols, cursor.col + 1))}H\x1b[?25h`;
       out.write(buf);
     },
     onKey(fn) { keyHandler = fn; },
     onResize(fn) { resizeHandler = fn; },
     close() {
+      if (closed) return;
       closed = true;
       process.off('exit', restore);
       inp.off('data', onData);
       out.off('resize', onResize);
-      inp.setRawMode?.(false);
+      inp.setRawMode?.(wasRaw);
       inp.pause();
-      out.write('\x1b[0m\x1b[2J\x1b[H\x1b[?1049l\x1b[?25h');
+      out.write('\x1b[0m\x1b[?7h\x1b[2J\x1b[H\x1b[?1049l\x1b[?25h');
     },
   };
   return screen;

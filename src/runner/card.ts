@@ -26,10 +26,12 @@ const CONFLICT_FEEDBACK = (files: string) =>
 export async function runCard(rt: Runtime, card: Card): Promise<void> {
   const cwd = prepareWorktree(rt, card);
   let conflicts = 0;
+  let checkFailures = 0;
   while (!rt.signal.aborted) {
-    if (!(await runPendingTasks(rt, card, cwd))) {
+    const tasks = await runPendingTasks(rt, card, cwd);
+    if (tasks !== 'done') {
       if (rt.signal.aborted) return;
-      return finishCard(rt, card, cwd, 'failed', ['a task failed; see logs']);
+      return finishCard(rt, card, cwd, 'failed', [tasks.reason], tasks.failure);
     }
     const outcome = await reviewAndLand(rt, card, cwd);
     switch (outcome.kind) {
@@ -39,6 +41,12 @@ export async function runCard(rt: Runtime, card: Card): Promise<void> {
         return landed(rt, card, cwd, outcome.verdict);
       case 'rejected':
         if (!rejected(rt, card, outcome.verdict)) return finishCard(rt, card, cwd, 'failed');
+        break;
+      case 'check_failed':
+        // Not the card's fault: no round spent, no fix task. One retry, then resume takes it.
+        if (++checkFailures > 1) return finishCard(rt, card, cwd, 'failed', [`reviewer could not run: ${outcome.error}`], 'infrastructure');
+        rt.log(`card ${card.id}: reviewer could not run (${outcome.error}); trying the review again`);
+        rt.save('card_check_failed', { cardId: card.id, message: outcome.error });
         break;
       case 'conflict':
         // Each round means the result branch moved, so the number of rounds is bounded by the number of cards.
@@ -53,6 +61,7 @@ type Outcome =
   | { kind: 'landed'; verdict: CheckResult }
   | { kind: 'aborted' }
   | { kind: 'rejected'; verdict: CheckResult }
+  | { kind: 'check_failed'; error: string }
   | { kind: 'conflict'; files: string };
 
 /** The card's worktree on its wip branch, reused when resuming. */
@@ -69,23 +78,29 @@ function prepareWorktree(rt: Runtime, card: Card): string {
   return cwd;
 }
 
+type TasksOutcome = 'done' | { failure: 'work' | 'infrastructure'; reason: string };
+
 /**
  * Tasks run one after another in the worktree. A task that fails (agent crashed, stalled, or answered
- * badly) is tried again in a fresh session up to maxAttempts times. False when a task is out of tries or
- * the run was aborted.
+ * badly) is tried again in a fresh session up to maxAttempts times. An agent that never answered is
+ * dulger's failure; a worker that answered but could not finish is the card's.
  */
-async function runPendingTasks(rt: Runtime, card: Card, cwd: string): Promise<boolean> {
+async function runPendingTasks(rt: Runtime, card: Card, cwd: string): Promise<TasksOutcome> {
   for (const task of card.tasks) {
     while (task.status !== 'done') {
-      const done = await runTask(rt, card, task, cwd);
-      if (rt.signal.aborted) return false;
-      if (done) break;
-      if (task.attempts >= rt.config.maxAttempts) return false;
+      const r = await runTask(rt, card, task, cwd);
+      if (rt.signal.aborted) return { failure: 'infrastructure', reason: 'aborted' };
+      if (r.result) break;
+      if (task.attempts >= rt.config.maxAttempts) {
+        return r.error
+          ? { failure: 'infrastructure', reason: `task ${task.id} could not run: ${r.error}` }
+          : { failure: 'work', reason: `task ${task.id} was not finished after ${task.attempts} tries; see logs` };
+      }
       rt.log(`task ${card.id}/${task.id} failed; trying again (${task.attempts + 1}/${rt.config.maxAttempts})`);
       rt.save('task_retry', { cardId: card.id, taskId: task.id });
     }
   }
-  return true;
+  return 'done';
 }
 
 /** Commit, then under the merge queue: sync with the result branch, review the integrated state, land. */
@@ -100,8 +115,10 @@ async function reviewAndLand(rt: Runtime, card: Card, cwd: string): Promise<Outc
     if (!merged.ok) return { kind: 'conflict', files: merged.conflicts?.join(', ') ?? '' };
     if (!verify(rt, card, cwd)) return { kind: 'rejected', verdict: { pass: false, feedback: verificationFeedback(card.verification ?? []), summary: '' } };
     if (signal.aborted) return { kind: 'aborted' };
-    const verdict = await check(rt, card, cwd);
+    const checked = await check(rt, card, cwd);
     if (signal.aborted) return { kind: 'aborted' };
+    if (!checked.verdict) return { kind: 'check_failed', error: checked.error };
+    const { verdict } = checked;
     if (!verdict.pass) return { kind: 'rejected', verdict };
     if (!git.land(cwd, board.runBranch)) throw new Error(`result branch ${board.runBranch} moved while ${card.id} held the merge queue`);
     return { kind: 'landed', verdict };
@@ -135,7 +152,7 @@ function conflicted(rt: Runtime, card: Card, files: string): void {
 }
 
 /** One worker task, resuming the same session while the worker reports done=false (up to maxContinuations). */
-async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promise<WorkerResult | undefined> {
+async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promise<{ result?: WorkerResult; error?: string }> {
   const { board, config, log, save } = rt;
   task.status = 'running';
   task.attempts++;
@@ -157,7 +174,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
       task.status = 'failed';
       save('task_failed', { cardId: card.id, taskId: task.id, message: r.error });
       log(`task ${card.id}/${task.id} failed: ${r.error}`);
-      return undefined;
+      return { error: r.error ?? 'no answer' };
     }
     last = r.output;
     if (last.done || !sessionId) break;
@@ -174,7 +191,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
     })));
     if (added.length) save('learnings', { cardId: card.id, taskId: task.id, data: added.map((l) => l.id) });
   }
-  return task.status === 'done' ? last : undefined;
+  return task.status === 'done' ? { result: last } : {};
 }
 
 /**
@@ -192,20 +209,21 @@ function verify(rt: Runtime, card: Card, cwd: string): boolean {
   return false;
 }
 
-/** Ask the checker to review the card's diff on top of the synced result branch. A checker that fails to run counts as a rejection. */
-async function check(rt: Runtime, card: Card, cwd: string): Promise<CheckResult> {
+/** Review the card's diff on top of the synced result branch; no verdict when the checker could not run. */
+async function check(rt: Runtime, card: Card, cwd: string): Promise<{ verdict: CheckResult; error?: undefined } | { verdict?: undefined; error: string }> {
   const { board, config } = rt;
-  const diffText = git.diff(cwd, board.runBranch);
+  const diff = git.reviewDiff(cwd, board.runBranch);
+  if (!diff.text) rt.log(`card ${card.id}: diff is ${Math.round(diff.chars / 1024)} KB over ${diff.files.length} files; the reviewer reads it file by file`);
   const allowedCommands = [...new Set([...config.checker.allowedCommands, ...card.verify])];
   const r = await rt.agent<CheckResult>('checker', {
-    prompt: P.checkerPrompt(board, card, diffText, rt.context({ files: cardFiles(card, cwd), root: cwd })),
+    prompt: P.checkerPrompt(board, card, diff, rt.context({ files: cardFiles(card, cwd), root: cwd })),
     systemPrompt: P.checkerSystem(allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
     allowedCommands,
   }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
   rt.addCost(card, r.costUsd, r.usage);
   // A reviewer that could not run something worked from trust instead of evidence; that belongs on the board.
   if (r.denied?.length) card.reviewNotes = [...(card.reviewNotes ?? []), `reviewer was denied: ${r.denied.join('; ')}`];
-  return r.ok && r.output ? r.output : { pass: false, feedback: [`checker failed to run: ${r.error}`], summary: '' };
+  return r.ok && r.output ? { verdict: r.output } : { error: r.error ?? 'no verdict returned' };
 }
 
 /** Keep the reviewer's verdict on the card: the latest summary, and every non-blocking note (shown on the board, never sent back as work). */
@@ -224,9 +242,10 @@ function appendFixTask(card: Card, title: string, feedback: string[]): void {
   card.status = 'in_progress';
 }
 
-function finishCard(rt: Runtime, card: Card, cwd: string, status: 'done' | 'failed', feedback: string[] = []): void {
+function finishCard(rt: Runtime, card: Card, cwd: string, status: 'done' | 'failed', feedback: string[] = [], failure: 'work' | 'infrastructure' = 'work'): void {
   card.status = status;
   card.feedback.push(...feedback);
+  card.failure = status === 'failed' ? failure : undefined;
   if (status === 'done') {
     git.removeWorktree(rt.repoRoot, cwd, card.branch);
     rt.log(`card ${card.id} done → merged into ${rt.board.runBranch}`);

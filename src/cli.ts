@@ -2,7 +2,7 @@
 // dulger — command line entry point.
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { loadConfig, type Config } from './config.ts';
+import { DEFAULT_CONFIG, loadConfig, type Config } from './config.ts';
 import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
 import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
@@ -29,11 +29,14 @@ Usage:
   dulger memory path              print the memory file's location
 
 Options:
-  --harness <claude|codex|fake>   backend for all roles (default: claude)
+  --harness <claude|codex|ollama|deepseek|openai|fake>   backend for all roles (default: claude)
   --concurrency <n>               parallel cards (default: 3)
   --max-attempts <n>              review rounds per card (default: 2)
   --max-replans <n>               replans after a card failed (default: 1)
-  --model <name>                  model for all roles
+  --model <name>                  pin one model for all roles
+  --no-routing                    use harness defaults instead of task tiers
+  --base-url <url>                 API base URL for the selected API harness
+  --api-key-env <name>             environment variable holding its API key
   --yes                           skip the board approval pause
   --no-docs                       skip the documentation agent
   --merge                         merge the result branch into the current branch when done
@@ -66,6 +69,7 @@ async function main(argv: string[]): Promise<void> {
     allowPositionals: true,
     options: {
       harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
+      'no-routing': { type: 'boolean' }, 'base-url': { type: 'string' }, 'api-key-env': { type: 'string' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
@@ -88,6 +92,13 @@ async function main(argv: string[]): Promise<void> {
   if (v['max-attempts']) overrides.maxAttempts = Number(v['max-attempts']);
   if (v['max-replans']) overrides.maxReplans = Number(v['max-replans']);
   if (v['no-docs']) overrides.docs = false;
+  if (v['no-routing']) overrides.routing = { ...DEFAULT_CONFIG.routing, enabled: false };
+  const loaded = loadConfig(repoRoot, overrides);
+  if (v['base-url'] || v['api-key-env']) {
+    const provider = loaded.providers[loaded.harness];
+    if (!provider) throw new CliError('--base-url and --api-key-env require ollama, deepseek or openai');
+    overrides.providers = { [loaded.harness]: { ...provider, ...(v['base-url'] ? { baseUrl: v['base-url'] } : {}), ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
+  }
   const config = loadConfig(repoRoot, overrides);
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
   const runOpts = { quiet: Boolean(v.quiet), merge: Boolean(v.merge) };

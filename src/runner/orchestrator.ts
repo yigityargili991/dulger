@@ -10,11 +10,23 @@ import { PLANNER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
 import { markFailed, type AgentRegistry } from './agentProcess.ts';
 import { runCard } from './card.ts';
+import { yellow } from '../ui/ansi.ts';
 import { runDocs } from './docs.ts';
 import { createRuntime, type AgentRequest, type RunHooks } from './runtime.ts';
 import type { Board, Card, PlannerResult } from '../types.ts';
 
 export type OrchestratorHooks = RunHooks;
+
+/** Warnings shown before the board is dispatched. */
+export function planWarnings(cards: Card[]): string[] {
+  const out: string[] = [];
+  for (const c of cards) {
+    const dependants = cards.filter((o) => o.dependsOn.includes(c.id)).length;
+    if (c.tasks.length > 3) out.push(`${c.id} has ${c.tasks.length} tasks; a card this big produces a diff one reviewer cannot read, split it`);
+    if (dependants >= 3 && c.tasks.length > 2) out.push(`${c.id} has ${c.tasks.length} tasks and ${dependants} cards wait for it; nothing else runs until it lands, so it should be the minimum the others need`);
+  }
+  return out;
+}
 
 export interface Orchestrator {
   board: Board;
@@ -28,8 +40,16 @@ export interface Orchestrator {
 
 export function createOrchestrator(repoRoot: string, board: Board, config: Config, hooks: OrchestratorHooks = {}): Orchestrator {
   const ctrl = new AbortController();
-  const rt = createRuntime(repoRoot, board, config, hooks, ctrl.signal);
+  const rt = createRuntime(repoRoot, board, config, { ...hooks, halt }, ctrl.signal);
   const { log, save } = rt;
+
+  function halt(reason: string): void {
+    if (board.halted) return;
+    board.halted = { reason, at: new Date().toISOString() };
+    log(yellow(`stopping the run: ${reason}; dulger resume continues it later`));
+    save('halted', { message: reason });
+    ctrl.abort();
+  }
 
   /** First call: plan the goal. Later calls: revise the board with the person's feedback, in the planner's own session. */
   async function plan(feedback?: string): Promise<void> {
@@ -44,6 +64,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     applyPlan(r.output, r.sessionId, revision);
     save('planned', { data: { cards: board.cards.length, revision } });
     log(`${revising ? 'revised' : 'planned'}: ${board.cards.length} cards`);
+    for (const w of planWarnings(board.cards)) log(yellow(`plan: ${w}`));
   }
 
   /** A follow-up in the planner's session when there is one to continue; otherwise a fresh plan, with the feedback appended to the goal. */
@@ -73,11 +94,18 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     const n = (board.replans ?? 0) + 1;
     const waiting = board.cards.filter((c) => c.status === 'backlog' || c.status === 'blocked');
     log(`card${failed.length === 1 ? '' : 's'} ${failed.map((c) => c.id).join(', ')} failed; replanning (${n}/${config.maxReplans})…`);
-    const r = await rt.agent<PlannerResult>('planner', {
+    const request = {
       prompt: P.replanPrompt(board, failed, waiting, rt.context({ root: repoRoot })),
-      systemPrompt: P.replanSystem(board.cards.map((c) => c.id), config.checker.allowedCommands), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly',
-    }, { logName: `replan${n}` });
+      systemPrompt: P.replanSystem(board.cards.map((c) => c.id), config.checker.allowedCommands), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly' as const,
+    };
+    // A planner that died made no decision, so it does not count against maxReplans.
+    let r = await rt.agent<PlannerResult>('planner', request, { logName: `replan${n}` });
     rt.addCost(undefined, r.costUsd, r.usage);
+    if (!ctrl.signal.aborted && !r.ok) {
+      log(`replan agent failed (${r.error}); trying again`);
+      r = await rt.agent<PlannerResult>('planner', request, { logName: `replan${n}.retry` });
+      rt.addCost(undefined, r.costUsd, r.usage);
+    }
     if (ctrl.signal.aborted) return;
     try {
       if (!r.ok || !r.output) throw new Error(r.error ?? 'no output');
@@ -101,7 +129,9 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     while (!allTerminal(board) && !ctrl.signal.aborted) {
       const failed = board.cards.filter((c) => c.status === 'failed' && !handledFailures.has(c.id));
       for (const c of failed) handledFailures.add(c.id);
-      if (failed.length && (board.replans ?? 0) < config.maxReplans) await replan(failed);
+      const byWork = failed.filter((c) => c.failure !== 'infrastructure');
+      for (const c of failed) if (c.failure === 'infrastructure') log(`card ${c.id} failed on dulger's side, not on its work; dulger resume retries it from its worktree`);
+      if (byWork.length && (board.replans ?? 0) < config.maxReplans) await replan(byWork);
       if (ctrl.signal.aborted) break;
       for (const c of blockUnreachable(board)) {
         log(`card ${c.id} blocked: ${c.feedback.at(-1)}`);
@@ -123,7 +153,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       await Promise.race(inFlight.values());
     }
     await Promise.all(inFlight.values());
-    if (ctrl.signal.aborted) { save('aborted'); return; }
+    if (ctrl.signal.aborted) { if (!board.halted) save('aborted'); return; }
     await runDocs(rt);
     try { rmdirSync(join(worktreesDir(repoRoot), board.runId)); } catch { /* not empty: failed worktrees are kept */ }
     save('finished');

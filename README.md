@@ -2,8 +2,9 @@
 
 A kanban of coding agents. Give it a goal; a planner turns it into cards, workers build the cards in
 parallel git worktrees, a reviewer checks each one, and the result lands on a branch for you to merge.
-Every agent is a headless [Claude Code](https://claude.com/claude-code) or
-[Codex](https://github.com/openai/codex) process. No API keys, no build step.
+Agents use headless [Claude Code](https://claude.com/claude-code) or
+[Codex](https://github.com/openai/codex), or connect directly to Ollama, DeepSeek and OpenAI-compatible APIs.
+CLI backends use your existing login; API backends use environment variables. No build step.
 
 ```sh
 cd your-repo
@@ -13,7 +14,7 @@ dulger run "Add CSV export to the reports page"
 
 ## Install
 
-Node 24+, git, and `claude` or `codex` on your PATH.
+Node 24+ and git. CLI backends also need `claude` or `codex` on your PATH; direct API backends do not.
 
 ```sh
 npx @zamazingobjk/dulger                    # run without installing
@@ -36,7 +37,9 @@ From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm li
 4. **Review.** One card at a time is reviewed in that combined state, with the verify results in
    hand, and lands by fast-forward. A rejection adds a fix task and a second review, up to
    `maxAttempts`. Non-blocking remarks become notes on the board, and so does every command the
-   reviewer asked for and was refused.
+   reviewer asked for and was refused. A reviewer that cannot run at all is dulger's failure, not
+   the card's: no round is spent, no worker is asked to fix it, and `dulger resume` retries the card
+   from its worktree.
 5. **Replan.** If a card fails, the planner replans the remaining work once.
 6. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
 7. **Report.** What landed, what did not, what was verified, files, reviewer notes, spend, next step.
@@ -54,8 +57,9 @@ screen goes away and the report prints where you can scroll back to it.
 
 Icons come from a Nerd Font when the terminal is ghostty, kitty, WezTerm, Alacritty or foot, and are
 plain Unicode elsewhere; `"tui": { "icons": "nerd" }` in the config or `DULGER_ICONS=nerd` forces it,
-`ascii` works on anything. `--quiet`, a pipe, a screen under 80×16, or `"tui": { "enabled": false }`
-fall back to log lines.
+`ascii` works on anything. Narrow or short terminals use a compact card list; the layout reserves space
+for input and hides secondary sections as space runs out. `--quiet` or a pipe uses log lines;
+`"tui": { "enabled": false }` uses the legacy table.
 
 ## Commands
 
@@ -70,8 +74,9 @@ dulger runs                   list runs
 dulger memory [list|add|rm|compact|path]
 dulger clean                  remove leftover worktrees and wip branches
 
---harness claude|codex|fake   --model <name>        --concurrency <n>     --max-attempts <n>
+--harness claude|codex|ollama|deepseek|openai|fake   --model <name>        --concurrency <n>     --max-attempts <n>
 --yes                         --no-docs             --merge               --allow-dirty
+--base-url <url>              --api-key-env <name>  --no-routing
 --repo <path>                 --quiet               --max-replans <n>     --version
 ```
 
@@ -99,6 +104,97 @@ dulger clean                  remove leftover worktrees and wip branches
   "tui": { "enabled": true, "icons": "auto" }   // full-screen run view; icons nerd | unicode | ascii | auto
 }
 ```
+
+## Model routing
+
+Automatic routing is on by default. The planner labels each task `low`, `medium` or `high` complexity.
+
+| Tier | Claude Code | Codex |
+| --- | --- | --- |
+| Low: mechanical edits, simple docs | `haiku` | `gpt-5.6-luna` |
+| Medium: routine features, fixes, tests | `sonnet` | `gpt-5.6-sol` |
+| High: architecture, security, difficult debugging | `claude-fable-5-1` | `gpt-6-astra` |
+
+Planning uses high, documentation uses low, and review uses medium (high for complex cards or fixes).
+Unlabelled tasks on older boards use medium. A failed worker attempt retries one tier up; continuations
+keep the same model and session. Review fixes and merge conflicts use high by default. Selected models
+appear in the log and live agent list. The Fable model ID follows the
+[Claude Code configuration docs](https://support.claude.com/en/articles/11940350-claude-code-model-configuration).
+You can use `opus` as the high tier by changing the map. Availability depends on your account and installed CLI.
+
+`--model` pins all roles and overrides routing; `roles.<role>.model` pins just that role.
+Use `--no-routing`, `/routing off`, or `"routing": { "enabled": false }` to use harness defaults.
+`/model off` clears the session-wide pin. Configure tier IDs in `.dulger/config.json`:
+
+```json
+{
+  "routing": {
+    "models": {
+      "claude": { "low": "haiku", "medium": "sonnet", "high": "claude-fable-5-1" },
+      "codex": { "low": "gpt-5.6-luna", "medium": "gpt-5.6-sol", "high": "gpt-6-astra" },
+      "ollama": { "low": "your-small-model", "medium": "your-coder-model", "high": "your-large-model" }
+    }
+  }
+}
+```
+
+## Direct API backends
+
+Use a model with Chat Completions function/tool calling support. These backends have a built-in coding
+loop with file listing, reading, writing, diff inspection and shell commands. They do not require
+Claude Code or Codex. See [Ollama compatibility](https://docs.ollama.com/api/openai-compatibility) and
+[DeepSeek tool calling](https://api-docs.deepseek.com/guides/tool_calls/).
+
+```sh
+# Ollama: select a tool-capable model you have already pulled. No key needed locally.
+dulger run "Add CSV export" --harness ollama --model your-local-coder
+
+# DeepSeek: export DEEPSEEK_API_KEY in your shell first.
+dulger run "Add CSV export" --harness deepseek
+
+# Any compatible service: export MY_LLM_KEY first, then provide its API base URL and model.
+dulger run "Add CSV export" --harness openai --model your-model \
+  --base-url https://your-provider.example/v1 --api-key-env MY_LLM_KEY
+```
+
+Persist endpoint settings in `.dulger/config.json`. Store the **environment variable name**, never the
+key itself: this file is committable. `/harness ollama`, `/harness deepseek` and `/harness openai` also
+work in the interactive prompt. The base URL is the prefix before `/chat/completions`.
+
+```json
+{
+  "harness": "openai",
+  "providers": {
+    "openai": {
+      "baseUrl": "https://your-provider.example/v1",
+      "apiKeyEnv": "MY_LLM_KEY",
+      "model": "your-model",
+      "maxTurns": 40,
+      "maxTokens": 8192,
+      "tokenParameter": "max_tokens",
+      "timeoutSec": 300
+    },
+    "ollama": { "baseUrl": "http://localhost:11434/v1", "model": "your-local-coder" }
+  }
+}
+```
+
+DeepSeek defaults to `https://api.deepseek.com`, `DEEPSEEK_API_KEY` and `deepseek-flash`. OpenAI defaults
+to `https://api.openai.com/v1`, `OPENAI_API_KEY` and requires a model. Ollama requires a model as well.
+Each API provider uses `providers.<name>.model` when no role, CLI or tier model is set. API tier maps
+are opt-in; you choose the model IDs available on your endpoint. Partial configuration merges with defaults.
+
+`maxTurns` bounds the tool/answer loop; `maxTokens` caps each response. OpenAI uses the
+`max_completion_tokens` request field on `api.openai.com`; other hosts default to `max_tokens`.
+Set `tokenParameter` explicitly if your endpoint requires a different spelling. Calls are cancelled on interrupt or timeout.
+API runs report tokens, not estimated dollars; `maxBudgetUsd` is rejected because these providers do
+not supply reliable cost figures. API conversation transcripts are saved with private file permissions
+alongside the run logs so planner revisions and worker continuations can resume.
+
+File tools reject paths outside the worktree, symlinks, `.git` and `.dulger`. Read-only roles have no
+file-writing tool and can run only exact approved commands. Workers' shell commands, and explicitly
+approved test commands, run with your OS user's privileges; this is not an OS sandbox. The API tools
+do not load MCP servers.
 
 ## Context and memory
 
@@ -128,14 +224,20 @@ when a card lands.
 - The verify commands come from the planner and run with your shell's privileges in the card's
   worktree, the same access the workers already have there. Read them on the board before dispatching.
 - Agents never run git; dulger commits, merges, cleans up.
-- Ctrl-C stops the agents and saves the board. `dulger resume` picks it up.
+- Ctrl-C stops the agents and saves the board. `dulger resume` picks it up, and also retries cards
+  that failed on dulger's side (a reviewer that would not start, an agent that hung) rather than on
+  their work. When the harness account hits its usage limit the run stops itself the same way, so a
+  reset window is not spent on cards that cannot run.
+- Before you dispatch, the log warns about cards too big for one reviewer and foundation cards that
+  do more than the cards waiting for them need. Those are the plans that fail late and expensively.
 
 ## Known limitations
 
 Codex reports tokens but no prices and no plan-window figure, so its runs show only tokens. The
 documentation agent's commit is the one piece of work nobody reviews. Old runs are never deleted;
-remove `.dulger/runs/<runId>` by hand. Workers run with `bypassPermissions`, so inside their worktree
-they have whatever your Claude Code or Codex login has, MCP servers included.
+remove `.dulger/runs/<runId>` by hand. CLI workers use their configured harness permissions and integrations; direct API workers use local file
+and shell tools. Provider-specific tool calling behavior can vary; an OpenAI-style key alone does not
+guarantee that an endpoint supports the required Chat Completions tools.
 
 ## Development
 

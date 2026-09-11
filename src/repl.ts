@@ -28,10 +28,10 @@ const HELP = `Type a goal to plan and run it. Commands:
   /clean              remove leftover worktrees and wip branches
   /status             show the current settings
 Settings (each shows its current value when given no argument):
-  /harness claude|codex|fake        /model <name>|off             /concurrency <n>
+  /harness claude|codex|ollama|deepseek|openai|fake        /model <name>|off             /concurrency <n>
   /attempts <n>                     /replans <n>                  /docs on|off
   /yes on|off                       /quiet on|off                 /dirty on|off
-  /tui on|off                       /icons nerd|unicode|ascii|auto
+  /routing on|off                   /tui on|off                   /icons nerd|unicode|ascii|auto
   /set <key> <value>  the same settings in one command
   /help               this text
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
@@ -135,7 +135,7 @@ async function command(text: string, repoRoot: string, session: Session, config:
   }
 }
 
-const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons'];
+const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing'];
 
 /** Change a setting, or show its current value when no value is given. */
 function setting(session: Session, config: () => Config, key: string, value: string): void {
@@ -155,11 +155,12 @@ function currentValue(s: Session, c: Config, key: string): string {
     case 'concurrency': return String(c.concurrency);
     case 'attempts': return String(c.maxAttempts);
     case 'replans': return String(c.maxReplans);
-    case 'model': return s.model ?? 'default';
+    case 'model': return s.model ?? (c.routing.enabled ? 'auto tiers' : 'default');
     case 'docs': return onOff(c.docs);
     case 'yes': return onOff(s.yes);
     case 'quiet': return onOff(s.quiet);
     case 'dirty': return onOff(s.allowDirty);
+    case 'routing': return onOff(c.routing.enabled);
     case 'tui': return onOff(c.tui.enabled);
     case 'icons': return c.tui.icons;
     default: return '?';
@@ -171,7 +172,7 @@ function set(session: Session, key = '', value = ''): void {
   const num = (v: string) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new CliError(`${key} takes a whole number`); return n; };
   switch (key) {
     case 'harness':
-      if (!['claude', 'codex', 'fake'].includes(value)) throw new CliError('harness is claude, codex or fake');
+      if (!['claude', 'codex', 'ollama', 'deepseek', 'openai', 'fake'].includes(value)) throw new CliError('harness is claude, codex, ollama, deepseek, openai or fake');
       session.overrides.harness = value as HarnessName; return;
     case 'concurrency': session.overrides.concurrency = Math.max(1, num(value)); return;
     case 'attempts': session.overrides.maxAttempts = Math.max(1, num(value)); return;
@@ -181,6 +182,7 @@ function set(session: Session, key = '', value = ''): void {
     case 'yes': session.yes = on(value); return;
     case 'quiet': session.quiet = on(value); return;
     case 'dirty': session.allowDirty = on(value); return;
+    case 'routing': session.overrides.routing = { ...(session.overrides.routing ?? DEFAULT_CONFIG.routing), enabled: on(value) }; return;
     case 'tui': session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), enabled: on(value) }; return;
     case 'icons':
       if (!['nerd', 'unicode', 'ascii', 'auto'].includes(value)) throw new CliError('icons is nerd, unicode, ascii or auto');
@@ -192,5 +194,5 @@ function set(session: Session, key = '', value = ''): void {
 
 function settingsLine(s: Session, c: Config): string {
   const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui'].filter(Boolean).join(' ');
-  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · model ${s.model ?? 'default'}${flags ? yellow(` · ${flags}`) : ''}`;
+  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')}${flags ? yellow(` · ${flags}`) : ''}`;
 }

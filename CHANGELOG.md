@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- Route individual tasks to low, medium or high model tiers: Haiku/Sonnet/Fable for Claude,
+  GPT-5.6 Luna/Sol and GPT-6 Astra for Codex. Retries escalate; explicit model pins take precedence.
+- Add direct Ollama, DeepSeek and configurable OpenAI-compatible Chat Completions agents, with coding
+  tools, bounded calls, environment-based credentials, token accounting and resumable transcripts.
+- Make terminal layout adapt to the actual viewport: compact cards on narrow screens, input space
+  reserved on short screens, and no hard minimum-size gate. Sanitize terminal control sequences and
+  multiline output, prevent edge wrapping, and restore raw mode/cursor state on close.
+
+- A diff too large for one prompt is no longer truncated for the reviewer: the prompt carries the file
+  list instead and the reviewer reads the diff file by file in the worktree, told that every file
+  counts. Smaller diffs stay inline.
+- The prompt for Claude Code goes on stdin instead of the command line. A card whose diff was large
+  enough made the reviewer fail to spawn (`E2BIG`: one argument is capped at 128 KiB on Linux), which
+  then read as a rejection.
+- A reviewer that cannot run or answer is an infrastructure failure, not a verdict: the review is tried
+  once more, then the card fails without spending a round or sending a worker a fix task, the planner
+  is not asked to replan, and `dulger resume` retries the card from its worktree. Boards from earlier
+  versions are read the same way.
+- When an agent reports that the account has hit its usage limit, the run stops: nothing else is
+  dispatched, no task is retried into the same wall, the card in flight stays resumable, and the report
+  says why. `dulger resume` continues after the window resets.
+- A task failure is classified: a worker that answered but could not finish is the card's failure; an
+  agent that never answered (crashed, stalled, refused) is dulger's, and resume retries the card with its
+  finished tasks kept.
+- The stall watchdog counts the model's thinking as progress; before, ten minutes of thinking looked
+  like a hang.
+- A replan agent that dies (stalled, crashed) gets a second session before the replan counts as failed.
+- The planner is told how big a card may be and what a foundation card is for, and dulger warns on the
+  board about cards with more than three tasks and foundation cards that do more than their dependants
+  need.
+
 ## 0.3.0 — 2026-09-10
 
 - The verification gate: every card names the commands that prove it (`verify`, chosen by the planner

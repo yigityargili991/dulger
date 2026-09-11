@@ -1,11 +1,15 @@
 // Prompt builders. Every system prompt starts with a `[role:<name>]` marker so the fake adapter
 // (and humans reading logs) can tell roles apart.
 import type { Board, Card, Task } from '../types.ts';
+import type { ReviewDiff } from '../git/worktree.ts';
 
 const RULES_COMMON = `You are one agent in "dulger", a multi-agent system working on a shared repository.
 Other agents may work in parallel on other cards in separate git worktrees.
 Never touch the .dulger/ directory. Do not run git commit, git push, git checkout or git branch; dulger manages git.
 When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
+
+const SIZE_RULES = `- Keep cards small: one card changes at most about 1000 lines over a handful of files and rarely needs more than 3 tasks. One reviewer reads the whole diff in one session; a card too big to read is a card that fails, and a big plan is many small cards, not a few large ones.
+- A card that other cards depend on holds the minimum they need to build against (types, traits, signatures, stubs, the scaffold), never the full implementation. Nothing else runs while it is in progress, so put the implementation in the parallel cards behind it.`;
 
 /** How a card proves itself: commands dulger runs, not claims an agent makes. Shared by planning and replanning. */
 const VERIFY_RULES = (allowedCommands: string[]) => `- "verify" lists the shell commands that prove the card's acceptance criteria: the project's real build, test, lint or typecheck commands (e.g. "npm test", "cargo build", "cargo test"). dulger itself runs them in the card's worktree after the work is committed; any non-zero exit sends the card back to the implementer with the output, before a reviewer looks at it. They must be non-interactive, finish on their own, and not depend on services that are not there. Always include the build and the tests when the project has them; give an empty list only when nothing can be run.
@@ -29,6 +33,8 @@ Planning rules:
 - Cards run IN PARALLEL unless linked by dependsOn. Use dependsOn only when a card truly needs another card's output. Prefer independent cards.
 - Two parallel cards must not edit the same files. If they would, merge them into one card or add a dependency.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained: name the files, the functions, the behaviour, and how to verify it.
+${SIZE_RULES}
+- Assign every task a complexity: low for mechanical edits, simple documentation or renames; medium for routine features, fixes and tests; high for architecture, security, concurrency or difficult debugging. This selects the model and cost; prefer medium unless the work clearly fits low or high.
 - acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands (e.g. "npm test passes", "GET /health returns 200").
 ${VERIFY_RULES(allowedCommands)}
 - Card ids: short slugs like c1, c2. Task ids: t1, t2 within a card.
@@ -55,6 +61,8 @@ Planning rules:
 - Cards run IN PARALLEL unless linked by dependsOn. Use dependsOn only when a card truly needs another card's output.
 - Two parallel cards must not edit the same files.
 - Each card has 1-4 tasks that run SEQUENTIALLY in the same worktree by separate agent sessions. Each task's instructions must be self-contained.
+${SIZE_RULES}
+- Assign every task a complexity: low for mechanical edits, simple documentation or renames; medium for routine features, fixes and tests; high for architecture, security, concurrency or difficult debugging. This selects the model and cost; prefer medium unless the work clearly fits low or high.
 - acceptanceCriteria are concrete checks a reviewer can verify from the diff and by running commands.
 ${VERIFY_RULES(allowedCommands)}
 - Task ids: t1, t2 within a card.
@@ -214,7 +222,7 @@ Answer rules:
 - summary: two or three sentences on what the card does and why it passes or fails, for the humans reading the board.`;
 }
 
-export function checkerPrompt(board: Board, card: Card, diffText: string, context: string): string {
+export function checkerPrompt(board: Board, card: Card, diff: ReviewDiff, context: string): string {
   const summaries = card.tasks.filter((t) => t.result).map((t) => `- ${t.id} ${t.title}: ${t.result!.summary}`);
   const spec = card.tasks.filter((t) => t.kind !== 'fix').map((t) => `### ${t.id} ${t.title}\n\n${t.instructions}`);
   const fixes = card.tasks.filter((t) => t.kind === 'fix' && t.result).map((t) => `- ${t.title}: ${(t.feedback ?? []).join(' / ')}`);
@@ -241,11 +249,19 @@ ${summaries.join('\n') || '- (no reports)'}
 ${fixes.length ? `\nEarlier review rounds asked for these fixes (check they were addressed):\n${fixes.join('\n')}\n` : ''}
 ## Diff against ${board.runBranch}
 
-\`\`\`diff
-${diffText || '(empty diff — nothing was changed)'}
-\`\`\`
+${diffSection(board, diff)}
 
 Review the card and answer with the JSON result.`;
+}
+
+function diffSection(board: Board, diff: ReviewDiff): string {
+  if (diff.text !== undefined) return `\`\`\`diff\n${diff.text || '(empty diff — nothing was changed)'}\n\`\`\``;
+  return `The diff is ${Math.round(diff.chars / 1024)} KB over ${diff.files.length} files, too large to include here. Read it in the worktree one file at a time with
+\`git diff ${board.runBranch}...HEAD -- <path>\` (and Read the files themselves for the surrounding code). Review every file below; a file you did not read is a file you did not review, and this card must not pass on a partial reading.
+
+\`\`\`
+${diff.stat}
+\`\`\``;
 }
 
 function verificationBlock(card: Card): string {

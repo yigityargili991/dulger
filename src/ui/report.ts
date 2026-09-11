@@ -32,7 +32,7 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
   if (notLanded.length) {
     out.push('', bold(red('Not landed')));
     for (const c of notLanded) {
-      const why = c.status === 'failed' ? `failed after ${c.attempts} review round${c.attempts === 1 ? '' : 's'}` : c.status === 'blocked' ? 'blocked by a failed dependency' : c.status;
+      const why = c.status === 'failed' && c.failure === 'infrastructure' ? 'dulger could not run a step; resume retries it' : c.status === 'failed' ? `failed after ${c.attempts} review round${c.attempts === 1 ? '' : 's'}` : c.status === 'blocked' ? 'blocked by a failed dependency' : c.status;
       out.push(`  ${bold(c.id)} ${c.title} ${red(`— ${why}`)}`);
       const last = c.feedback.at(-1);
       if (last) out.push(`     ${dim('last feedback:')} ${last.split('\n')[0]}`);
@@ -45,6 +45,7 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
   if (stat) { h('Changes'); out.push(...stat.split('\n').map((l) => dim(' ' + l))); }
 
   h('Next');
+  if (board.halted) out.push(yellow(`  the run stopped itself: ${board.halted.reason}`));
   if (opts.mergedInto) out.push(`  the result is on ${green(opts.mergedInto)}`);
   else if (landed.length) out.push(`  git merge ${green(board.runBranch)}     ${dim(`# or: git diff ${board.baseBranch}...${board.runBranch}`)}`);
   else out.push(dim('  nothing landed'));

@@ -21,8 +21,8 @@ export const PLANNER_SCHEMA = {
             type: 'array',
             items: {
               type: 'object',
-              properties: { id: { type: 'string' }, title: { type: 'string' }, instructions: { type: 'string' } },
-              required: ['id', 'title', 'instructions'],
+              properties: { id: { type: 'string' }, title: { type: 'string' }, instructions: { type: 'string' }, complexity: { type: 'string', enum: ['low', 'medium', 'high'], description: 'low: mechanical edits; medium: ordinary coding; high: complex reasoning, architecture or security' } },
+              required: ['id', 'title', 'instructions', 'complexity'],
               additionalProperties: false,
             },
           },

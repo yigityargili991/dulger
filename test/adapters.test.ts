@@ -46,6 +46,7 @@ test('claude parser reports format drift and errors instead of hiding them', () 
   assert.deepEqual(failedNotDenied.map((e) => e.type), ['tool_result'], 'a command that ran and failed is not a denial');
   assert.deepEqual(parse('{"type":"user","message":{"content":"the echoed prompt"}}'), []);
   assert.deepEqual(parse('{"type":"rate_limit_event"}'), [], 'no windows, no event');
+  assert.deepEqual(parse('{"type":"system","subtype":"thinking_tokens","estimated_tokens":3000,"estimated_tokens_delta":100}'), [{ type: 'thinking' }], 'thinking is progress: it must feed the stall watchdog');
   const rl = parse('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"five_hour":{"utilization":0.35,"resetsAt":1789002000},"seven_day":{"utilization":0.23}}}}')[0];
   assert.equal(rl?.type, 'rate_limit');
   if (rl?.type === 'rate_limit') {
@@ -87,6 +88,7 @@ test('arg builders encode access mode', () => {
   const base = { prompt: 'p', systemPrompt: 's', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal } as const;
   const ro = buildClaudeArgs({ ...base, access: 'readonly', allowedCommands: ['npm test'] });
   assert.ok(ro.includes('dontAsk'));
+  assert.ok(!ro.includes('p') && ro.includes('-p'), 'the prompt goes on stdin, not on the command line (argv strings are capped at 128 KiB)');
   assert.ok(ro.includes('--strict-mcp-config'), 'read-only agents never get MCP servers');
   assert.ok(buildClaudeArgs({ ...base, access: 'readonly', mcp: true }).includes('--strict-mcp-config'), 'not even when MCP is on');
   assert.ok(!buildClaudeArgs({ ...base, access: 'write', mcp: true }).includes('--strict-mcp-config'), 'write agents get them when MCP is on');

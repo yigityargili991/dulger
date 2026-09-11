@@ -48,7 +48,7 @@ interface RunUi {
 }
 
 function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions, agents: () => Iterable<AgentStatus>, onInterrupt: () => void): RunUi {
-  const quiet = o.quiet || !process.stdout.isTTY;
+  const quiet = o.quiet || !process.stdout.isTTY || !tuiUsable();
   if (!quiet && config.tui.enabled && tuiUsable()) {
     const tui = createTui({ getBoard: () => board, getAgents: agents, icons: resolveIcons(config.tui.icons), onInterrupt });
     return { update: tui.update, note: tui.note, setPhase: tui.setPhase, ask: (q) => tui.ask(q.label, q.hint), close: () => { tui.close(); } };
@@ -149,7 +149,7 @@ async function executeRun(run: Run, repoRoot: string, board: Board, o: RunOption
   process.stdout.write(report(repoRoot, board, mergedInto));
   const failed = board.cards.filter((c) => c.status !== 'done' && c.status !== 'replaced');
   if (failed.length) console.log(dim(`  failed worktrees kept in ${join(worktreesDir(repoRoot), board.runId)}/`));
-  return { landed, aborted: run.aborted };
+  return { landed, aborted: run.aborted || Boolean(board.halted) };
 }
 
 function leaveInBacklog(run: Run, board: Board): RunOutcome {
@@ -344,4 +344,3 @@ export function printPlanNotes(board: Board): void {
   for (const a of p.assumptions) console.log(yellow(`  assumes: ${a}`));
   for (const o of p.omitted) console.log(red(`  left out: ${o}`));
 }
-

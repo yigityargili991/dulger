@@ -38,7 +38,12 @@ test('worktree lifecycle: create, commit, merge-back, remove', () => {
   writeFileSync(join(w1, 'a.txt'), 'a\n');
   assert.equal(wt.commitAll(w1, 'dulger: c1'), true);
   assert.equal(wt.commitAll(w1, 'nothing'), false);
-  assert.match(wt.diff(w1, 'dulger/run1'), /\+a/);
+  const small = wt.reviewDiff(w1, 'dulger/run1');
+  assert.match(small.text!, /\+a/);
+  assert.deepEqual(small.files, ['a.txt']);
+  const big = wt.reviewDiff(w1, 'dulger/run1', 'HEAD', 3);
+  assert.equal(big.text, undefined, 'a diff over the limit is not inlined');
+  assert.ok(big.chars > 3 && /a\.txt/.test(big.stat) && big.files.length === 1);
   assert.deepEqual(wt.mergeFrom(w1, 'dulger/run1'), { ok: true });
   assert.equal(wt.land(w1, 'dulger/run1'), true);
   wt.removeWorktree(repo, w1, 'dulger-wip/run1/c1');

@@ -6,8 +6,9 @@ import { spawnLines, tryParseJson, extractJson } from './process.ts';
 const READONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'];
 const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(git status)', 'Bash(ls *)', 'Bash(cat *)'];
 
+// The prompt goes on stdin; argv strings are capped at 128 KiB.
 export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
-  const args = ['-p', opts.prompt, '--output-format', 'stream-json', '--verbose'];
+  const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   // Read-only agents get a restricted tool set without ToolSearch, so every MCP tool schema would be inlined
   // (~70k tokens per agent) for tools their permission mode would deny anyway. Write agents defer MCP tools
   // behind ToolSearch, which costs about a thousand tokens, so they get the user's servers unless configured off.
@@ -59,6 +60,7 @@ export function createClaudeParser(): (line: string) => AgentEvent[] {
 }
 
 function initEvents(o: Record<string, unknown>): AgentEvent[] {
+  if (o.subtype === 'thinking_tokens') return [{ type: 'thinking' }];
   if (o.subtype !== 'init') return [];
   if (typeof o.session_id !== 'string') return [{ type: 'warning', text: 'init event has no session_id; this session cannot be resumed (stream-json format changed?)' }];
   return [{ type: 'init', sessionId: o.session_id }];
@@ -156,6 +158,7 @@ export const claudeAdapter: Adapter = {
     const { exitCode, stderr } = await spawnLines({
       bin: process.env.DULGER_CLAUDE_BIN ?? 'claude',
       args: buildClaudeArgs(opts),
+      stdin: opts.prompt,
       cwd: opts.cwd,
       logFile: opts.logFile,
       signal: opts.signal,

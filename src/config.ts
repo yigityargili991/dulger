@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AgentRole, HarnessName } from './types.ts';
+import type { AgentRole, HarnessName, ModelTier, Card, Task } from './types.ts';
 import type { IconSet } from './tui/theme.ts';
 
 export interface RoleConfig {
@@ -15,9 +15,26 @@ export interface MemoryConfig {
   maxChars: number;
 }
 
+export interface ApiConfig {
+  baseUrl: string;
+  apiKeyEnv?: string;
+  model?: string;
+  maxTurns: number;
+  maxTokens: number;
+  tokenParameter?: 'max_tokens' | 'max_completion_tokens';
+  timeoutSec: number;
+}
+
+export interface RoutingConfig {
+  enabled: boolean;
+  models: Partial<Record<HarnessName, Partial<Record<ModelTier, string>>>>;
+}
+
 export interface Config {
   harness: HarnessName;
   roles: Partial<Record<AgentRole, RoleConfig>>;
+  routing: RoutingConfig;
+  providers: Partial<Record<HarnessName, ApiConfig>>;
   concurrency: number;
   maxAttempts: number;       // review rounds per card (each rejection adds a fix task)
   maxReplans: number;        // planner reruns after a card failed
@@ -40,6 +57,18 @@ export interface Config {
 export const DEFAULT_CONFIG: Config = {
   harness: 'claude',
   roles: {},
+  routing: {
+    enabled: true,
+    models: {
+      claude: { low: 'haiku', medium: 'sonnet', high: 'claude-fable-5-1' },
+      codex: { low: 'gpt-5.6-luna', medium: 'gpt-5.6-sol', high: 'gpt-6-astra' },
+    },
+  },
+  providers: {
+    ollama: { baseUrl: 'http://localhost:11434/v1', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
+    deepseek: { baseUrl: 'https://api.deepseek.com', apiKeyEnv: 'DEEPSEEK_API_KEY', model: 'deepseek-flash', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
+    openai: { baseUrl: 'https://api.openai.com/v1', apiKeyEnv: 'OPENAI_API_KEY', maxTurns: 40, maxTokens: 8192, timeoutSec: 300 },
+  },
   concurrency: 3,
   maxAttempts: 2,
   maxReplans: 1,
@@ -60,21 +89,52 @@ export const STATE_DIR = '.dulger';
 export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): Config {
   const file = join(repoRoot, STATE_DIR, 'config.json');
   const fromFile: Partial<Config> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
-  return {
+  const models = { ...DEFAULT_CONFIG.routing.models };
+  const providers = { ...DEFAULT_CONFIG.providers };
+  for (const source of [fromFile, overrides]) {
+    for (const [name, tiers] of Object.entries(source.routing?.models ?? {})) {
+      const key = name as HarnessName;
+      models[key] = { ...models[key], ...tiers };
+    }
+    for (const [name, provider] of Object.entries(source.providers ?? {})) {
+      const key = name as HarnessName;
+      providers[key] = { ...providers[key], ...provider } as ApiConfig;
+    }
+  }
+  const config: Config = {
     ...DEFAULT_CONFIG,
     ...fromFile,
     ...overrides,
     roles: { ...DEFAULT_CONFIG.roles, ...fromFile.roles, ...overrides.roles },
+    routing: { ...DEFAULT_CONFIG.routing, ...fromFile.routing, ...overrides.routing, models },
+    providers,
     checker: { ...DEFAULT_CONFIG.checker, ...fromFile.checker, ...overrides.checker },
     claude: { ...DEFAULT_CONFIG.claude, ...fromFile.claude, ...overrides.claude },
     codex: { ...DEFAULT_CONFIG.codex, ...fromFile.codex, ...overrides.codex },
     memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
     tui: { ...DEFAULT_CONFIG.tui, ...fromFile.tui, ...overrides.tui },
   };
+  for (const harness of [config.harness, ...Object.values(config.roles).map((r) => r.harness).filter(Boolean)]) {
+    if (!['claude', 'codex', 'fake', 'ollama', 'deepseek', 'openai'].includes(harness!)) throw new Error(`unknown harness: ${harness}`);
+  }
+  return config;
 }
 
 /** Resolve which harness / model a given role should use. */
-export function roleConfig(config: Config, role: AgentRole): Required<Pick<RoleConfig, 'harness'>> & RoleConfig {
+export function roleConfig(config: Config, role: AgentRole, context: { card?: Card; task?: Task } = {}): Required<Pick<RoleConfig, 'harness'>> & RoleConfig {
   const r = config.roles[role] ?? {};
-  return { ...r, harness: r.harness ?? config.harness };
+  const harness = r.harness ?? config.harness;
+  const tier = modelTier(role, context);
+  return { ...r, harness, model: r.model ?? (config.routing.enabled ? config.routing.models[harness]?.[tier] : undefined) ?? config.providers[harness]?.model };
+}
+
+/** Planning gets the strongest model; ordinary work/review gets medium. Retry one tier up. */
+export function modelTier(role: AgentRole, { card, task }: { card?: Card; task?: Task } = {}): ModelTier {
+  if (role === 'planner') return 'high';
+  if (role === 'docs') return 'low';
+  const tiers: ModelTier[] = ['low', 'medium', 'high'];
+  if (role === 'checker') return card?.tasks.some((t) => t.complexity === 'high' || t.kind === 'fix') ? 'high' : 'medium';
+  const base = tiers.indexOf(task?.complexity ?? 'medium');
+  const escalation = task?.kind === 'fix' ? 1 : Math.max(0, (task?.attempts ?? 1) - 1);
+  return tiers[Math.min(2, base + escalation)]!;
 }

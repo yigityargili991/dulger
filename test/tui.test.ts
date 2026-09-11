@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import chalk from 'chalk';
 import { parseKeys } from '../src/tui/screen.ts';
-import { cell, fit, spread, width, wrap } from '../src/tui/text.ts';
+import { cell, fit, plainText, spread, width, wrap } from '../src/tui/text.ts';
 import { createEditor, edit, submit } from '../src/tui/editor.ts';
 import { columns, render, type ViewState } from '../src/tui/view.ts';
 import { glyphs, resolveIcons } from '../src/tui/theme.ts';
@@ -134,4 +135,125 @@ test('readReply: assent dispatches, a few words cancel, anything else revises', 
   assert.deepEqual(readReply('drop'), { kind: 'cancel' });
   assert.deepEqual(readReply('go with raylib instead'), { kind: 'revise', text: 'go with raylib instead' });
   assert.deepEqual(readReply(' yes, but add tests '), { kind: 'revise', text: 'yes, but add tests' });
+});
+
+test('responsive frames stay bounded across tiny, narrow, short and full viewports', () => {
+  const b = board([card('c1', 'backlog', { title: '日本語 👩‍💻 title\nsecond line\x1b[2J' }), card('c2', 'failed')]);
+  for (const rows of [1, 2, 3, 4, 5, 6, 8, 12, 15, 16, 24, 40]) {
+    for (const cols of [1, 5, 12, 30, 60, 79, 80, 100, 160]) {
+      for (const open of [undefined, 'c1']) {
+        for (const prompt of [undefined, { label: 'a very long prompt label', text: 'hi日本語'.repeat(20), cursor: 100, hint: 'hint' }]) {
+          const f = render(state(b, { rows, cols, open, prompt, focus: 'input', selected: 'c1', notes: ['a\nb\x1b[H'] }));
+          assert.equal(f.lines.length, rows, `${cols}x${rows}`);
+          for (const line of f.lines) {
+            assert.ok(width(line) <= cols, `overflow at ${cols}x${rows}: ${plain(line)}`);
+            assert.doesNotMatch(plain(line), /[\r\n\x1b]/);
+          }
+          if (prompt) {
+            assert.ok(f.cursor);
+            assert.ok(f.cursor.row >= 0 && f.cursor.row < rows);
+            assert.ok(f.cursor.col >= 0 && f.cursor.col < cols, `${cols}x${rows} cursor ${f.cursor.col}`);
+          }
+        }
+      }
+    }
+  }
+  const compact = render(state(b, { rows: 12, cols: 40, selected: 'c2' })).lines.map(plain).join('\n');
+  assert.match(compact, /c2/);
+  assert.doesNotMatch(compact, /Resize to/);
+});
+
+test('external text loses its ANSI before app styles are applied', () => {
+  const raw = '\x1b[32mhello\nworld\x1b[2J\x1b]0;bad title\x07\x1b[0m';
+  const content = plainText(raw);
+  assert.equal(content, 'hello world');
+  const line = cell('\x1b[31m' + content + '\x1b[0m', 20);
+  assert.equal(plain(line), 'hello world         ');
+  assert.match(line, /\x1b\[31m/);
+  assert.equal(width(line), 20);
+});
+
+test('compact board keyboard navigation follows the displayed list across statuses', async () => {
+  const { createTui } = await import('../src/tui/tui.ts');
+  const b = board([card('c1', 'backlog'), card('c2', 'done')]);
+  let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
+  let lines: string[] = [];
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
+    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  } });
+  try {
+    key({ name: 'down' }); key({ name: 'enter' });
+    assert.match(lines.map(plain).join('\n'), /c2 Card c2/);
+    assert.doesNotMatch(lines.map(plain).join('\n'), /c1 Card c1/);
+  } finally { tui.close(); }
+});
+
+test('screen uses physical dimensions on resize, clips renderer output and restores terminal modes', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { openScreen } = await import('../src/tui/screen.ts');
+  let output = '';
+  const out = Object.assign(new EventEmitter(), { rows: 4, columns: 8, write: (s: string) => { output += s; return true; } });
+  const inp = Object.assign(new EventEmitter(), { isRaw: true, setRawMode: (raw: boolean) => { inp.isRaw = raw; }, resume: () => {}, pause: () => {}, setEncoding: () => {} });
+  const screen = openScreen(out as unknown as NodeJS.WriteStream, inp as unknown as NodeJS.ReadStream);
+  try {
+    screen.paint([plainText('hello\nworld\x1b[2J')], { row: 20, col: 99 });
+    assert.equal(screen.rows, 4);
+    assert.equal(screen.cols, 8);
+    assert.doesNotMatch(output.slice(output.indexOf('\x1b[H') + 3), /\n|\x1b\[2J/);
+    assert.match(output, /\x1b\[4;8H/);
+    out.rows = 2; out.columns = 3; out.emit('resize');
+    output = '';
+    screen.paint(['long row', 'another', 'invisible'], { row: 4, col: 6 });
+    assert.equal(screen.rows, 2);
+    assert.match(output, /\x1b\[2;3H/);
+    assert.doesNotMatch(output, /invisible/);
+  } finally { screen.close(); }
+  assert.equal(inp.isRaw, true, 'restore the previous raw mode');
+  assert.match(output, /\x1b\[\?7h/);
+  const closed = output;
+  screen.close(); screen.paint(['ignored']);
+  assert.equal(output, closed);
+});
+
+
+test('plain text makes complete, partial and unknown terminal sequences inert', () => {
+  for (const input of [
+    '\x1b[31mred\x1b[0m', '\x1b[2Jclear', '\x1b]8;;https://example.com\x07link\x1b]8;;\x07',
+    '\x1b]52;c;clipboard\x1b\\', '\x1bPpayload\x1b\\', '\x9b2J', '\x1b[31', '\x1b]unterminated',
+    '\x1b_unknown\x1b\\', '\r\n\t\b\x00\x7f\x85',
+  ]) {
+    const clean = plainText(input);
+    assert.doesNotMatch(clean, /\p{Cc}/u);
+    assert.equal(plainText(clean), clean, 'sanitizing again does not change display text');
+  }
+  assert.equal(plainText('a   b\tc'), 'a   b c', 'keep editable spaces intact');
+  assert.equal(plainText('日本語 e\u0301 👩‍💻'), '日本語 e\u0301 👩‍💻');
+});
+
+test('renderer strips external styling before adding its own, without changing board data', () => {
+  const injected = '\x1b[8mcontent\x1b[0m\n\x1b[2J\x1b]52;c;payload\x07';
+  const item = card('c1', 'in_progress', {
+    title: injected, description: injected, acceptanceCriteria: [injected], review: injected,
+    feedback: [injected], reviewNotes: [injected],
+  });
+  item.tasks[0]!.title = injected;
+  const b = board([item]);
+  b.goal = injected;
+  const agent: AgentStatus = { id: 'a1', role: 'worker', harness: 'fake', model: injected, cardId: 'c1', taskId: 't1',
+    state: 'running', turns: 1, history: [injected], lastMessage: injected, startedAt: 0 };
+  const level = chalk.level;
+  chalk.level = 3;
+  try {
+    for (const open of [undefined, 'c1']) {
+      const frame = render(state(b, { rows: 60, cols: 120, open, agents: [agent], notes: [injected], phase: injected,
+        prompt: { label: injected, text: 'a   b', cursor: 3, hint: injected }, focus: 'input' }));
+      const styled = frame.lines.join('');
+      assert.match(styled, /\x1b\[/, 'app colours are still present');
+      assert.doesNotMatch(styled, /\x1b\[8m/, 'external conceal style is gone');
+      assert.doesNotMatch(plain(styled), /\p{Cc}/u, 'only app-generated SGR sequences reach the screen');
+      const prompt = plain(frame.lines[frame.cursor!.row]!);
+      assert.equal(prompt[frame.cursor!.col], ' ', 'cursor remains inside the three editable spaces');
+    }
+  } finally { chalk.level = level; }
+  assert.equal(item.title, injected, 'source data and logs keep their original content');
 });

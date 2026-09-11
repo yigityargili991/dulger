@@ -97,9 +97,20 @@ export function commitAll(cwd: string, message: string): boolean {
   return true;
 }
 
-export function diff(cwd: string, from: string, to = 'HEAD', maxChars = 120_000): string {
+export interface ReviewDiff {
+  /** Absent when over the limit; the reviewer reads it file by file instead. */
+  text?: string;
+  stat: string;
+  chars: number;
+  files: string[];
+}
+
+export const REVIEW_DIFF_MAX_CHARS = 120_000;
+
+export function reviewDiff(cwd: string, from: string, to = 'HEAD', maxChars = REVIEW_DIFF_MAX_CHARS): ReviewDiff {
   const out = git(cwd, ['diff', `${from}...${to}`]);
-  return out.length > maxChars ? out.slice(0, maxChars) + `\n\n[... diff truncated at ${maxChars} chars ...]` : out;
+  const files = git(cwd, ['diff', '--name-only', `${from}...${to}`]).split('\n').filter(Boolean);
+  return { text: out.length > maxChars ? undefined : out, stat: diffStat(cwd, from, to), chars: out.length, files };
 }
 
 export function diffStat(cwd: string, from: string, to = 'HEAD'): string {

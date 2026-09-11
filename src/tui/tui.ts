@@ -32,7 +32,7 @@ export interface Tui {
 
 /** Whether the full-screen view can run here. */
 export function tuiUsable(): boolean {
-  return Boolean(process.stdout.isTTY && process.stdin.isTTY && (process.stdout.columns ?? 0) >= 80 && (process.stdout.rows ?? 0) >= 16);
+  return Boolean(process.stdout.isTTY && process.stdin.isTTY);
 }
 
 export function createTui(o: TuiOptions): Tui {
@@ -48,6 +48,7 @@ export function createTui(o: TuiOptions): Tui {
   let focus: ViewState['focus'] = 'board';
   let prompt: { label: string; hint: string; editor: Editor; resolve: (v: string | undefined) => void } | undefined;
   let closed = false;
+  let compact = false;
 
   const state = (): ViewState => {
     const board = o.getBoard();
@@ -63,12 +64,19 @@ export function createTui(o: TuiOptions): Tui {
   const paint = () => {
     if (closed) return;
     const f = render(state());
+    compact = f.compact;
     screen.paint(f.lines, f.cursor);
   };
 
   const move = (dCol: number, dRow: number) => {
     const cols = columns(o.getBoard()).filter((col) => col.cards.length);
     if (!cols.length) return;
+    if (compact) {
+      const cards = cols.flatMap((col) => col.cards);
+      const current = Math.max(0, cards.findIndex((card) => card.id === selected));
+      selected = cards[Math.max(0, Math.min(cards.length - 1, current + dRow + dCol))]!.id;
+      return;
+    }
     let ci = cols.findIndex((col) => col.cards.some((k) => k.id === selected));
     if (ci < 0) { selected = cols[0]!.cards[0]!.id; return; }
     let ri = cols[ci]!.cards.findIndex((k) => k.id === selected);

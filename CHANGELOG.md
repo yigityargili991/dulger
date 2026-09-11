@@ -1,71 +1,66 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-09-12
 
-- `/provider <name>` in the prompt defines an OpenAI-style backend interactively, key included: the key
-  is typed without echo and kept in `~/.config/dulger/keys.json` (mode 600), read whenever the key's
-  environment variable is not set. `/provider` lists providers and key sources.
-
-- Any `providers.<name>` entry is a backend: `--harness openrouter` with its own key variable, model and
-  tier map, next to the built-in ollama, deepseek and openai. `--harness <name> --base-url ...` defines
-  one for a single run. A failed API request now carries the server's own error message, redacted.
-
-- Budgets: `budgetUsd` / `--budget` stops the run (resumable) at that spend, `cardBudgetUsd` /
-  `--card-budget` fails a card at that spend; `/budget` and `/card-budget` in the prompt.
+Runs
+- A run stops itself when the harness account hits its usage limit or the run reaches `budgetUsd`
+  (`--budget`): nothing else is dispatched, the card in flight stays resumable, the report says why, and
+  `dulger resume` continues. `cardBudgetUsd` (`--card-budget`) fails a card at that spend, checked
+  before each task and before review.
+- Failures are classified. A worker that answered but could not finish, or a card the reviewer
+  rejected, failed on its work. An agent that never answered, or a reviewer that could not run, is
+  dulger's failure: no round is spent, no fix task is sent, nothing is replanned, and `dulger resume`
+  retries the card from its worktree with finished tasks kept.
+- `dulger retry <card>` (and `/retry`) gives a card that failed on its work one more review round
+  (`--max-attempts` for more). Its last rejection stays on the card as a pending fix task, so the retry
+  starts by addressing exactly that, and the cards blocked behind it get another chance. Docs run
+  again after a retry or resume lands more work.
+- The prompt for Claude Code goes on stdin instead of the command line; a large diff used to make the
+  reviewer fail to spawn (`E2BIG`), which then read as a rejection. A diff too large for one prompt is
+  no longer truncated: the reviewer gets the file list and reads it file by file in the worktree.
+- The stall watchdog counts the model's thinking as progress. A replan agent that dies gets a second
+  session before the replan counts as failed.
+- The planner is told how big a card may be, that a foundation card holds only what its dependants
+  need, and that a card producing a GUI must give the verify gate a headless self-test. dulger warns
+  on the board about cards with more than three tasks and foundation cards that do too much.
 - A retried task is told that it ran before, what that session reported or why it died, and that the
   worktree may hold its leftovers.
-- The reviewer sees which files in the diff no task reported changing, to catch reformatting and work
-  outside the card. Notes are no longer recorded twice, and the board printout shows a count of notes
-  instead of every one (the report still lists them).
-- The planner is told that a card producing a GUI must give the verify gate a headless self-test.
+
+Reviewer
+- Always runs on the high routing tier: review quality is the gate.
+- Told to raise every blocking problem in the first round and, later, to block only on what a fix
+  failed to address or newly broke. Its own earlier notes are shown to it as settled.
+- Sees which files in the diff no task reported changing, to catch reformatting and work outside the
+  card. Notes are recorded once; the board printout shows a count of notes, the report lists them.
 - Read-only agents may run version probes such as `cargo --version`.
 
-- The reviewer is told to raise every blocking problem in the first round and, later, to block only on
-  what a fix failed to address or newly broke; its own earlier notes are shown to it as settled.
-- `dulger retry <card>` (and `/retry`): a card that failed on its work goes back to the backlog with one
-  more review round. The documentation agent runs again after a retry or resume lands more work. Its last rejection is kept on the card as a pending fix task, so the retry starts
-  by addressing exactly that, keeps finished tasks and the worktree, and unblocks the cards behind it.
+Models and backends
+- Routing, on by default: the planner and reviewer use the high tier, workers the tier of their task's
+  complexity as labelled by the planner (one tier up per retry), docs the low tier. With Claude that
+  is fable / sonnet / haiku unless a role is pinned; `--no-routing` or `"routing": { "enabled": false }`
+  restores harness defaults. Explicit `--model` and per-role pins win.
+- Direct OpenAI-style API backends, new and so far exercised only under tests: ollama, deepseek and
+  openai are built in, and any `providers.<name>` entry (openrouter, groq, a self-hosted vLLM…) is a
+  backend with its own key variable, model and tier map. `--harness <name> --base-url … --api-key-env …`
+  defines one for a run. Agents get a small coding toolset (list, read, write, diff, shell) inside the
+  worktree; requests are retried on 429/5xx with backoff; `commandTimeoutSec` bounds the shell tool; a
+  failed request carries the server's own error message, redacted.
+- `/provider <name>` defines a backend from the prompt, key included: typed without echo and kept in
+  `~/.config/dulger/keys.json` (mode 600), read when the key's environment variable is not set.
+  `/provider` lists providers and where their keys come from.
+- `/model <role> <choice>` mixes backends and models per role in the prompt, `/model` shows the
+  effective routing, `/config save` persists session settings (endpoints and variable names, never keys).
 
-- The reviewer always runs on the high routing tier (fable, astra): review quality is the gate.
-- Direct API backends retry a request on HTTP 429 and 5xx with backoff (`providers.<name>.retries`,
-  default 3, `Retry-After` honoured) instead of failing the agent on the first transient answer. Their
-  shell tool's timeout is `providers.<name>.commandTimeoutSec` (default 600 s) instead of a fixed two
-  minutes.
+Terminal
+- The full-screen view adapts to the viewport: compact cards on narrow screens, input space reserved
+  on short ones, no minimum-size gate. Agent output is sanitised before styling; raw mode and the cursor
+  are restored on close.
 
-- Configure mixed backends/models in the REPL with `/model <role> <shorthand>` or an explicit
-  backend/model pair. Show effective routing, restore automatic selection or repository role settings,
-  and persist session configuration with `/config save`. Role choices take precedence over global pins.
-
-- Route individual tasks to low, medium or high model tiers: Haiku/Sonnet/Fable for Claude,
-  GPT-5.6 Luna/Sol and GPT-6 Astra for Codex. Retries escalate; explicit model pins take precedence.
-- Add direct Ollama, DeepSeek and configurable OpenAI-compatible Chat Completions agents, with coding
-  tools, bounded calls, environment-based credentials, token accounting and resumable transcripts.
-- Make terminal layout adapt to the actual viewport: compact cards on narrow screens, input space
-  reserved on short screens, and no hard minimum-size gate. Sanitize terminal control sequences and
-  multiline output, prevent edge wrapping, and restore raw mode/cursor state on close.
-
-- A diff too large for one prompt is no longer truncated for the reviewer: the prompt carries the file
-  list instead and the reviewer reads the diff file by file in the worktree, told that every file
-  counts. Smaller diffs stay inline.
-- The prompt for Claude Code goes on stdin instead of the command line. A card whose diff was large
-  enough made the reviewer fail to spawn (`E2BIG`: one argument is capped at 128 KiB on Linux), which
-  then read as a rejection.
-- A reviewer that cannot run or answer is an infrastructure failure, not a verdict: the review is tried
-  once more, then the card fails without spending a round or sending a worker a fix task, the planner
-  is not asked to replan, and `dulger resume` retries the card from its worktree. Boards from earlier
-  versions are read the same way.
-- When an agent reports that the account has hit its usage limit, the run stops: nothing else is
-  dispatched, no task is retried into the same wall, the card in flight stays resumable, and the report
-  says why. `dulger resume` continues after the window resets.
-- A task failure is classified: a worker that answered but could not finish is the card's failure; an
-  agent that never answered (crashed, stalled, refused) is dulger's, and resume retries the card with its
-  finished tasks kept.
-- The stall watchdog counts the model's thinking as progress; before, ten minutes of thinking looked
-  like a hang.
-- A replan agent that dies (stalled, crashed) gets a second session before the replan counts as failed.
-- The planner is told how big a card may be and what a foundation card is for, and dulger warns on the
-  board about cards with more than three tasks and foundation cards that do more than their dependants
-  need.
+Board format
+- Cards carry `verify` and `verification`, `failure` (work or infrastructure) and `reason` (why dulger
+  stopped the card; `feedback` now holds only what reviewers said); tasks carry `complexity` and the
+  last `error`; the board carries `halted`. Boards from earlier versions are read into this shape on
+  load.
 
 ## 0.3.0 — 2026-09-10
 

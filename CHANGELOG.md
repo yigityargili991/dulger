@@ -1,7 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-09-12
 
+- The website: https://dulger-site-production.up.railway.app, a static Astro site dulger built from its
+  own README in one $17 run; the README and the package's homepage link to it.
 - Provider setup asks for the key first and then lists the endpoint's models to pick from, by number
   or by narrowing on part of a name; `/provider <name> model` re-picks. Choosing a provider whose key
   is missing, in the prompt or when a run starts, asks for the key on the spot.

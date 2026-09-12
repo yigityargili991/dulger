@@ -1,6 +1,6 @@
 {
   "name": "@zamazingobjk/dulger",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "dulger — a multi-agent kanban orchestrator that wraps Claude Code / Codex",
   "license": "MIT",
   "author": "Yigit Yargili",
@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://gitlab.com/zamazingo99/dulger.git"
   },
-  "homepage": "https://gitlab.com/zamazingo99/dulger",
+  "homepage": "https://dulger-site-production.up.railway.app",
   "bugs": "https://gitlab.com/zamazingo99/dulger/-/issues",
   "keywords": [
     "agents",

@@ -6,6 +6,9 @@ Agents use headless [Claude Code](https://claude.com/claude-code) or
 [Codex](https://github.com/openai/codex), or connect directly to Ollama, DeepSeek and OpenAI-compatible APIs.
 CLI backends use your existing login; API backends use environment variables. No build step.
 
+Website: [dulger-site-production.up.railway.app](https://dulger-site-production.up.railway.app) — the
+docs as pages, built by dulger itself from this README.
+
 ```sh
 cd your-repo
 dulger                       # interactive prompt: type a goal, or /help

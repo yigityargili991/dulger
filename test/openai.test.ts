@@ -193,3 +193,19 @@ test('a failed request carries the server\'s own error message, redacted and cut
   const html = await createOpenAIAdapter('ollama', { ...config, retries: 0 }).run(opts);
   assert.match(html.error!, /^ollama HTTP 502; check endpoint/, 'a body that is not JSON adds nothing');
 });
+
+test('listModels reads an OpenAI-style /models answer with the key in the header', async (t) => {
+  const { listModels } = await import('../src/adapters/models.ts');
+  const old = process.env.DULGER_TEST_API_KEY; process.env.DULGER_TEST_API_KEY = 'k';
+  t.after(() => { if (old === undefined) delete process.env.DULGER_TEST_API_KEY; else process.env.DULGER_TEST_API_KEY = old; });
+  t.mock.method(globalThis, 'fetch', async (url: URL, init: RequestInit) => {
+    assert.equal(url.toString(), 'https://api.deepseek.com/models');
+    assert.equal((init.headers as Record<string, string>).Authorization, 'Bearer k');
+    return Response.json({ object: 'list', data: [{ id: 'deepseek-reasoner' }, { id: 'deepseek-chat' }, { id: 'deepseek-chat' }, { name: 'not-an-id' }] });
+  });
+  assert.deepEqual(await listModels({ ...DEFAULT_CONFIG.providers.deepseek!, apiKeyEnv: 'DULGER_TEST_API_KEY' }), ['deepseek-chat', 'deepseek-reasoner']);
+  t.mock.method(globalThis, 'fetch', async () => new Response('', { status: 401 }));
+  await assert.rejects(listModels(DEFAULT_CONFIG.providers.deepseek!), /HTTP 401 from api\.deepseek\.com/);
+  t.mock.method(globalThis, 'fetch', async () => Response.json({ data: [] }));
+  await assert.rejects(listModels(DEFAULT_CONFIG.providers.deepseek!), /listed no models/);
+});

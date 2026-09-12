@@ -8,7 +8,7 @@ import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
 import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
-import { providerCommand } from './replProviders.ts';
+import { ensureKeys, providerCommand } from './replProviders.ts';
 import type { AgentRole, HarnessName } from './types.ts';
 
 export interface Session {
@@ -38,8 +38,8 @@ const HELP = `Type a goal to plan and run it. Commands:
   /model <role> <harness> [model]    e.g. worker ollama qwen3:8b
   /model <role> auto|reset           unpin on its backend | restore repository settings
   /provider           list the API providers and where their keys come from
-  /provider <name>    define or edit one: base URL, key variable, model, and the key itself (not echoed)
-  /provider <name> key   enter or replace just the key
+  /provider <name>    define or edit one: base URL, the key (not echoed), then pick a model from the endpoint's list
+  /provider <name> key   enter or replace just the key      /provider <name> model   re-pick the model
   /config save        persist settings to .dulger/config.json (endpoints, never keys)
 Model shorthand: fable, opus, sonnet, haiku, astra, sol, luna.
 Role choices override global /model pins. Changes are session-only until /config save.
@@ -159,10 +159,10 @@ export async function command(text: string, repoRoot: string, session: Session, 
     }
     case 'set':
       if (!args[0]) console.log(settingsLine(session, config()));
-      else setting(repoRoot, session, config, args[0], args.slice(1).join(' '));
+      else await setting(repoRoot, session, config, args[0], args.slice(1).join(' '));
       return false;
     default:
-      if (SETTINGS.includes(cmd)) { setting(repoRoot, session, config, cmd, rest); return false; }
+      if (SETTINGS.includes(cmd)) { await setting(repoRoot, session, config, cmd, rest); return false; }
       throw new CliError(`unknown command /${cmd} (try /help)`);
   }
 }
@@ -170,8 +170,8 @@ export async function command(text: string, repoRoot: string, session: Session, 
 const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing', 'budget', 'card-budget'];
 
 /** Change a setting, or show its current value when no value is given. */
-function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): void {
-  if (key === 'model') { console.log(configureModel(repoRoot, session, value)); return; }
+async function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): Promise<void> {
+  if (key === 'model') { console.log(configureModel(repoRoot, session, value)); if (process.stdin.isTTY) await ensureKeys(config()); return; }
   if (key === 'harness' && value && !harnessNames(config()).includes(value)) throw new CliError(`harness is one of ${harnessNames(config()).join(', ')}`);
   if (!value) {
     if (!SETTINGS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
@@ -180,6 +180,7 @@ function setting(repoRoot: string, session: Session, config: () => Config, key: 
   }
   set(session, key, value);
   console.log(dim(settingsLine(session, config())));
+  if (key === 'harness' && process.stdin.isTTY) await ensureKeys(config());
 }
 
 function currentValue(s: Session, c: Config, key: string): string {

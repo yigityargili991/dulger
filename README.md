@@ -222,11 +222,13 @@ self-hosted vLLM sit next to the built-in three under their own names, each with
 defines the same thing for one run without touching the file. A rejected request reports the server's
 own error message (with the key redacted), so a wrong model name reads as such.
 
-In the prompt, `/provider openrouter` asks for the base URL, the key variable and the model, and when
-the variable is not set, for the key itself, typed without echo and stored in
-`~/.config/dulger/keys.json` (mode 600, never in a repository; an exported variable always wins).
-`/provider` lists every provider and where its key comes from; `/provider <name> key` replaces a key.
-`/config save` then writes the endpoint and the variable name to the repository config.
+In the prompt, `/provider deepseek` (or any name) asks for the base URL, then for the key when it is
+not already available, typed without echo and stored in `~/.config/dulger/keys.json` (mode 600, never
+in a repository; an exported variable always wins), then lists the models the endpoint reports so you
+pick one by number or by typing part of its name. `/provider` lists every provider and where its key
+comes from; `/provider <name> key` replaces a key, `/provider <name> model` re-picks the model.
+`/config save` then writes the endpoint and the variable name to the repository config. Selecting a
+provider whose key is missing, in the prompt or at the start of a run, asks for the key on the spot.
 
 Persist endpoint settings in `.dulger/config.json`. Store the **environment variable name**, never the
 key itself: this file is committable. `/harness ollama`, `/harness deepseek` and `/harness openai` also

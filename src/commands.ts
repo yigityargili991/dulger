@@ -15,6 +15,7 @@ import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow, fmtSpend, terminalWidth } from './ui/ansi.ts';
 import { fit, logLine, wrap } from './tui/text.ts';
+import { ensureKeys } from './replProviders.ts';
 import { createTui, tuiUsable } from './tui/tui.ts';
 import { resolveIcons } from './tui/theme.ts';
 import type { AgentStatus, Board, Card } from './types.ts';
@@ -167,6 +168,7 @@ function cancelRun(run: Run, repoRoot: string, board: Board): RunOutcome {
 
 /** Plan (when fresh), talk the plan through unless --yes, then execute. */
 export async function runBoard(repoRoot: string, board: Board, config: Config, o: RunOptions): Promise<RunOutcome> {
+  if (process.stdin.isTTY) await ensureKeys(config);
   const run = startRun(repoRoot, board, config, o);
   if (o.fresh) {
     try {

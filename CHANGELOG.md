@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Provider setup asks for the key first and then lists the endpoint's models to pick from, by number
+  or by narrowing on part of a name; `/provider <name> model` re-picks. Choosing a provider whose key
+  is missing, in the prompt or when a run starts, asks for the key on the spot.
+
 - The report is compact by default: three lines per landed card (title, the reviewer's first sentence,
   spend / rounds / verify / note count), one reason line per card that did not land, the diff-stat
   total, and the next steps. `dulger report --full` (and `/report full`) prints every task summary,

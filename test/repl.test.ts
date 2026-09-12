@@ -167,27 +167,34 @@ test('/report full is a flag, not a run id', async (t) => {
   await assert.rejects(run('/report --full'), /no runs found/);
 });
 
-test('/provider defines a backend from the prompt and keeps its key in the user keys file', async (t) => {
+test('/provider asks for the key, then picks the model from the endpoint, and keeps the key in the user keys file', async (t) => {
   const { session, run, output, file, resolve } = setup(t);
   const home = mkdtempSync(join(tmpdir(), 'dulger-keys-'));
   const oldXdg = process.env.XDG_CONFIG_HOME; const oldKey = process.env.OPENROUTER_API_KEY;
   process.env.XDG_CONFIG_HOME = home; delete process.env.OPENROUTER_API_KEY;
   t.after(() => { rmSync(home, { recursive: true, force: true }); if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = oldXdg; if (oldKey !== undefined) process.env.OPENROUTER_API_KEY = oldKey; });
-  const { providerCommand } = await import('../src/replProviders.ts');
+  const { providerCommand, ensureKeys } = await import('../src/replProviders.ts');
   const { readKey, keysFile } = await import('../src/keys.ts');
+  const repo = join(file, '..', '..');
 
-  const answers = ['', '', 'qwen/qwen3-coder'];
+  const answers = ['', 'qwen'];
   const secrets = ['sk-or-test-123'];
-  const asked: string[] = [];
-  const prompts = { ask: async (q: string) => { asked.push(q); return answers.shift(); }, askSecret: async (q: string) => { asked.push(q); return secrets.shift(); } };
-  const lines = await providerCommand(join(file, '..', '..'), session, ['openrouter'], prompts);
+  const asked: string[] = []; const said: string[] = []; const listed: string[] = [];
+  const prompts = {
+    ask: async (q: string) => { asked.push(q); return answers.shift(); },
+    askSecret: async (q: string) => { asked.push(q); return secrets.shift(); },
+    say: (l: string) => said.push(l),
+    models: async (p: { baseUrl: string; apiKeyEnv?: string }) => { listed.push(`${p.baseUrl} ${p.apiKeyEnv}`); return ['anthropic/claude-sonnet-4.5', 'openai/gpt-4.1', 'qwen/qwen3-coder']; },
+  };
+  const lines = await providerCommand(repo, session, ['openrouter'], prompts);
   assert.match(asked[0]!, /Base URL.*openrouter\.ai\/api\/v1/);
-  assert.match(asked[1]!, /OPENROUTER_API_KEY/);
-  assert.match(asked[3]!, /API key for \$OPENROUTER_API_KEY/);
-  assert.match(lines.join('\n'), /openrouter: https:\/\/openrouter\.ai\/api\/v1 · qwen\/qwen3-coder · key in \$OPENROUTER_API_KEY[\s\S]*key stored in .*keys\.json \(mode 600\)/);
+  assert.match(asked[1]!, /API key for \$OPENROUTER_API_KEY/, 'the key is asked for before the models, since listing needs it');
+  assert.match(asked[2]!, /^Model /);
+  assert.deepEqual(listed, ['https://openrouter.ai/api/v1 OPENROUTER_API_KEY']);
+  assert.match(said.join('\n'), /   1  anthropic\/claude-sonnet-4\.5\n   2  openai\/gpt-4\.1\n   3  qwen\/qwen3-coder/);
+  assert.match(lines.join('\n'), /key stored in .*keys\.json \(mode 600\)[\s\S]*openrouter: https:\/\/openrouter\.ai\/api\/v1 · qwen\/qwen3-coder · key in \$OPENROUTER_API_KEY \(keys file\)/);
   assert.equal(readKey('OPENROUTER_API_KEY'), 'sk-or-test-123');
   assert.equal(keysFile(), join(home, 'dulger', 'keys.json'));
-  assert.equal(readFileSync(keysFile(), 'utf8').includes('sk-or-test-123'), true);
   process.env.OPENROUTER_API_KEY = 'from-env';
   assert.equal(readKey('OPENROUTER_API_KEY'), 'from-env', 'the environment wins');
   delete process.env.OPENROUTER_API_KEY;
@@ -202,6 +209,26 @@ test('/provider defines a backend from the prompt and keeps its key in the user 
   assert.equal(saved.providers.openrouter.apiKeyEnv, 'OPENROUTER_API_KEY');
   assert.equal(JSON.stringify(saved).includes('sk-or-test-123'), false, 'the key never reaches the repository config');
 
-  assert.deepEqual(await providerCommand(join(file, '..', '..'), session, ['claude'], prompts), ['claude is a CLI backend and needs no provider entry']);
-  assert.deepEqual(await providerCommand(join(file, '..', '..'), session, ['x'], { ...prompts, ask: async () => undefined }), ['cancelled']);
+  // Re-pick by number; a page of many models narrows on a word; a dead endpoint falls back to typing.
+  answers.push('2');
+  assert.match((await providerCommand(repo, session, ['openrouter', 'model'], prompts)).join('\n'), /model openai\/gpt-4\.1/);
+  answers.push('nothing-here', 'claude');
+  said.length = 0;
+  assert.match((await providerCommand(repo, session, ['openrouter', 'model'], prompts)).join('\n'), /model anthropic\/claude-sonnet-4\.5/);
+  assert.match(said.join('\n'), /no model matches "nothing-here"/);
+  answers.push('typed/model');
+  const dead = { ...prompts, models: async () => { throw new Error('HTTP 503 from x'); } };
+  assert.match((await providerCommand(repo, session, ['openrouter', 'model'], dead)).join('\n'), /model typed\/model/);
+  assert.match(said.join('\n'), /could not list models \(HTTP 503 from x\); type the model id/);
+
+  // A run on a provider whose key is missing asks for it first.
+  rmSync(keysFile());
+  secrets.push('sk-or-new');
+  said.length = 0;
+  await ensureKeys(sessionConfig(repo, session), prompts);
+  assert.match(said.join('\n'), /openrouter needs \$OPENROUTER_API_KEY, which is not set\.[\s\S]*key stored/);
+  assert.equal(readKey('OPENROUTER_API_KEY'), 'sk-or-new');
+
+  assert.deepEqual(await providerCommand(repo, session, ['claude'], prompts), ['claude is a CLI backend and needs no provider entry']);
+  assert.deepEqual(await providerCommand(repo, session, ['x'], { ...prompts, ask: async () => undefined }), ['cancelled']);
 });

@@ -3,7 +3,7 @@
 
 export type CardStatus = 'backlog' | 'in_progress' | 'review' | 'done' | 'failed' | 'blocked' | 'replaced';
 export type TaskStatus = 'pending' | 'running' | 'done' | 'failed';
-export type AgentRole = 'planner' | 'worker' | 'checker' | 'docs';
+export type AgentRole = 'planner' | 'worker' | 'checker' | 'docs' | 'reporter';
 /** The built-in backends, or the name of any entry under config.providers (an OpenAI-style API). */
 export type HarnessName = 'claude' | 'codex' | 'fake' | 'ollama' | 'deepseek' | 'openai' | (string & {});
 export type ModelTier = 'low' | 'medium' | 'high';
@@ -48,6 +48,13 @@ export interface DocsResult {
   filesChanged: string[];
 }
 
+/** What the progress reporter says about an in-progress card: a human note, plus a flag when something looks wrong. */
+export interface ReporterResult {
+  note: string;
+  /** Empty when nothing looks wrong; set when the agent seems stuck, repeating itself or off the card's scope. */
+  attention: string;
+}
+
 // ---- Kanban ----
 
 export interface Task {
@@ -68,6 +75,10 @@ export interface Task {
 }
 
 export interface Card {
+  worker?: import('./config.ts').RoleConfig;
+  guidance?: string[];
+  stopped?: boolean;
+  worktreeReady?: boolean;
   id: string;
   title: string;
   description: string;
@@ -94,9 +105,15 @@ export interface Card {
   summary?: string;
   costUsd: number;
   usage?: Usage;
+  /** The progress reporter's latest note while the card runs, and when it was written. */
+  progress?: { at: string; note: string; attention?: string };
 }
 
 export interface Board {
+  settings?: import('./runSettings.ts').SettingsSnapshot;
+  checkpoint?: { phase: 'planning' | 'ready' | 'running' | 'paused' | 'stopped' | 'docs' | 'verifying' | 'finished'; at: string };
+  finalVerification?: { ref: string; results: VerificationResult[] };
+  paused?: boolean;
   runId: string;
   goal: string;
   baseRef: string;
@@ -189,6 +206,7 @@ export type BoardEventType =
   | 'card_started' | 'card_review' | 'card_verify_failed' | 'card_check_failed' | 'card_retry' | 'card_conflict' | 'card_blocked' | 'card_done' | 'card_failed'
   | 'task_started' | 'task_done' | 'task_failed' | 'task_retry' | 'learnings'
   | 'docs_started' | 'docs_done' | 'docs_failed' | 'docs_skipped'
+  | 'progress' | 'checkpoint' | 'plan_edited' | 'card_stopped' | 'card_guidance' | 'final_verified'
   | 'aborted' | 'halted' | 'finished';
 
 export interface BoardEvent {

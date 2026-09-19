@@ -23,6 +23,9 @@ const KNOWN_URLS: Record<string, string> = {
   mistral: 'https://api.mistral.ai/v1', fireworks: 'https://api.fireworks.ai/inference/v1',
 };
 
+/** The endpoints /provider has a default URL for, so the prompt can offer them as it is typed. */
+export const KNOWN_PROVIDERS: string[] = Object.keys(KNOWN_URLS);
+
 /** `/provider` lists, `/provider <name>` defines or edits one, `/provider <name> key` re-enters its key, `/provider <name> model` re-picks its model. */
 export async function providerCommand(repoRoot: string, session: Session, args: string[], prompts: Prompts = terminalPrompts): Promise<string[]> {
   const [name, sub] = args;

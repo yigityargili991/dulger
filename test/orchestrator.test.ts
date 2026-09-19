@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
@@ -270,7 +270,10 @@ test('worktreeSetup runs once in every new worktree, before its first agent', as
   const ran = readFileSync(setupLog, 'utf8').trim().split('\n');
   assert.equal(ran.length, 4, 'three cards and the docs worktree');
   assert.equal(new Set(ran).size, 4, 'each worktree was set up exactly once');
-  for (const id of ['c1', 'c2', 'c3', 'docs']) assert.ok(ran.includes(store.worktreeDir(repo, 'run-setup', id)), `${id} worktree was set up`);
+  // The shell reports the physical path ($PWD resolves symlinks, e.g. /var -> /private/var on macOS);
+  // the expected path keeps the logical one. Compare physical to physical.
+  const phys = (p: string) => p.replace(tmpdir(), realpathSync(tmpdir()));
+  for (const id of ['c1', 'c2', 'c3', 'docs']) assert.ok(ran.includes(phys(store.worktreeDir(repo, 'run-setup', id))), `${id} worktree was set up`);
   assert.ok(!events.some((e) => e.includes('setup failed')));
 
   const failing = createBoard(repo, 'demo', 'run-setup-fail');
@@ -278,7 +281,8 @@ test('worktreeSetup runs once in every new worktree, before its first agent', as
   await orch2.plan();
   await orch2.execute();
   assert.ok(events.some((e) => e.includes('worktree setup failed') && e.includes('boom')), 'failure is logged with stderr');
-  assert.deepEqual(failing.cards.map((c) => c.status), ['done', 'done', 'done'], 'a failed setup does not stop the card');
+  assert.deepEqual(failing.cards.map((c) => c.status), ['failed', 'failed', 'blocked'], 'failed setup stops agent calls and remains recoverable');
+  assert.ok(failing.cards.filter((c) => c.status === 'failed').every((c) => c.failure === 'infrastructure'));
 });
 
 test('plan(feedback) revises in the same planner session and records assumptions', async () => {

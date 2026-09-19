@@ -1,3 +1,4 @@
+import { transitionCard } from './lifecycle.ts';
 import { mkdirSync, readFileSync, writeFileSync, renameSync, appendFileSync, existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { STATE_DIR } from '../config.ts';
@@ -119,8 +120,7 @@ export function applyReplan(board: Board, plan: PlannerResult): { replaced: Card
   const replaced = board.cards.filter((c) => c.status === 'backlog' || c.status === 'blocked');
   validateBoard({ ...board, cards: [...board.cards, ...added] });
   for (const c of replaced) {
-    c.status = 'replaced';
-    c.reason = `replaced by replan ${n}`;
+    transitionCard(c, 'replaced', `replaced by replan ${n}`);
   }
   board.cards.push(...added);
   board.replans = n;

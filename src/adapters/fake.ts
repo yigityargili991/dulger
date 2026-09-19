@@ -1,8 +1,9 @@
+import { FAKE_CAPABILITIES } from './capabilities.ts';
 // A scripted adapter for tests and demos: no tokens, deterministic, fast.
 // Responses are looked up by role marker in the system prompt (dulger puts `[role:<name>]` there).
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import type { AgentRole, CheckResult, DocsResult, PlannerResult, WorkerResult } from '../types.ts';
+import type { AgentRole, CheckResult, DocsResult, PlannerResult, ReporterResult, WorkerResult } from '../types.ts';
 import type { Adapter, AdapterRunOptions, AdapterResult } from './types.ts';
 
 export type FakeScript = {
@@ -11,11 +12,12 @@ export type FakeScript = {
   worker?: (opts: AdapterRunOptions, callIndex: number) => WorkerResult;
   checker?: (opts: AdapterRunOptions, callIndex: number) => CheckResult;
   docs?: (opts: AdapterRunOptions, callIndex: number) => DocsResult;
+  reporter?: (opts: AdapterRunOptions, callIndex: number) => ReporterResult;
   delayMs?: number;
 };
 
 export function roleFromSystemPrompt(systemPrompt: string): AgentRole | undefined {
-  const m = systemPrompt.match(/\[role:(planner|worker|checker|docs)\]/);
+  const m = systemPrompt.match(/\[role:(planner|worker|checker|docs|reporter)\]/);
   return m?.[1] as AgentRole | undefined;
 }
 
@@ -50,12 +52,17 @@ export const DEFAULT_FAKE_SCRIPT: FakeScript = {
     writeFileSync(join(opts.cwd, 'DOCS.md'), '# Docs\n\nWritten by the fake docs agent.\n');
     return { summary: 'Wrote DOCS.md', filesChanged: ['DOCS.md'] };
   },
+  reporter(opts, i) {
+    const card = opts.prompt.match(/^## Card (\S+):/m)?.[1] ?? 'unknown';
+    return { note: `Fake progress on ${card} (note ${i + 1}): the worker is writing files`, attention: i === 1 ? 'the worker keeps rewriting the same file' : '' };
+  },
 };
 
 export function createFakeAdapter(script: FakeScript = DEFAULT_FAKE_SCRIPT): Adapter {
   const counters: Record<string, number> = {};
   return {
     name: 'fake',
+    capabilities: FAKE_CAPABILITIES,
     async run(opts): Promise<AdapterResult> {
       const role = roleFromSystemPrompt(opts.systemPrompt) ?? 'worker';
       const i = counters[role] ?? 0;
@@ -76,6 +83,7 @@ export function createFakeAdapter(script: FakeScript = DEFAULT_FAKE_SCRIPT): Ada
       if (role === 'planner') { const p = script.planner ?? DEFAULT_FAKE_SCRIPT.planner!; output = typeof p === 'function' ? p(opts, i) : p; }
       else if (role === 'worker') output = (script.worker ?? DEFAULT_FAKE_SCRIPT.worker!)(opts, i);
       else if (role === 'checker') output = (script.checker ?? DEFAULT_FAKE_SCRIPT.checker!)(opts, i);
+      else if (role === 'reporter') output = (script.reporter ?? DEFAULT_FAKE_SCRIPT.reporter!)(opts, i);
       else output = (script.docs ?? DEFAULT_FAKE_SCRIPT.docs!)(opts, i);
 
       const text = JSON.stringify(output);

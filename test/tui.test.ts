@@ -6,6 +6,7 @@ import { cell, fit, logLine, plainText, spread, width, wrap } from '../src/tui/t
 import { createEditor, edit, submit } from '../src/tui/editor.ts';
 import { columns, render, type ViewState } from '../src/tui/view.ts';
 import { glyphs, resolveIcons } from '../src/tui/theme.ts';
+import type { PredictContext } from '../src/replCommands.ts';
 import type { AgentStatus, Board, Card } from '../src/types.ts';
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -119,6 +120,30 @@ test('render shows the open card with its tasks and the agent history', () => {
   assert.match(text, /Read foo\.ts/);
 });
 
+test('a fresh progress note takes the card line; a stale one gives it back to the worker', () => {
+  const worker: AgentStatus = { id: 'a1', role: 'worker', harness: 'fake', cardId: 'c1', taskId: 't1', state: 'running', turns: 2, history: [], startedAt: 0, lastMessage: 'Read foo.ts' };
+  const reporter: AgentStatus = { id: 'a2', role: 'reporter', harness: 'fake', cardId: 'c1', state: 'running', turns: 1, history: [], startedAt: 0, lastMessage: 'summarising' };
+  // Only the board area (above the agents list) speaks for the card; the agent list below may say anything.
+  const boardArea = (f: ReturnType<typeof render>) =>
+    f.lines.slice(0, f.lines.findIndex((l) => plain(l).includes('agents'))).map(plain).join('\n');
+
+  const fresh = card('c1', 'in_progress', { progress: { at: new Date(1000 - 30_000).toISOString(), note: 'writing greet.js' } });
+  const box = boardArea(render(state(board([fresh]), { agents: [worker, reporter], selected: 'c1' })));
+  assert.match(box, /◔ writing greet\.js/, 'the note replaces the raw agent line');
+  assert.ok(!box.includes('Read foo.ts'), 'the worker message stands back');
+
+  const stale = card('c1', 'in_progress', { progress: { at: new Date(1000 - 6 * 60_000).toISOString(), note: 'an old note' } });
+  const box2 = boardArea(render(state(board([stale]), { agents: [worker, reporter], selected: 'c1' })));
+  assert.match(box2, /⚒ Read foo\.ts/, 'a stale note gives the line back to the worker');
+  assert.ok(!box2.includes('an old note') && !box2.includes('summarising'), 'neither the stale note nor the reporter speaks for the card');
+
+  const flagged = card('c1', 'in_progress', { progress: { at: new Date(1000 - 30_000).toISOString(), note: 'writing greet.js and its test', attention: 'rewriting the same file repeatedly' } });
+  const detail = boardArea(render(state(board([flagged]), { agents: [worker], open: 'c1', selected: 'c1' })));
+  assert.match(detail, /Progress\s+00:30 ago/);
+  assert.match(detail, /writing greet\.js and its test/);
+  assert.match(detail, /! rewriting the same file repeatedly/);
+});
+
 test('resolveIcons: the environment wins, then the preference, then the terminal', () => {
   const saved = { ...process.env };
   try {
@@ -195,6 +220,81 @@ test('compact board keyboard navigation follows the displayed list across status
     key({ name: 'down' }); key({ name: 'enter' });
     assert.match(lines.map(plain).join('\n'), /c2 Card c2/);
     assert.doesNotMatch(lines.map(plain).join('\n'), /c1 Card c1/);
+  } finally { tui.close(); }
+});
+
+test('the full-screen prompt draws the prediction, and Tab takes it', async () => {
+  const { createTui } = await import('../src/tui/tui.ts');
+  const { suggestPlan } = await import('../src/replCommands.ts');
+  const b = board([card('c1', 'backlog'), card('c2', 'done')]);
+  let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
+  let lines: string[] = [];
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
+    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  } });
+  const promptLine = () => plain(lines.find((l) => l.includes('›')) ?? '');
+  const bar = () => plain(lines[lines.length - 1]!);
+  try {
+    const answer = tui.ask('plan', 'dispatch the plan?', suggestPlan);
+    assert.match(promptLine(), /plan › go /, 'Enter dispatches, so go is drawn after the cursor');
+    assert.match(bar(), /tab .*take/, 'and Tab is offered as the way to take it');
+
+    key({ name: 'char', ch: 'c' });
+    assert.match(promptLine(), /plan › cancel/, 'the ghost is what is left of the word');
+
+    key({ name: 'tab' });
+    assert.match(promptLine(), /plan › cancel/, 'Tab inserted the ghost, so it is text now');
+    assert.match(bar(), /tab .*board/, 'a word that is already complete leaves nothing to take');
+
+    key({ name: 'enter' });
+    assert.equal(await answer, 'cancel');
+  } finally { tui.close(); }
+});
+
+test('a mid-line cursor leaves the prediction out, and Tab then changes focus', async () => {
+  const { createTui } = await import('../src/tui/tui.ts');
+  const { suggestPlan } = await import('../src/replCommands.ts');
+  const b = board([card('c1', 'backlog')]);
+  let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
+  let lines: string[] = [];
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
+    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  } });
+  const promptLine = () => plain(lines.find((l) => l.includes('›')) ?? '');
+  const bar = () => plain(lines[lines.length - 1]!);
+  try {
+    const answer = tui.ask('plan', 'dispatch the plan?', suggestPlan);
+    key({ name: 'char', ch: 'c' });
+    key({ name: 'left' });
+    assert.equal(promptLine().trim(), 'plan › c', 'the ghost belongs after the cursor, which is not there');
+    assert.match(bar(), /tab .*board/, 'with nothing to take, Tab moves on');
+    key({ name: 'tab' });
+    assert.match(bar(), /select/, 'the board has the keys now');
+    key({ name: 'tab' });
+    assert.match(bar(), /tab .*board/, 'and Tab brings the prompt back');
+    key({ name: 'ctrl', ch: 'c' });
+    assert.equal(await answer, undefined, 'the prompt was never submitted');
+  } finally { tui.close(); }
+});
+
+test('the full-screen prompt completes commands the same way the plain one does', async () => {
+  const { createTui } = await import('../src/tui/tui.ts');
+  const { suggestCommand } = await import('../src/replCommands.ts');
+  const b = board([card('c1', 'backlog')]);
+  let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
+  let lines: string[] = [];
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
+    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  } });
+  const ctx: PredictContext = { harnesses: ['claude', 'codex', 'fake'], providers: ['openai'], roles: ['planner', 'worker', 'checker', 'docs'],
+    aliases: [], runIds: ['r1'], cards: [], memory: [] };
+  try {
+    const answer = tui.ask('dulger', 'goal or command', (line) => suggestCommand(line, ctx));
+    for (const ch of '/mod') key({ name: 'char', ch });
+    assert.match(plain(lines.find((l) => l.includes('›')) ?? ''), /dulger › \/model/, 'the rest of the command is drawn');
+    key({ name: 'tab' });
+    key({ name: 'enter' });
+    assert.equal(await answer, '/model');
   } finally { tui.close(); }
 });
 

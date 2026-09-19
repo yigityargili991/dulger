@@ -1,3 +1,4 @@
+import { CODEX_CAPABILITIES } from './capabilities.ts';
 // Adapter for OpenAI Codex CLI: `codex exec --json ...`.
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -12,6 +13,8 @@ export interface CodexAdapterOptions {
 }
 
 export function buildCodexArgs(opts: AdapterRunOptions, files: { schema?: string; lastMessage: string }, extra: CodexAdapterOptions): string[] {
+  // Codex exec has no all-tools-off option; even disabling shell tools leaves apply_patch.
+  if (opts.access === 'none') throw new Error('Codex CLI does not support tool-free reporting; set roles.reporter.harness to claude or an API provider, or disable progress reporting');
   const args = ['exec'];
   if (opts.resumeSessionId) args.push('resume', opts.resumeSessionId);
   args.push('--json', '--skip-git-repo-check', '-o', files.lastMessage);
@@ -102,6 +105,7 @@ function toolStarted(item: Record<string, unknown> | undefined): AgentEvent[] {
 export function createCodexAdapter(extra: CodexAdapterOptions = {}): Adapter {
   return {
     name: 'codex',
+    capabilities: CODEX_CAPABILITIES,
     async run(opts): Promise<AdapterResult> {
       const dir = mkdtempSync(join(tmpdir(), 'dulger-codex-'));
       const files = { schema: opts.schema ? join(dir, 'schema.json') : undefined, lastMessage: join(dir, 'last.txt') };

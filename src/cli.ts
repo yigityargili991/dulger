@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { preflight, preflightText } from './preflight.ts';
 // dulger — command line entry point.
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
@@ -13,7 +14,7 @@ import type { HarnessName } from './types.ts';
 const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / Codex)
 
 Usage:
-  dulger                          interactive prompt: type goals, /help for commands
+  dulger                          choose harness and models, then enter goals (/help for commands)
   dulger init [path]              create a git repository with a first commit, ready for runs
   dulger run "<goal>" [options]   plan a board for the goal, then execute it
   dulger order "<goal>" [options] plan in a conversation with the planner, then execute
@@ -23,6 +24,7 @@ Usage:
   dulger board [runId]            print a run's board (latest when omitted)
   dulger report [runId] [--full]  print what a run landed (latest when omitted; --full: every summary, review and note)
   dulger runs                     list runs
+  dulger doctor                   check readiness without a model call
   dulger clean                    remove leftover worktrees and wip branches
   dulger memory [list]            show what agents learned about this repo
   dulger memory add "<text>"      record a learning by hand
@@ -40,8 +42,11 @@ Options:
   --no-routing                    use harness defaults instead of task tiers
   --base-url <url>                 API base URL for the selected API harness
   --api-key-env <name>             environment variable holding its API key
+  --current-settings              resume/retry using current settings instead of the saved run settings
   --yes                           skip the board approval pause
   --no-docs                       skip the documentation agent
+  --no-progress                   no live progress notes on in-progress cards
+  --progress-interval <sec>       how often a lightweight agent notes each running card's progress (default: 120)
   --merge                         merge the result branch into the current branch when done
   --allow-dirty                   run even with uncommitted changes
   --budget <usd>                  stop the run (resumable) once it has spent this much
@@ -80,6 +85,8 @@ async function main(argv: string[]): Promise<void> {
       harness: { type: 'string' }, concurrency: { type: 'string' }, 'max-attempts': { type: 'string' }, 'max-replans': { type: 'string' }, model: { type: 'string' },
       'no-routing': { type: 'boolean' }, 'base-url': { type: 'string' }, 'api-key-env': { type: 'string' },
       budget: { type: 'string' }, 'card-budget': { type: 'string' }, full: { type: 'boolean' },
+      'progress-interval': { type: 'string' }, 'no-progress': { type: 'boolean' },
+      'current-settings': { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
@@ -102,6 +109,8 @@ async function main(argv: string[]): Promise<void> {
   if (v['max-attempts']) overrides.maxAttempts = Number(v['max-attempts']);
   if (v['max-replans']) overrides.maxReplans = Number(v['max-replans']);
   if (v['no-docs']) overrides.docs = false;
+  if (v['no-progress']) overrides.progressIntervalSec = 0;
+  if (v['progress-interval']) overrides.progressIntervalSec = Number(v['progress-interval']);
   if (v.budget) overrides.budgetUsd = Number(v.budget);
   if (v['card-budget']) overrides.cardBudgetUsd = Number(v['card-budget']);
   if (v['no-routing']) overrides.routing = { ...DEFAULT_CONFIG.routing, enabled: false };
@@ -117,8 +126,8 @@ async function main(argv: string[]): Promise<void> {
     overrides.providers = { [name]: { ...PROVIDER_DEFAULTS, ...provider, baseUrl, ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
   }
   const config = readConfig(repoRoot, overrides);
-  if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
-  const runOpts = { quiet: Boolean(v.quiet), merge: Boolean(v.merge) };
+  if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs', 'reporter'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
+  const runOpts = { currentSettings: Boolean(v['current-settings']), quiet: Boolean(v.quiet), merge: Boolean(v.merge) };
 
   switch (cmd) {
     case undefined:
@@ -151,6 +160,12 @@ async function main(argv: string[]): Promise<void> {
     case 'board': showBoard(repoRoot, arg); break;
     case 'report': showReport(repoRoot, arg, { full: Boolean(v.full) }); break;
     case 'runs': showRuns(repoRoot); break;
+    case 'doctor': {
+      const checks = preflight(repoRoot, config);
+      console.log(preflightText(checks));
+      if (checks.some((c) => c.status === 'error')) process.exitCode = 1;
+      break;
+    }
     case 'clean': clean(repoRoot); break;
     case 'memory': memoryCommand(repoRoot, config, arg ?? 'list', positionals.slice(2)); break;
     default:

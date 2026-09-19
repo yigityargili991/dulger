@@ -12,6 +12,7 @@ const tool = (name: string, description: string, properties: object, required: s
 });
 
 export function apiTools(opts: AdapterRunOptions) {
+  if (opts.access === 'none') return [];
   const tools = [
     tool('list_files', 'List one directory, relative to the worktree. Skips git, dulger and dependencies.', { path: str }, ['path']),
     tool('read_file', 'Read a UTF-8 file, optionally from a 1-based line offset (at most 24000 characters).', { path: str, line: { type: 'integer', minimum: 1 } }, ['path']),

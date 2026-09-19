@@ -50,6 +50,14 @@ export function edit(e: Editor, k: Key): 'submit' | undefined {
   }
 }
 
+/** Insert text at the cursor, which is what taking a prediction does. */
+export function insertText(e: Editor, text: string): void {
+  const a = [...e.text];
+  a.splice(e.cursor, 0, ...text);
+  e.text = a.join('');
+  e.cursor = Math.min(a.length, e.cursor + [...text].length);
+}
+
 function recall(e: Editor, index: number): void {
   if (index < -1 || index >= e.history.length) return;
   if (e.index === -1) e.draft = e.text;

@@ -6,8 +6,8 @@ export interface AdapterRunOptions {
   cwd: string;
   /** JSON schema the final answer must match. */
   schema?: object;
-  /** readonly = planner/checker, write = worker/docs. */
-  access: 'readonly' | 'write';
+  /** none = digest-only reporter, readonly = planner/checker, write = worker/docs. */
+  access: 'none' | 'readonly' | 'write';
   model?: string;
   resumeSessionId?: string;
   maxBudgetUsd?: number;
@@ -48,6 +48,7 @@ export interface AdapterResult {
 }
 
 export interface Adapter {
+  capabilities?: import('./capabilities.ts').HarnessCapabilities;
   name: string;
   run(opts: AdapterRunOptions): Promise<AdapterResult>;
 }

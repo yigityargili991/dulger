@@ -1,3 +1,10 @@
+import { browseRuns, recoverableRuns, reviewRun } from './runViews.ts';
+import { preflight, preflightText } from './preflight.ts';
+import { editPlan } from './planEditor.ts';
+import { acquireRunLock } from './board/lock.ts';
+import { originalSettings } from './runSettings.ts';
+import { pager } from './tui/pager.ts';
+import { select } from './tui/select.ts';
 // The interactive prompt: type a goal to run it, slash-commands for everything else. The run itself
 // looks exactly like `dulger run`; between runs you decide whether the result merges into your branch.
 import { DEFAULT_CONFIG, harnessNames, type Config, type RoleConfig } from './config.ts';
@@ -7,8 +14,11 @@ import * as git from './git/worktree.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
 import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
-import { configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
-import { ensureKeys, providerCommand } from './replProviders.ts';
+import { MODEL_ALIASES, MODEL_ROLES, configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
+import { KNOWN_PROVIDERS, ensureKeys, providerCommand } from './replProviders.ts';
+import { SETTING_KEYS, suggestCommand, type PredictContext } from './replCommands.ts';
+import { openMemory } from './context/memory.ts';
+import { setupSession } from './sessionSetup.ts';
 import type { AgentRole, HarnessName } from './types.ts';
 
 export interface Session {
@@ -22,18 +32,22 @@ export interface Session {
 }
 
 const HELP = `Type a goal to plan and run it. Commands:
+  /setup              choose harness, model set and per-role overrides in a menu
   /order [goal]       plan with the planner in a conversation, then dispatch
   /board [runId]      print a run's board (latest when omitted)
   /report [runId] [full]  print what a run landed (full: every summary, review and note)
-  /runs               list runs
-  /resume [runId]     continue an interrupted run
+  /runs               browse runs, recovery actions and diffs
+  /review [runId]     review changes and verification before merging
+  /edit [runId]       edit an unstarted plan
+  /doctor             check readiness without a model call
+  /resume [runId] [current]  resume with saved settings (current explicitly uses this session)
   /retry <card> [runId]  give a failed card one more review round, then continue the run
   /merge [runId]      merge a run's result branch into the current branch
   /memory [list|add "<text>"|rm <id>|compact|path]
   /clean              remove leftover worktrees and wip branches
   /status             show settings and effective models
   /model              show every role's backend, model and routing
-  /model <role>       show one role: planner | worker | checker | docs
+  /model <role>       show one role: planner | worker | checker | docs | reporter
   /model <role> <choice>             e.g. planner fable, worker deepseek, checker sonnet
   /model <role> <harness> [model]    e.g. worker ollama qwen3:8b
   /model <role> auto|reset           unpin on its backend | restore repository settings
@@ -45,21 +59,34 @@ Model shorthand: fable, opus, sonnet, haiku, astra, sol, luna.
 Role choices override global /model pins. Changes are session-only until /config save.
 Settings (each shows its current value when given no argument):
   /harness <name>  (claude, codex, fake, or a configured provider)   /model <name>|off
-  /attempts <n>                     /replans <n>                  /docs on|off
-  /yes on|off                       /quiet on|off                 /dirty on|off
-  /routing on|off                   /tui on|off                   /icons nerd|unicode|ascii|auto
-  /budget <usd>|off                 /card-budget <usd>|off
+  /concurrency <n>                  /attempts <n>                 /replans <n>
+  /docs on|off                      /yes on|off                   /quiet on|off
+  /progress on|off|<sec>            /dirty on|off                 /routing on|off
+  /tui on|off                       /icons nerd|unicode|ascii|auto /budget <usd>|off
+  /card-budget <usd>|off
   /set <key> <value>  the same settings in one command
   /help               this text
-  /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)`;
+  /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)
+What the next word can be is shown dim after the cursor; Tab takes it, and when several fit they are listed.`;
 
 export async function repl(repoRoot: string, session: Session, version: string): Promise<void> {
   const config = () => sessionConfig(repoRoot, session);
+  if (process.stdin.isTTY && process.stdout.isTTY && !session.yes && !session.quiet && config().tui.enabled) {
+    if (!await setupSession(repoRoot, session)) return;
+  }
   console.log(`${bold(cyan('dulger'))} ${dim(version)}  ${dim(repoRoot)} ${dim('on')} ${git.currentBranch(repoRoot)}`);
   console.log(dim(`${settingsLine(session, config())}\ntype a goal, or /help`));
 
+  if (process.stdin.isTTY && process.stdout.isTTY && !session.yes && !session.quiet && config().tui.enabled) {
+    const unfinished = recoverableRuns(repoRoot);
+    if (unfinished.length) {
+      const next = await select({ title: 'Unfinished runs', description: `${unfinished.length} run(s) can be recovered.`, choices: [{ value: 'new', label: 'Start a new goal' }, { value: 'runs', label: 'Browse runs and recovery actions' }] });
+      if (next === 'runs') await command('/runs', repoRoot, session, config);
+    }
+  }
   while (true) {
-    const line = await ask(`\n${bold(cyan('dulger'))} ${dim('›')} `);
+    const ctx = predictContext(repoRoot, config());
+    const line = await ask(`\n${bold(cyan('dulger'))} ${dim('›')} `, { suggest: (text) => suggestCommand(text, ctx) });
     if (line === undefined) break;
     const text = line.trim();
     if (!text) continue;
@@ -89,6 +116,7 @@ async function goal(text: string, repoRoot: string, session: Session, config: Co
 }
 
 async function offerMerge(repoRoot: string, runId: string, runBranch: string): Promise<void> {
+  if (process.stdin.isTTY && process.stdout.isTTY) { await reviewRun(repoRoot, runId, (id) => mergeRun(repoRoot, id)); return; }
   const branch = git.currentBranch(repoRoot);
   const answer = await ask(`\nMerge ${green(runBranch)} into ${bold(branch)}? ${dim('[Y/n]')} `);
   if (answer === undefined || /^\s*n/i.test(answer)) { console.log(dim(`left on ${runBranch}; /merge ${runId} does it later`)); return; }
@@ -103,6 +131,10 @@ export async function command(text: string, repoRoot: string, session: Session, 
     case 'q': case 'quit': case 'exit': return true;
     case 'help': case '?': console.log(HELP); return false;
     case 'status': console.log(settingsLine(session, config()) + '\n' + modelOverview(repoRoot, session)); return false;
+    case 'setup':
+      if (await setupSession(repoRoot, session)) console.log(modelOverview(repoRoot, session));
+      else console.log(dim('setup cancelled; settings unchanged'));
+      return false;
     case 'provider':
       for (const line of await providerCommand(repoRoot, session, args)) console.log(line);
       return false;
@@ -116,11 +148,30 @@ export async function command(text: string, repoRoot: string, session: Session, 
       showReport(repoRoot, args.find((a) => a !== 'full' && a !== '--full'), { full });
       return false;
     }
-    case 'runs': showRuns(repoRoot); return false;
+    case 'doctor': await pager('Readiness checks', preflightText(preflight(repoRoot, config()))); return false;
+    case 'review':
+      if (!(process.stdin.isTTY && process.stdout.isTTY)) { showReport(repoRoot, args[0], { full: true }); return false; }
+      await reviewRun(repoRoot, latestRun(repoRoot, args[0]), (id) => mergeRun(repoRoot, id)); return false;
+    case 'edit': {
+      const id = latestRun(repoRoot, args[0]);
+      const release = acquireRunLock(repoRoot, id);
+      try { const board = store.loadBoard(repoRoot, id); await editPlan(repoRoot, board, originalSettings(board, config())); }
+      finally { release(); }
+      return false;
+    }
+    case 'runs':
+      if (!(process.stdin.isTTY && process.stdout.isTTY) || session.quiet || !config().tui.enabled) showRuns(repoRoot);
+      else await browseRuns(repoRoot, {
+        resume: async (id) => { await command(`/resume ${id}`, repoRoot, session, config); },
+        retry: async (id, card) => { await command(`/retry ${card} ${id}`, repoRoot, session, config); },
+        edit: async (id) => { await command(`/edit ${id}`, repoRoot, session, config); },
+        merge: (id) => mergeRun(repoRoot, id),
+      });
+      return false;
     case 'resume': {
-      const r = await resumeRun(repoRoot, config(), args[0], { quiet: session.quiet, merge: false, interactive: true });
+      const r = await resumeRun(repoRoot, config(), args[0] === 'current' ? undefined : args[0], { currentSettings: args.includes('current'), quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
-        const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0]));
+        const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0] === 'current' ? undefined : args[0]));
         await offerMerge(repoRoot, board.runId, board.runBranch);
       }
       return false;
@@ -162,19 +213,45 @@ export async function command(text: string, repoRoot: string, session: Session, 
       else await setting(repoRoot, session, config, args[0], args.slice(1).join(' '));
       return false;
     default:
-      if (SETTINGS.includes(cmd)) { await setting(repoRoot, session, config, cmd, rest); return false; }
+      if (SETTING_KEYS.includes(cmd)) { await setting(repoRoot, session, config, cmd, rest); return false; }
       throw new CliError(`unknown command /${cmd} (try /help)`);
   }
 }
 
-const SETTINGS = ['harness', 'concurrency', 'attempts', 'replans', 'model', 'docs', 'yes', 'quiet', 'dirty', 'tui', 'icons', 'routing', 'budget', 'card-budget'];
+/** What a line at the prompt can be predicted to want next, as the repository stands right now. */
+function predictContext(repoRoot: string, config: Config): PredictContext {
+  const providers = [...Object.keys(config.providers), ...KNOWN_PROVIDERS.filter((p) => !(p in config.providers))]
+    .filter((p) => !['claude', 'codex', 'fake'].includes(p));
+  const runIds = store.listRuns(repoRoot);
+  return {
+    harnesses: harnessNames(config), providers, aliases: MODEL_ALIASES, roles: MODEL_ROLES,
+    runIds, cards: failedCards(repoRoot, runIds.at(-1)), memory: memoryIds(repoRoot, config),
+  };
+}
+
+/** Predicted ids come from files that can be missing or half-written; the prompt must work all the same. */
+function failedCards(repoRoot: string, runId: string | undefined): string[] {
+  try {
+    return runId ? store.loadBoard(repoRoot, runId).cards.filter((c) => c.status === 'failed').map((c) => c.id) : [];
+  } catch {
+    return [];
+  }
+}
+
+function memoryIds(repoRoot: string, config: Config): string[] {
+  try {
+    return openMemory(repoRoot, config.memory).load().map((l) => l.id);
+  } catch {
+    return [];
+  }
+}
 
 /** Change a setting, or show its current value when no value is given. */
 async function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): Promise<void> {
   if (key === 'model') { console.log(configureModel(repoRoot, session, value)); if (process.stdin.isTTY) await ensureKeys(config()); return; }
   if (key === 'harness' && value && !harnessNames(config()).includes(value)) throw new CliError(`harness is one of ${harnessNames(config()).join(', ')}`);
   if (!value) {
-    if (!SETTINGS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
+    if (!SETTING_KEYS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
     console.log(`${key} ${bold(currentValue(session, config(), key))}`);
     return;
   }
@@ -192,6 +269,7 @@ function currentValue(s: Session, c: Config, key: string): string {
     case 'replans': return String(c.maxReplans);
     case 'model': return s.model ?? (c.routing.enabled ? 'auto tiers' : 'default');
     case 'docs': return onOff(c.docs);
+    case 'progress': return c.progressIntervalSec === 0 ? 'off' : `${c.progressIntervalSec}s`;
     case 'yes': return onOff(s.yes);
     case 'quiet': return onOff(s.quiet);
     case 'dirty': return onOff(s.allowDirty);
@@ -214,6 +292,12 @@ function set(session: Session, key = '', value = ''): void {
     case 'attempts': session.overrides.maxAttempts = Math.max(1, num(value)); return;
     case 'replans': session.overrides.maxReplans = num(value); return;
     case 'docs': session.overrides.docs = on(value); return;
+    case 'progress':
+      // on restores the default interval; off stops the reporter; a number is seconds between notes.
+      session.overrides.progressIntervalSec = /^(on|true|yes)$/i.test(value)
+        ? DEFAULT_CONFIG.progressIntervalSec
+        : /^(off|false|no)$/i.test(value) ? 0 : Math.max(0, num(value));
+      return;
     case 'yes': session.yes = on(value); return;
     case 'quiet': session.quiet = on(value); return;
     case 'dirty': session.allowDirty = on(value); return;
@@ -234,6 +318,6 @@ function set(session: Session, key = '', value = ''): void {
 }
 
 function settingsLine(s: Session, c: Config): string {
-  const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui'].filter(Boolean).join(' ');
+  const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui', !(c.progressIntervalSec > 0) && 'no-progress'].filter(Boolean).join(' ');
   return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · global model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')}${flags ? yellow(` · ${flags}`) : ''}`;
 }

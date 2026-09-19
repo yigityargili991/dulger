@@ -1,0 +1,242 @@
+import { test, type TestContext } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir, hostname } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { DEFAULT_CONFIG, roleConfig, type Config } from '../src/config.ts';
+import * as git from '../src/git/worktree.ts';
+import * as store from '../src/board/store.ts';
+import { createBoard } from '../src/board/create.ts';
+import { acquireRunLock } from '../src/board/lock.ts';
+import { createOrchestrator } from '../src/runner/orchestrator.ts';
+import { createFakeAdapter, DEFAULT_FAKE_SCRIPT } from '../src/adapters/fake.ts';
+import { registerAdapter, getAdapter } from '../src/adapters/index.ts';
+import { capabilities } from '../src/adapters/capabilities.ts';
+import { snapshotSettings, originalSettings, settingsChanges } from '../src/runSettings.ts';
+import { saveProfile, readProfiles, applyProfile } from '../src/profiles.ts';
+import { sessionConfig } from '../src/replModels.ts';
+import { preflight, cardModelIssues } from '../src/preflight.ts';
+import { editPlan, validatePlanDraft } from '../src/planEditor.ts';
+import { runStatus, recoverableRuns } from '../src/runViews.ts';
+import { mergeRun, runBoard, resumeRun } from '../src/commands.ts';
+import { runVerification } from '../src/runner/verify.ts';
+import type { Session } from '../src/repl.ts';
+import type { PlannerResult } from '../src/types.ts';
+import type { Selection, SelectOptions } from '../src/tui/select.ts';
+
+process.env.DULGER_DATA_DIR = mkdtempSync(join(tmpdir(), 'dulger-feature-data-'));
+const config: Config = { ...structuredClone(DEFAULT_CONFIG), harness: 'fake', docs: false, progressIntervalSec: 0, concurrency: 1, maxReplans: 0 };
+function fixture(t: TestContext) {
+  const root = mkdtempSync(join(tmpdir(), 'dulger-features-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  git.git(root, ['init', '-q', '-b', 'main']);
+  git.git(root, ['config', 'user.name', 'Test']); git.git(root, ['config', 'user.email', 'test@test']);
+  writeFileSync(join(root, 'README.md'), 'hello\n'); git.git(root, ['add', '.']); git.git(root, ['commit', '-qm', 'initial']);
+  return root;
+}
+const plan = (verify: string[] = []): PlannerResult => ({ cards: [{ id: 'c1', title: 'One', description: 'Implement one thing', acceptanceCriteria: ['done'], dependsOn: [], verify, tasks: [{ id: 't1', title: 'Implement', instructions: 'Write something' }] }] });
+const goodCheck = () => ({ pass: true, feedback: [], summary: 'looks good' });
+const fake = () => createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, planner: plan(), checker: goodCheck, delayMs: 1 });
+
+test('snapshot excludes unknown credential fields, is independent and detects changes', () => {
+  const c = structuredClone(config);
+  (c as unknown as Record<string, unknown>).apiKey = 'SECRET';
+  (c.providers.openai as unknown as Record<string, unknown>).apiKey = 'SECRET';
+  const snapshot = snapshotSettings(c);
+  assert.ok(!JSON.stringify(snapshot).includes('SECRET'));
+  c.concurrency = 20;
+  assert.equal(snapshot.config.concurrency, 1);
+  assert.deepEqual(settingsChanges(snapshot.config, c), ['concurrency']);
+  const b = { settings: snapshot } as Parameters<typeof originalSettings>[0];
+  assert.equal(originalSettings(b, c).concurrency, 1);
+  c.providers.openai!.baseUrl = 'https://host/v1?api_key=SECRET';
+  assert.throws(() => snapshotSettings(c), /must not contain/);
+});
+
+test('profiles preserve the complete model mix and disabled budgets above repository defaults', (t) => {
+  const root = fixture(t);
+  mkdirSync(join(root, '.dulger'));
+  writeFileSync(join(root, '.dulger/config.json'), JSON.stringify({ budgetUsd: 99, roles: { worker: { model: 'old', maxBudgetUsd: 9 } } }));
+  const c = structuredClone(config); c.roles.checker = { harness: 'codex', model: 'custom' };
+  saveProfile(root, 'Local development', c);
+  assert.throws(() => saveProfile(root, 'Local development', c), /already exists/);
+  assert.throws(() => saveProfile(root, '../escape', c), /1–60/);
+  const session: Session = { overrides: {}, model: 'old-global', modelRoles: { worker: { model: 'stale' } }, yes: true, quiet: false, allowDirty: false };
+  applyProfile(session, readProfiles(root)['Local development']!);
+  const effective = sessionConfig(root, session);
+  assert.equal(effective.budgetUsd, undefined);
+  assert.equal(roleConfig(effective, 'worker').model, undefined);
+  assert.equal(roleConfig(effective, 'worker').maxBudgetUsd, undefined);
+  assert.equal(roleConfig(effective, 'checker').model, 'custom');
+  assert.equal(session.yes, true);
+});
+
+test('run locks exclude another process, release cleanly, and recover dead owners', (t) => {
+  const root = fixture(t); const b = createBoard(root, 'test', 'locked');
+  const release = acquireRunLock(root, b.runId);
+  assert.throws(() => acquireRunLock(root, b.runId), /already in use/);
+  const code = `import { acquireRunLock } from ${JSON.stringify(new URL('../src/board/lock.ts', import.meta.url).href)}; try { acquireRunLock(${JSON.stringify(root)}, 'locked'); process.exit(2); } catch { process.exit(0); }`;
+  assert.equal(spawnSync(process.execPath, ['--input-type=module', '-e', code]).status, 0);
+  release(); release();
+  const dir = join(store.runDir(root, b.runId), 'execution.lock');
+  mkdirSync(dir);
+  writeFileSync(join(dir, 'owner.json'), JSON.stringify({ pid: 2147483647, host: hostname(), token: 'dead' }));
+  const again = acquireRunLock(root, b.runId); again();
+  assert.ok(!existsSync(dir));
+});
+
+test('preflight reports missing models, keys and unsupported role budgets without agent calls', (t) => {
+  const root = fixture(t);
+  const c = structuredClone(config);
+  c.harness = 'openai'; c.providers.openai!.apiKeyEnv = 'DULGER_TEST_MISSING_KEY_723901';
+  delete process.env.DULGER_TEST_MISSING_KEY_723901;
+  c.roles.worker = { maxBudgetUsd: 2 };
+  const checks = preflight(root, c);
+  assert.ok(checks.some((r) => r.status === 'error' && r.label === 'worker model'));
+  assert.ok(checks.some((r) => r.status === 'error' && r.label === 'openai credentials'));
+  assert.ok(checks.some((r) => r.status === 'error' && r.label === 'worker budget'));
+  assert.equal(capabilities(getAdapter('codex', c)).toolFree, false);
+  assert.equal(capabilities(getAdapter('openai', c)).modelDiscovery, true);
+  assert.ok(!preflight(root, config).some((r) => r.status === 'error'));
+  const cards = store.cardsFromPlan(plan()); cards[0]!.worker = { harness: 'openai' };
+  assert.ok(cardModelIssues(c, cards).some((message) => message.includes('choose a worker model')));
+});
+
+test('plan editor validates dependencies, persists pins, preserves shell pipes and rolls back cancel', async (t) => {
+  const root = fixture(t); const b = createBoard(root, 'edit', 'edit');
+  b.cards = store.cardsFromPlan(plan()); store.saveBoard(root, b);
+  const steps: Selection[] = ['c1', 'description', undefined];
+  const io = { select: async (_o: SelectOptions) => steps.shift(), ask: async () => 'Changed draft' };
+  assert.equal(await editPlan(root, b, config, io), false);
+  assert.equal(b.cards[0]!.description, 'Implement one thing');
+  const choices: Selection[] = ['c1', 'verify', ':add', 'c1', 'worker', 'fake', ':save'];
+  const values = ['echo a | cat', 'my-model'];
+  assert.equal(await editPlan(root, b, config, { select: async () => choices.shift(), ask: async () => values.shift() }), true);
+  assert.deepEqual(store.loadBoard(root, b.runId).cards[0]!.verify, ['echo a | cat']);
+  assert.equal(roleConfig(config, 'worker', { card: b.cards[0], task: { ...b.cards[0]!.tasks[0]!, attempts: 5, complexity: 'high' } }).model, 'my-model');
+  const bad = structuredClone(b); bad.cards[0]!.dependsOn = ['missing'];
+  assert.throws(() => validatePlanDraft(bad, config), /unknown card/);
+});
+
+test('pause drains active cards, stops new dispatch, and resumes; user guidance reaches the next worker', async (t) => {
+  const root = fixture(t);
+  const p = plan(); p.cards.push({ ...p.cards[0]!, id: 'c2', dependsOn: ['c1'] });
+  const prompts: string[] = [];
+  registerAdapter('fake', createFakeAdapter({ planner: p, checker: goodCheck, worker: (o, i) => { prompts.push(o.prompt); return DEFAULT_FAKE_SCRIPT.worker!(o, i); }, delayMs: 15 }));
+  const b = createBoard(root, 'controls', 'controls');
+  const orch = createOrchestrator(root, b, config);
+  await orch.plan();
+  let paused = false;
+  let activeDone!: () => void;
+  const drained = new Promise<void>((r) => activeDone = r);
+  const controlled = createOrchestrator(root, b, config, { onBoardChange: () => {
+    if (!paused && b.cards[0]!.status === 'in_progress') { paused = true; controlled.togglePause(); }
+    if (b.cards[0]!.status === 'done') activeDone();
+  } });
+  const executing = controlled.execute();
+  await drained;
+  assert.equal(b.cards[1]!.status, 'backlog');
+  assert.equal(b.paused, true);
+  controlled.guideCard('c2', 'Keep the public API unchanged');
+  controlled.togglePause();
+  await executing;
+  assert.equal(b.cards[1]!.status, 'done');
+  assert.ok(prompts.at(-1)!.includes('Keep the public API unchanged'));
+  assert.equal(b.checkpoint?.phase, 'finished');
+  const interrupted = structuredClone(b); interrupted.checkpoint = { phase: 'stopped', at: new Date().toISOString() };
+  assert.equal(runStatus(interrupted), 'stopped');
+});
+
+test('stopping one card retains its worktree and does not trigger replanning', async (t) => {
+  const root = fixture(t); registerAdapter('fake', createFakeAdapter({ planner: plan(), checker: goodCheck, delayMs: 10 }));
+  const b = createBoard(root, 'stop one', 'stop');
+  let stop = false;
+  const orch = createOrchestrator(root, b, { ...config, maxReplans: 1 }, { onBoardChange: () => {
+    if (!stop && b.cards[0]?.tasks[0]?.status === 'running') { stop = true; orch.stopCard('c1'); }
+  } });
+  await orch.plan(); await orch.execute();
+  assert.equal(b.cards[0]!.status, 'failed');
+  assert.equal(b.cards[0]!.stopped, true);
+  assert.equal(b.replans, undefined);
+  assert.ok(existsSync(store.worktreeDir(root, b.runId, 'c1')));
+  assert.match(b.cards[0]!.reason!, /Stopped by user/);
+});
+
+test('verification stays responsive, cancels subprocesses, and skips later commands', async (t) => {
+  const root = fixture(t); const controller = new AbortController();
+  const pending = runVerification(root, ['sleep 20', 'touch should-not-exist'], { timeoutSec: 30, signal: controller.signal });
+  setTimeout(() => controller.abort(), 30);
+  const results = await pending;
+  assert.equal(results.length, 1); assert.equal(results[0]!.ok, false);
+  assert.match(results[0]!.output, /cancelled/);
+  assert.ok(results[0]!.durationMs < 2500);
+  assert.ok(!existsSync(join(root, 'should-not-exist')));
+});
+
+test('final verification catches documentation regressions and merge refuses the failing result', async (t) => {
+  const root = fixture(t); const c = { ...config, docs: true };
+  registerAdapter('fake', createFakeAdapter({ planner: plan(['test ! -f broken']), checker: goodCheck, docs: (o) => { writeFileSync(join(o.cwd, 'broken'), 'oops'); return { summary: 'Broke the result', filesChanged: ['broken'] }; } }));
+  const b = createBoard(root, 'final check', 'final');
+  const orch = createOrchestrator(root, b, c); await orch.plan(); await orch.execute();
+  assert.equal(b.cards[0]!.verification![0]!.ok, true);
+  assert.equal(b.finalVerification!.results[0]!.ok, false);
+  assert.equal(runStatus(b), 'needs attention');
+  assert.ok(recoverableRuns(root).includes('final'));
+  assert.throws(() => mergeRun(root, b.runId), /Final verification failed/);
+  assert.equal(git.currentBranch(root), 'main');
+});
+
+test('resume uses original settings by default and explicit current settings replace them', async (t) => {
+  const root = fixture(t); registerAdapter('fake', fake());
+  const b = createBoard(root, 'snapshot', 'snapshot');
+  await runBoard(root, b, config, { yes: true, quiet: true, merge: false, fresh: true });
+  const current = { ...config, concurrency: 7 };
+  await resumeRun(root, current, b.runId, { quiet: true, merge: false });
+  assert.equal(store.loadBoard(root, b.runId).settings!.config.concurrency, 1);
+  await resumeRun(root, current, b.runId, { quiet: true, merge: false, currentSettings: true });
+  assert.equal(store.loadBoard(root, b.runId).settings!.config.concurrency, 7);
+  assert.ok(!existsSync(join(store.runDir(root, b.runId), 'execution.lock')));
+});
+
+test('lock recovery preserves incomplete, invalid and foreign owners; release preserves a replacement owner', (t) => {
+  const root = fixture(t);
+  const board = createBoard(root, 'lock ownership', 'ownership');
+  const path = join(store.runDir(root, board.runId), 'execution.lock');
+  const ownerPath = join(path, 'owner.json');
+  mkdirSync(path);
+  assert.throws(() => acquireRunLock(root, board.runId), /cannot be verified/);
+  assert.ok(existsSync(path));
+  writeFileSync(ownerPath, 'not JSON');
+  assert.throws(() => acquireRunLock(root, board.runId), /Unreadable execution lock/);
+  for (const owner of [
+    { pid: 2147483647, host: 'another-host', token: 'foreign' },
+    { pid: 0, host: hostname(), token: 'invalid' },
+  ]) {
+    writeFileSync(ownerPath, JSON.stringify(owner));
+    assert.throws(() => acquireRunLock(root, board.runId), /cannot be verified/);
+    assert.ok(existsSync(ownerPath));
+  }
+  rmSync(path, { recursive: true });
+  const release = acquireRunLock(root, board.runId);
+  writeFileSync(ownerPath, JSON.stringify({ pid: process.pid, host: hostname(), token: 'replacement' }));
+  release();
+  assert.ok(existsSync(path), 'an old release callback cannot delete another owner’s lock');
+});
+
+test('aborting a paused dispatcher wakes it without starting cards or documentation', { timeout: 2000 }, async (t) => {
+  const root = fixture(t);
+  registerAdapter('fake', fake());
+  const board = createBoard(root, 'paused abort', 'paused-abort');
+  const orch = createOrchestrator(root, board, config);
+  await orch.plan();
+  orch.togglePause();
+  const executing = orch.execute();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  orch.abort();
+  await executing;
+  assert.deepEqual(board.cards.map((card) => card.status), ['backlog']);
+  assert.equal(board.checkpoint?.phase, 'stopped');
+  assert.ok([...orch.registry.statuses.values()].every((agent) => agent.role === 'planner'));
+  assert.equal(store.loadBoard(root, board.runId).checkpoint?.phase, 'stopped');
+});

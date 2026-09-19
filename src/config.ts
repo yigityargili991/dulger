@@ -45,6 +45,11 @@ export interface Config {
   maxContinuations: number;  // "done:false" resumes per task
   stallTimeoutSec: number;
   docs: boolean;
+  /**
+   * Seconds between progress-reporter sweeps over the in-progress cards; 0 disables the reporter.
+   * Each note is one cheap headless call on the low-tier model (roles.reporter to override).
+   */
+  progressIntervalSec: number;
   /** Bash prefixes the reviewer may run on top of a card's own verify commands. */
   checker: { allowedCommands: string[] };
   /** Seconds one verify command may take before dulger kills it and counts it as failed. */
@@ -87,6 +92,7 @@ export const DEFAULT_CONFIG: Config = {
   maxContinuations: 2,
   stallTimeoutSec: 600,
   docs: true,
+  progressIntervalSec: 120,
   checker: { allowedCommands: ['npm test', 'npm run test', 'npm run typecheck', 'npm run lint', 'npm run build', 'pytest', 'cargo test', 'cargo build', 'cargo check', 'cargo clippy', 'go test', 'go build', 'go vet'] },
   verifyTimeoutSec: 600,
   claude: { mcp: true },
@@ -142,7 +148,7 @@ export function harnessNames(config: Pick<Config, 'providers'>): string[] {
 
 /** Resolve which harness / model a given role should use. */
 export function roleConfig(config: Config, role: AgentRole, context: { card?: Card; task?: Task } = {}): Required<Pick<RoleConfig, 'harness'>> & RoleConfig {
-  const r = config.roles[role] ?? {};
+  const r = role === 'worker' && context.card?.worker ? { ...config.roles[role], ...context.card.worker } : config.roles[role] ?? {};
   const harness = r.harness ?? config.harness;
   const tier = modelTier(role, context);
   return { ...r, harness, model: r.model ?? (config.routing.enabled ? config.routing.models[harness]?.[tier] : undefined) ?? config.providers[harness]?.model };
@@ -151,7 +157,7 @@ export function roleConfig(config: Config, role: AgentRole, context: { card?: Ca
 /** Planning and review get the strongest model: what they miss, nobody catches. Work runs at the task's complexity, one tier up per retry. */
 export function modelTier(role: AgentRole, { task }: { card?: Card; task?: Task } = {}): ModelTier {
   if (role === 'planner' || role === 'checker') return 'high';
-  if (role === 'docs') return 'low';
+  if (role === 'docs' || role === 'reporter') return 'low';
   const tiers: ModelTier[] = ['low', 'medium', 'high'];
   const base = tiers.indexOf(task?.complexity ?? 'medium');
   const escalation = task?.kind === 'fix' ? 1 : Math.max(0, (task?.attempts ?? 1) - 1);

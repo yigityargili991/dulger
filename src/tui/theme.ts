@@ -47,6 +47,7 @@ export const status: Record<CardStatus, ChalkInstance> = {
 
 export const role: Record<AgentRole, ChalkInstance> = {
   planner: chalk.hex(P.lavender), worker: chalk.hex(P.blue), checker: chalk.hex(P.mauve), docs: chalk.hex(P.teal),
+  reporter: chalk.hex(P.sky),
 };
 
 export const window = (utilization: number): ChalkInstance =>
@@ -54,7 +55,7 @@ export const window = (utilization: number): ChalkInstance =>
 
 export interface Glyphs {
   check: string; cross: string; dot: string; play: string; block: string; branch: string; clock: string; coin: string;
-  planner: string; worker: string; checker: string; docs: string;
+  planner: string; worker: string; checker: string; docs: string; reporter: string;
   sep: string; sepLeft: string; sepThin: string;
   barOn: string; barOff: string;
   spinner: string[];
@@ -66,7 +67,7 @@ export interface Glyphs {
 const GLYPHS: Record<IconSet, Glyphs> = {
   nerd: {
     check: '', cross: '', dot: '', play: '', block: '', branch: '', clock: '', coin: '',
-    planner: '', worker: '', checker: '', docs: '',
+    planner: '', worker: '', checker: '', docs: '', reporter: '\uF0E1',
     sep: '', sepLeft: '', sepThin: '',
     barOn: '━', barOff: '╌',
     spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -76,7 +77,7 @@ const GLYPHS: Record<IconSet, Glyphs> = {
   },
   unicode: {
     check: '✓', cross: '✗', dot: '·', play: '▶', block: '⊘', branch: '⎇', clock: '◷', coin: '$',
-    planner: '✦', worker: '⚒', checker: '◎', docs: '≡',
+    planner: '✦', worker: '⚒', checker: '◎', docs: '≡', reporter: '◔',
     sep: '', sepLeft: '', sepThin: '│',
     barOn: '━', barOff: '╌',
     spinner: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -86,7 +87,7 @@ const GLYPHS: Record<IconSet, Glyphs> = {
   },
   ascii: {
     check: 'v', cross: 'x', dot: '.', play: '>', block: '#', branch: 'Y', clock: 't', coin: '$',
-    planner: 'P', worker: 'W', checker: 'C', docs: 'D',
+    planner: 'P', worker: 'W', checker: 'C', docs: 'D', reporter: 'R',
     sep: '', sepLeft: '', sepThin: '|',
     barOn: '=', barOff: '-',
     spinner: ['|', '/', '-', '\\'],

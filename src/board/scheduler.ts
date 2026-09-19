@@ -1,3 +1,4 @@
+import { transitionCard } from './lifecycle.ts';
 import type { Board, Card, CardStatus } from '../types.ts';
 
 const TERMINAL: ReadonlySet<CardStatus> = new Set(['done', 'failed', 'blocked', 'replaced']);
@@ -31,8 +32,7 @@ export function blockUnreachable(board: Board): Card[] {
         return dep && (dep.status === 'failed' || dep.status === 'blocked' || dep.status === 'replaced');
       });
       if (deadDep) {
-        card.status = 'blocked';
-        card.reason = `blocked: dependency ${deadDep} did not complete`;
+        transitionCard(card, 'blocked', `blocked: dependency ${deadDep} did not complete`);
         newlyBlocked.push(card);
         changed = true;
       }
@@ -52,13 +52,6 @@ export function readyCards(board: Board, concurrency: number): Card[] {
 }
 
 /**
- * Prepare a board loaded from disk for `dulger resume`: cards that were being worked on or reviewed
- * when the run stopped, and cards that failed on dulger's side rather than on their work, go back to
- * the backlog with their unfinished tasks pending (finished tasks and their worktrees are kept), and
- * a docs agent that was running is scheduled again.
- * Returns the cards that were reset.
- */
-/**
  * Put a failed card back to work with one more review round: its pending fix task (the last rejection)
  * runs first, finished tasks and the worktree are kept, and the cards blocked behind it get another chance.
  */
@@ -66,17 +59,17 @@ export function retryCard(board: Board, cardId: string): Card {
   const card = board.cards.find((c) => c.id === cardId);
   if (!card) throw new Error(`no card ${cardId}`);
   if (card.status !== 'failed') throw new Error(`card ${cardId} is ${card.status.replace('_', ' ')}, not failed`);
-  card.status = 'backlog';
-  card.failure = undefined;
-  card.reason = undefined;
+  transitionCard(card, 'backlog');
+  card.stopped = undefined;
   card.attempts = Math.max(0, card.attempts - 1);
   // A card rejected before fix tasks were kept on failure: its uncovered feedback becomes the fix task now.
   const covered = new Set(card.tasks.flatMap((t) => t.feedback ?? []));
   const uncovered = card.feedback.filter((f) => !covered.has(f));
-  if (card.tasks.every((t) => t.status === 'done') && uncovered.length) { appendFixTask(card, 'Address review feedback', uncovered); card.status = 'backlog'; }
+  if (card.tasks.every((t) => t.status === 'done') && uncovered.length) { appendFixTask(card, 'Address review feedback', uncovered); transitionCard(card, 'backlog'); }
   for (const t of card.tasks) if (t.status !== 'done') { t.status = 'pending'; t.attempts = 0; }
-  for (const c of board.cards) if (c.status === 'blocked') { c.status = 'backlog'; c.reason = undefined; }
+  for (const c of board.cards) if (c.status === 'blocked') transitionCard(c, 'backlog');
   board.halted = undefined;
+  board.paused = false;
   if (board.docs?.status === 'done') board.docs = { status: 'pending' };
   return card;
 }
@@ -88,17 +81,22 @@ export function appendFixTask(card: Card, title: string, feedback: string[]): vo
     id: `fix${n}`, cardId: card.id, kind: 'fix', title, feedback,
     instructions: feedback.join('\n'), status: 'pending', attempts: 0,
   });
-  card.status = 'in_progress';
+  transitionCard(card, 'in_progress');
 }
 
+/**
+ * Prepare a board loaded from disk for `dulger resume`: cards that were being worked on or reviewed
+ * when the run stopped, and cards that failed on dulger's side rather than on their work, go back to
+ * the backlog with their unfinished tasks pending (finished tasks and their worktrees are kept), and
+ * a docs agent that was running is scheduled again.
+ * Returns the cards that were reset.
+ */
 export function resetInterrupted(board: Board): Card[] {
   const reset: Card[] = [];
   for (const card of board.cards) {
     const infra = card.status === 'failed' && card.failure === 'infrastructure';
     if (card.status !== 'in_progress' && card.status !== 'review' && !infra) continue;
-    card.status = 'backlog';
-    card.failure = undefined;
-    card.reason = undefined;
+    transitionCard(card, 'backlog');
     if (infra) {
       const before = card.tasks.length;
       card.tasks = card.tasks.filter((t) => t.status === 'done' || t.kind !== 'fix');
@@ -109,8 +107,9 @@ export function resetInterrupted(board: Board): Card[] {
     reset.push(card);
   }
   // blockUnreachable() re-blocks what is still unreachable.
-  if (reset.length) for (const card of board.cards) if (card.status === 'blocked') { card.status = 'backlog'; card.reason = undefined; }
+  if (reset.length) for (const card of board.cards) if (card.status === 'blocked') transitionCard(card, 'backlog');
   if (board.docs?.status === 'running' || board.halted || (reset.length && board.docs?.status === 'done')) board.docs = { status: 'pending' };
   board.halted = undefined;
+  board.paused = false;
   return reset;
 }

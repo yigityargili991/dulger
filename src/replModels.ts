@@ -9,7 +9,7 @@ import { keySource } from './keys.ts';
 import type { Session } from './repl.ts';
 import type { AgentRole, HarnessName, ModelTier } from './types.ts';
 
-export const MODEL_ROLES: AgentRole[] = ['planner', 'worker', 'checker', 'docs'];
+export const MODEL_ROLES: AgentRole[] = ['planner', 'worker', 'checker', 'docs', 'reporter'];
 const ALIASES: Record<string, { harness: HarnessName; model: string }> = {
   fable: { harness: 'claude', model: DEFAULT_CONFIG.routing.models.claude!.high! },
   opus: { harness: 'claude', model: 'opus' },
@@ -19,6 +19,10 @@ const ALIASES: Record<string, { harness: HarnessName; model: string }> = {
   sol: { harness: 'codex', model: DEFAULT_CONFIG.routing.models.codex!.medium! },
   luna: { harness: 'codex', model: DEFAULT_CONFIG.routing.models.codex!.low! },
 };
+
+/** The shorthand names /model takes, in the order /help lists them, with what each one resolves to. */
+export const MODEL_ALIASES: Array<{ name: string; harness: HarnessName; model: string }> =
+  Object.entries(ALIASES).map(([name, alias]) => ({ name, ...alias }));
 
 export function sessionConfig(repoRoot: string, session: Session): Config {
   const config = loadConfig(repoRoot, session.overrides);
@@ -134,7 +138,7 @@ function describeRoleModel(config: Config, session: Session, role: AgentRole): R
     model: resolved.model ?? (provider ? '(model required)' : '(harness default)'),
     mode,
     source: roleModelSource(session, role),
-    disabled: role === 'docs' && !config.docs,
+    disabled: (role === 'docs' && !config.docs) || (role === 'reporter' && !(config.progressIntervalSec > 0)),
     tiers,
     missingKeyEnv: provider?.apiKeyEnv && keySource(provider.apiKeyEnv) === 'missing' ? provider.apiKeyEnv : undefined,
   };
@@ -155,7 +159,7 @@ function modelOverviewHeader(globalModel?: string): string {
 
 function formatRoleModel(summary: RoleModelSummary): string[] {
   const fields = [
-    `${summary.role.padEnd(7)} ${summary.harness} / ${plainText(summary.model)}`,
+    `${summary.role.padEnd(8)} ${summary.harness} / ${plainText(summary.model)}`,
     summary.mode,
     summary.source,
   ];

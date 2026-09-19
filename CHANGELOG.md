@@ -1,5 +1,52 @@
 # Changelog
 
+## Unreleased
+
+- Added readiness checks, repository-local named profiles, execution limits in setup, a searchable
+  run browser, direct plan editing, live pause/stop/instruction controls, and a persistent result
+  review with per-file diffs and explicit merge confirmation.
+- Runs preserve versioned execution settings and checkpoints. Resume defaults to those settings;
+  `--current-settings` explicitly replaces them. Execution, edit, merge and cleanup use run locks.
+  Harness capabilities now describe tool-free mode, continuation, discovery and cost reporting.
+- Final verification reruns landed cards' commands after documentation, records the exact result
+  revision, and blocks merging on failed or stale checks. Verification and worktree setup keep the
+  terminal responsive and support cancellation. Failed setup stops agents and is retried on resume.
+
+- Interactive sessions start with a keyboard menu for the harness, model set, a model for all roles,
+  and per-role overrides. It previews effective models, supports filtering and custom model IDs,
+  and reads API provider model lists when credentials are available. Start applies the draft only
+  to the session; cancel preserves the old settings. `/setup` reopens it and `/config save` persists
+  choices. `--yes`, `--quiet`, a disabled TUI, and direct CLI commands keep the non-menu path.
+
+- Reporter failures no longer halt workers; pending reports are cancelled before documentation,
+  and their final cost and usage are saved even when the run is stopped. Reporters run without tools
+  on Claude Code and API providers. Codex reporters are skipped with a configuration hint because
+  Codex CLI cannot disable every built-in tool.
+- Prompt predictions are cleared before cursor movement and submission. Tab leaves mid-line input
+  unchanged, and pasted input draws its suggestions once.
+
+- Card-wise progress reporting while a run is in flight: every `progressIntervalSec` seconds
+  (default 120), a lightweight headless agent summarizes what each in-progress card's worker has
+  been doing — from the live activity digest only, on the low-tier model — and writes a one-line
+  note onto the card. The note takes the card's line in the full-screen view while it is fresh
+  (with a warning marker when the reporter flagged something: a worker going in circles, stuck or
+  off-scope), appears in the card detail with its age, in `dulger board` output, and in the report
+  for cards that never finished, and is a `progress` event in the run log. The reporter never
+  touches the worktree, its cost lands on the run rather than the card, a reporter that fails
+  only costs the note, and a note that arrives after its card landed, failed or was blocked is
+  dropped rather than stored. Configure it with `progressIntervalSec`, `--progress-interval <sec>`,
+  `--no-progress` or `/progress on|off|<sec>`; `roles.reporter` picks its backend and model like
+  any role, and `--model`/`/model reporter` pin it. Zero disables it.
+
+- The prompt predicts what you are typing. The rest of the word is drawn dim after the cursor and Tab
+  takes it; when several words fit they are listed under the line with a one-line description each, or
+  counted when there are too many to list. It completes arguments too: roles, aliases, backends and
+  harnesses for `/model`, configured providers for `/provider`, run ids for `/board`, `/report`,
+  `/resume`, `/merge` and `/retry`, the latest run's failed cards for `/retry`, learned ids for
+  `/memory rm`, each setting's values for `/set` and the setting commands, and `go`/`cancel` at the
+  plan approval pause. It never types anything you did not ask for: goals, a mid-line cursor and a line
+  past its last argument are left alone. `/help` now lists `/concurrency` too.
+
 ## 0.5.0 — 2026-09-12
 
 - The website: https://dulger-site-production.up.railway.app, a static Astro site dulger built from its

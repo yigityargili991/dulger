@@ -67,3 +67,13 @@ export const DOCS_SCHEMA = {
   required: ['summary', 'filesChanged'],
   additionalProperties: false,
 } as const;
+
+export const REPORTER_SCHEMA = {
+  type: 'object',
+  properties: {
+    note: { type: 'string', description: 'one short sentence for a human watching the board: what the agent is doing on the card right now and how far along it is' },
+    attention: { type: 'string', description: 'only when something looks wrong (the agent is stuck, repeating itself, drifting off the card\'s scope); an empty string otherwise' },
+  },
+  required: ['note', 'attention'],
+  additionalProperties: false,
+} as const;

@@ -1,6 +1,6 @@
 // Prompt builders. Every system prompt starts with a `[role:<name>]` marker so the fake adapter
 // (and humans reading logs) can tell roles apart.
-import type { Board, Card, Task } from '../types.ts';
+import type { AgentStatus, Board, Card, Task } from '../types.ts';
 import type { ReviewDiff } from '../git/worktree.ts';
 
 const RULES_COMMON = `You are one agent in "dulger", a multi-agent system working on a shared repository.
@@ -318,4 +318,44 @@ ${stat || '(no changes)'}
 \`\`\`
 
 Update the documentation and answer with the JSON result.`;
+}
+
+// ---- Progress reporter ----
+
+export function reporterSystem(): string {
+  return `[role:reporter] You write the one-line progress note shown under a card while its working agent runs.
+
+Rules:
+- Your only input is the activity digest in the prompt. Do not read files, run commands or explore; answer from the digest alone, at once.
+- "note": one plain sentence, under about 160 characters, saying what the agent is doing right now and how far along the card's work it is. Name concrete files, commands or tasks when the digest shows them. No preamble, no markdown, no restating of card metadata.
+- "attention": empty when nothing looks wrong. Set it only when the digest shows a problem — the agent repeating the same action, going in circles, stuck on one step for a long time, or working outside the card's tasks — and then it is one short sentence saying what looks wrong.
+- When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
+}
+
+/** A digest of what the card's worker has been doing, formatted for the reporter. */
+export function reporterPrompt(card: Card, agent: AgentStatus, now: number, previous?: string): string {
+  const tasks = card.tasks.map((t) => `- ${t.id} [${t.status}] ${t.title}`).join('\n');
+  const history = agent.history.slice(-15).map((h) => `- ${h}`).join('\n');
+  const current = agent.currentTool ? `- now: ${agent.currentTool}${agent.lastMessage && agent.lastMessage !== agent.currentTool ? ` — ${agent.lastMessage}` : ''}` : agent.lastMessage ? `- now: ${agent.lastMessage}` : '';
+  const elapsed = fmtElapsed(now - agent.startedAt);
+  return `## Card ${card.id}: ${card.title} [in progress${card.attempts ? `, review round ${card.attempts + 1}` : ''}]
+
+${card.description}
+
+Tasks:
+${tasks}
+
+Acceptance criteria:
+${card.acceptanceCriteria.map((a) => `- ${a}`).join('\n') || '- (none given)'}
+
+## What the working agent has been doing
+
+${agent.role} on ${agent.harness}${agent.model ? ` / ${agent.model}` : ''}, ${agent.turns} turn${agent.turns === 1 ? '' : 's'} over ${elapsed} in this session:
+${history || '- (nothing yet)'}${current ? `\n${current}` : ''}${previous ? `\n## Previous note (say what changed since, not the same words)\n\n${previous}\n` : ''}
+Summarise the card's progress and answer with the JSON result.`;
+}
+
+function fmtElapsed(ms: number): string {
+  const s = Math.max(1, Math.round(ms / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
 }

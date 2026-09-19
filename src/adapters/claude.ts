@@ -1,3 +1,4 @@
+import { CLAUDE_CAPABILITIES } from './capabilities.ts';
 // Adapter for Claude Code: `claude -p ... --output-format stream-json`.
 import type { AgentEvent, RateLimits, Usage } from '../types.ts';
 import type { Adapter, AdapterResult, AdapterRunOptions } from './types.ts';
@@ -13,7 +14,7 @@ export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   // Read-only agents get a restricted tool set without ToolSearch, so every MCP tool schema would be inlined
   // (~70k tokens per agent) for tools their permission mode would deny anyway. Write agents defer MCP tools
   // behind ToolSearch, which costs about a thousand tokens, so they get the user's servers unless configured off.
-  if (!opts.mcp || opts.access === 'readonly') args.push('--strict-mcp-config');
+  if (!opts.mcp || opts.access !== 'write') args.push('--strict-mcp-config');
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
   else args.push('--append-system-prompt', opts.systemPrompt);
   if (opts.schema) args.push('--json-schema', JSON.stringify(opts.schema));
@@ -21,6 +22,8 @@ export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   if (opts.maxBudgetUsd) args.push('--max-budget-usd', String(opts.maxBudgetUsd));
   if (opts.access === 'write') {
     args.push('--permission-mode', 'bypassPermissions');
+  } else if (opts.access === 'none') {
+    args.push('--permission-mode', 'dontAsk', '--tools', '', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}');
   } else {
     const allowed = [...READONLY_ALLOWED];
     for (const cmd of opts.allowedCommands ?? []) allowed.push(`Bash(${cmd})`, `Bash(${cmd} *)`);
@@ -148,6 +151,7 @@ function contentBlocks(o: Record<string, unknown>): Array<Record<string, unknown
 
 export const claudeAdapter: Adapter = {
   name: 'claude',
+  capabilities: CLAUDE_CAPABILITIES,
   async run(opts): Promise<AdapterResult> {
     let sessionId: string | undefined = opts.resumeSessionId;
     let final: Extract<AgentEvent, { type: 'result' }> | undefined;

@@ -209,3 +209,24 @@ test('listModels reads an OpenAI-style /models answer with the key in the header
   t.mock.method(globalThis, 'fetch', async () => Response.json({ data: [] }));
   await assert.rejects(listModels(DEFAULT_CONFIG.providers.deepseek!), /listed no models/);
 });
+
+test('tool-free reporting omits tools and refuses unsolicited tool calls', async (t) => {
+  const { cwd, opts, config } = setup(t);
+  writeFileSync(join(cwd, 'private.txt'), 'must not read this');
+  let n = 0;
+  t.mock.method(globalThis, 'fetch', async (_url: URL, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    assert.equal(body.tools, undefined, 'tool-free requests must not advertise any tools');
+    assert.ok(!body.messages[0].content.includes('Use the supplied tools'));
+    if (++n === 1) return Response.json(call('read_file', { path: 'private.txt' }));
+    assert.match(body.messages.at(-1).content, /not allowed for none access/);
+    assert.ok(!JSON.stringify(body).includes('must not read this'));
+    return Response.json(final());
+  });
+  const result = await createOpenAIAdapter('ollama', config).run({ ...opts, access: 'none' });
+  assert.equal(result.ok, true);
+  assert.equal(result.denied?.length, 1);
+  for (const tool of ['read_file', 'list_files', 'git_diff', 'write_file', 'run_command']) {
+    await assert.rejects(executeApiTool(tool, {}, { ...opts, access: 'none', allowedCommands: ['npm test'] }), /not allowed for none access/);
+  }
+});

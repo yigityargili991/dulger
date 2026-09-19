@@ -50,7 +50,7 @@ export function renderAgents(statuses: Iterable<AgentStatus>, width: number, now
   const running = all.filter((s) => s.state === 'starting' || s.state === 'running');
   const finished = all.filter((s) => !(s.state === 'starting' || s.state === 'running')).slice(-5);
   const rowsToShow = [...running, ...finished];
-  const fixed = [6, 8, 10, 8, 6, 8, 12];
+  const fixed = [6, 10, 10, 8, 6, 8, 12];
   const lastWidth = Math.max(10, width - fixed.reduce((a, b) => a + b + 1, 0));
   const head = ['AGENT', 'ROLE', 'CARD/TASK', 'STATE', 'TURNS', 'ELAPSED', 'TOOL', 'LAST'];
   const widths = [...fixed, lastWidth];

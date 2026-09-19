@@ -48,18 +48,28 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
         if (c.reason) out.push(...labelled('reason:', c.reason, w));
         if (last) out.push(...labelled('last feedback:', last, w));
         out.push(...verifiedLine(c, w));
+        if (c.progress) out.push(...labelled('progress:', c.progress.note + (c.progress.attention ? ` (attention: ${c.progress.attention})` : ''), w));
         if (c.review) out.push(...labelled('review:', c.review, w));
       } else {
         if (c.reason) out.push(one(`     ${dim('reason:')} ${firstLine(c.reason)}`));
         else if (last) out.push(one(`     ${dim('last feedback:')} ${firstLine(last)}`));
         const failed = c.verification?.find((r) => !r.ok);
         if (failed) out.push(one(red(`     verified: ✗ ${failed.command} (exit ${failed.exitCode})`)));
+        if (c.status === 'in_progress' && c.progress) out.push(one(cyan(`     ${dim('progress:')} ${firstLine(c.progress.note)}`)));
       }
     }
   }
   if (docs?.summary) {
     h('Documentation');
     out.push(...(full ? wrap(docs.summary, w - 2).map((l) => `  ${l}`) : [one(`  ${firstLine(docs.summary)}`)]));
+  }
+  if (board.finalVerification) {
+    h('Final verification');
+    if (!board.finalVerification.results.length) out.push('  No verification commands configured.');
+    for (const r of board.finalVerification.results) {
+      out.push(one(`  ${r.ok ? 'PASS' : 'FAIL'} ${r.command} (exit ${r.exitCode})`));
+      if (full && !r.ok) out.push(...wrap(r.output, w - 4).map((line) => `    ${line}`));
+    }
   }
   const stat = opts.diffStat?.replace(/^\n+/, '').trimEnd();
   if (stat) {
@@ -71,6 +81,7 @@ export function buildReport(board: Board, opts: ReportOptions = {}): string {
   h('Next');
   if (board.halted) out.push(...(full ? wrap(`the run stopped itself: ${board.halted.reason}`, w - 2).map((l) => yellow(`  ${l}`)) : [one(yellow(`  the run stopped itself: ${firstLine(board.halted.reason)}`))]));
   if (opts.mergedInto) out.push(`  the result is on ${green(opts.mergedInto)}`);
+  else if (board.finalVerification?.results.some((r) => !r.ok) || board.docs?.status === 'failed') out.push(...command(`dulger resume ${board.runId}`, 'repair or recheck the final result before merging', w));
   else if (landed.length) out.push(...command(`git merge ${green(board.runBranch)}`, `or: git diff ${board.baseBranch}...${board.runBranch}`, w));
   else out.push(dim('  nothing landed'));
   const retryable = notLanded.filter((c) => c.status === 'failed' && c.failure !== 'infrastructure');

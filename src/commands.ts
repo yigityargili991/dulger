@@ -1,3 +1,10 @@
+import { CliError } from './errors.ts';
+import { acquireRunLock } from './board/lock.ts';
+import { snapshotSettings, originalSettings, settingsChanges } from './runSettings.ts';
+import { requirePreflight, cardModelIssues } from './preflight.ts';
+import { editPlan } from './planEditor.ts';
+import { select } from './tui/select.ts';
+import { pager } from './tui/pager.ts';
 // What the CLI and the interactive prompt both do: run boards, print them, curate memory, clean up.
 // Errors meant for the user are thrown as CliError; the callers decide whether to exit or to carry on.
 import { existsSync, rmSync } from 'node:fs';
@@ -13,14 +20,15 @@ import { worktreesDir } from './paths.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
-import { bold, cyan, dim, green, red, yellow, fmtSpend, terminalWidth } from './ui/ansi.ts';
+import { suggestPlan, type Suggestion } from './replCommands.ts';
+import { bold, cyan, dim, green, red, yellow, fmtDuration, fmtSpend, terminalWidth } from './ui/ansi.ts';
 import { fit, logLine, wrap } from './tui/text.ts';
 import { ensureKeys } from './replProviders.ts';
 import { createTui, tuiUsable } from './tui/tui.ts';
 import { resolveIcons } from './tui/theme.ts';
 import type { AgentStatus, Board, Card } from './types.ts';
 
-export class CliError extends Error {}
+export { CliError } from './errors.ts';
 
 export interface RunOptions {
   yes: boolean;
@@ -29,6 +37,10 @@ export interface RunOptions {
   fresh: boolean;
   /** Inside the interactive prompt: an interrupted run returns instead of exiting the process. */
   interactive?: boolean;
+  /** Explicitly replace a saved run configuration with the current settings. */
+  currentSettings?: boolean;
+  /** Internal mutation performed only after the execution lock is held. */
+  prepare?: (board: Board) => void;
 }
 
 export interface RunOutcome {
@@ -45,15 +57,15 @@ interface RunUi {
   note(msg: string): void;
   setPhase(phase: string): void;
   /** In the plain variants the board is printed and `intro` explains the choice; the full-screen view shows `hint` instead. */
-  ask(q: { label: string; intro: string; hint: string }): Promise<string | undefined>;
+  ask(q: { label: string; intro: string; hint: string; suggest?(line: string): Suggestion }): Promise<string | undefined>;
   close(): void;
 }
 
-function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions, agents: () => Iterable<AgentStatus>, onInterrupt: () => void): RunUi {
+function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions, agents: () => Iterable<AgentStatus>, onInterrupt: () => void, controls?: Pick<Orchestrator, 'togglePause' | 'stopCard' | 'guideCard'>): RunUi {
   const quiet = o.quiet || !process.stdout.isTTY || !tuiUsable();
   if (!quiet && config.tui.enabled && tuiUsable()) {
-    const tui = createTui({ getBoard: () => board, getAgents: agents, icons: resolveIcons(config.tui.icons), onInterrupt });
-    return { update: tui.update, note: tui.note, setPhase: tui.setPhase, ask: (q) => tui.ask(q.label, q.hint), close: () => { tui.close(); } };
+    const tui = createTui({ getBoard: () => board, getAgents: agents, icons: resolveIcons(config.tui.icons), onInterrupt, controls });
+    return { update: tui.update, note: tui.note, setPhase: tui.setPhase, ask: (q) => tui.ask(q.label, q.hint, q.suggest), close: () => { tui.close(); } };
   }
   // The table is up while agents run and comes down for a question; the next phase brings it back.
   let view: LiveView | undefined;
@@ -70,7 +82,7 @@ function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions,
       console.log();
       printBoard(board);
       console.log(`\n${q.intro}`);
-      return ask(`${bold(cyan(q.label))} ${dim('›')} `);
+      return ask(`${bold(cyan(q.label))} ${dim('›')} `, { suggest: q.suggest });
     },
     close() {
       hide();
@@ -83,6 +95,7 @@ interface Run {
   ui: RunUi;
   orch: Orchestrator;
   aborted: boolean;
+  reopen(): RunUi;
 }
 
 function startRun(repoRoot: string, board: Board, config: Config, o: RunOptions): Run {
@@ -95,14 +108,15 @@ function startRun(repoRoot: string, board: Board, config: Config, o: RunOptions)
     if (!o.interactive) setTimeout(() => process.exit(130), 3000).unref();
   };
   let orch: Orchestrator | undefined;
-  run.ui = createUi(repoRoot, board, config, o, () => orch?.registry.statuses.values() ?? [], onInterrupt);
-  orch = createOrchestrator(repoRoot, board, config, { log: run.ui.note, onBoardChange: run.ui.update });
+  run.reopen = () => createUi(repoRoot, board, config, o, () => orch?.registry.statuses.values() ?? [], onInterrupt, { togglePause: () => run.orch.togglePause(), stopCard: (id) => run.orch.stopCard(id), guideCard: (id, text) => run.orch.guideCard(id, text) });
+  run.ui = run.reopen();
+  orch = createOrchestrator(repoRoot, board, config, { log: (msg) => run.ui.note(msg), onBoardChange: () => run.ui.update() });
   run.orch = orch;
   return run;
 }
 
-const PLAN_INTRO = `${dim('Reply to change the plan (same planner session).')} ${bold('Enter')} or ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog.`;
-const PLAN_HINT = `${bold('⏎')} dispatch · type to revise the plan · ${bold('cancel')} · ${bold('^c')} keep in the backlog`;
+const PLAN_INTRO = `${dim('Reply to change the plan (same planner session).')} ${bold('Enter')} or ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog. Type /edit to edit cards directly.`;
+const PLAN_HINT = `${bold('⏎')} dispatch · /edit cards · type to revise the plan · ${bold('cancel')} · ${bold('^c')} keep in the backlog`;
 
 export type Reply = { kind: 'go' } | { kind: 'cancel' } | { kind: 'revise'; text: string };
 
@@ -118,12 +132,17 @@ export function readReply(line: string): Reply {
  * The pause after planning, as a conversation: every reply revises the plan in the planner's own
  * session until the person dispatches or cancels. Ctrl-C leaves the run in the backlog.
  */
-async function converse(run: Run, repoRoot: string, board: Board): Promise<'go' | 'cancel' | 'backlog'> {
+async function converse(run: Run, repoRoot: string, board: Board, config: Config): Promise<'go' | 'cancel' | 'backlog'> {
   const intro = `${PLAN_INTRO} ${dim(`Edit ${store.boardPath(repoRoot, board.runId)} by hand if you prefer.`)}`;
   while (true) {
     run.ui.setPhase('plan ready');
-    const line = await run.ui.ask({ label: 'plan', intro, hint: PLAN_HINT });
+    const line = await run.ui.ask({ label: 'plan', intro, hint: PLAN_HINT, suggest: suggestPlan });
     if (line === undefined) return 'backlog';
+    if (line.trim() === '/edit') {
+      run.ui.close();
+      try { await editPlan(repoRoot, board, config); } finally { run.ui = run.reopen(); }
+      continue;
+    }
     const reply = readReply(line);
     if (reply.kind !== 'revise') return reply.kind;
     run.ui.setPhase('revising the plan');
@@ -141,7 +160,9 @@ async function executeRun(run: Run, repoRoot: string, board: Board, o: RunOption
   }
   const landed = board.cards.filter((c) => c.status === 'done').length;
   let mergedInto: string | undefined;
-  if (o.merge && landed > 0 && !run.aborted) {
+  if (o.merge && landed > 0 && !run.aborted && !board.halted) {
+    assertMergeReady(repoRoot, board);
+    if (!git.isClean(repoRoot)) throw new CliError('Working tree has uncommitted changes; commit them before merging.');
     git.git(repoRoot, ['merge', '--no-edit', board.runBranch]);
     mergedInto = git.currentBranch(repoRoot);
   }
@@ -168,25 +189,52 @@ function cancelRun(run: Run, repoRoot: string, board: Board): RunOutcome {
 
 /** Plan (when fresh), talk the plan through unless --yes, then execute. */
 export async function runBoard(repoRoot: string, board: Board, config: Config, o: RunOptions): Promise<RunOutcome> {
-  if (process.stdin.isTTY) await ensureKeys(config);
-  const run = startRun(repoRoot, board, config, o);
-  if (o.fresh) {
-    try {
+  const release = acquireRunLock(repoRoot, board.runId);
+  let run: Run | undefined;
+  try {
+    // Reload under the lock: a different process may have completed work since the menu opened.
+    if (!o.fresh) Object.assign(board, store.loadBoard(repoRoot, board.runId));
+    config = snapshotSettings(config).config;
+    if (!o.fresh) {
+      const original = originalSettings(board, config);
+      const changes = settingsChanges(original, config);
+      if (board.settings && changes.length && !o.currentSettings && o.interactive && !o.quiet && process.stdin.isTTY && process.stdout.isTTY) {
+        const answer = await select({ title: 'Resume settings', description: `Current settings differ in: ${changes.join(', ')}.`, choices: [
+          { value: 'original', label: 'Keep original run settings' },
+          { value: 'inspect', label: 'Inspect setting differences' },
+          { value: 'current', label: 'Use current settings for this run' },
+        ] });
+        if (!answer) return { landed: 0, aborted: true };
+        if (answer === 'inspect') {
+          await pager('Setting differences', changes.map((key) => `${key}\nOriginal: ${JSON.stringify(original[key as keyof Config], null, 2)}\nCurrent: ${JSON.stringify(config[key as keyof Config], null, 2)}`).join('\n\n'));
+          const apply = await select({ title: 'Choose resume settings', choices: [{ value: 'original', label: 'Keep original run settings' }, { value: 'current', label: 'Use current settings for this run' }] });
+          if (!apply) return { landed: 0, aborted: true };
+          o = { ...o, currentSettings: apply === 'current' };
+        } else o = { ...o, currentSettings: answer === 'current' };
+      }
+      if (!o.currentSettings) config = original;
+    }
+    if (process.stdin.isTTY) await ensureKeys(config);
+    requirePreflight(repoRoot, config);
+    o.prepare?.(board);
+    board.settings = snapshotSettings(config);
+    store.saveBoard(repoRoot, board);
+    run = startRun(repoRoot, board, config, o);
+    if (o.fresh || !board.cards.length) {
       run.ui.setPhase('planning');
       await run.orch.plan();
-    } catch (err) {
-      run.ui.close();
-      throw err;
-    }
-    if (!o.yes && process.stdin.isTTY) {
-      switch (await converse(run, repoRoot, board)) {
-        case 'backlog': return leaveInBacklog(run, board);
-        case 'cancel': return cancelRun(run, repoRoot, board);
-        case 'go': board.cards = store.loadBoard(repoRoot, board.runId).cards; // the board file may have been edited by hand
+      if (!o.yes && process.stdin.isTTY) {
+        switch (await converse(run, repoRoot, board, config)) {
+          case 'backlog': return leaveInBacklog(run, board);
+          case 'cancel': return cancelRun(run, repoRoot, board);
+          case 'go': board.cards = store.loadBoard(repoRoot, board.runId).cards;
+        }
       }
     }
-  }
-  return executeRun(run, repoRoot, board, o);
+    const issues = cardModelIssues(config, board.cards);
+    if (issues.length) throw new CliError(issues.join('\n'));
+    return await executeRun(run, repoRoot, board, o);
+  } finally { run?.ui.close(); release(); }
 }
 
 /** Plan a new run for the goal in a conversation with the planner, then execute it. */
@@ -196,22 +244,14 @@ export function orderRun(repoRoot: string, goal: string, config: Config, o: Omit
 
 export async function resumeRun(repoRoot: string, config: Config, runId: string | undefined, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
   const board = store.loadBoard(repoRoot, latestRun(repoRoot, runId));
-  const reset = resetInterrupted(board);
-  if (reset.length) console.log(yellow(`reset ${reset.length} interrupted card(s) to backlog (their worktrees are reused if present)`));
-  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
+  return runBoard(repoRoot, board, config, { ...o, yes: Boolean(board.cards.length), fresh: false, prepare: (b) => { resetInterrupted(b); } });
 }
 
 /** Give one failed card another round (its last rejection is its first task), then run the board on. */
 export async function retryRun(repoRoot: string, config: Config, cardId: string | undefined, runId: string | undefined, o: Omit<RunOptions, 'yes' | 'fresh'>): Promise<RunOutcome> {
   if (!cardId) throw new CliError('dulger retry needs a card id, e.g. dulger retry c7');
   const board = store.loadBoard(repoRoot, latestRun(repoRoot, runId));
-  let card: Card;
-  try { card = retryCard(board, cardId); } catch (err) { throw new CliError((err as Error).message); }
-  const fix = card.tasks.find((t) => t.status === 'pending' && t.kind === 'fix');
-  console.log(yellow(`card ${card.id} back in the backlog with one more review round${fix ? ` (first: ${fix.title}: ${fix.feedback?.at(-1)?.split('\n')[0] ?? ''})` : ''}`));
-  const reset = resetInterrupted(board);
-  if (reset.length) console.log(yellow(`reset ${reset.length} interrupted card(s) to backlog (their worktrees are reused if present)`));
-  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false });
+  return runBoard(repoRoot, board, config, { ...o, yes: true, fresh: false, prepare: (b) => { retryCard(b, cardId); resetInterrupted(b); } });
 }
 
 export function latestRun(repoRoot: string, runId?: string): string {
@@ -247,11 +287,22 @@ export function showRuns(repoRoot: string): void {
 
 /** Merge a run's result branch into the current branch. */
 export function mergeRun(repoRoot: string, runId?: string): void {
-  const board = store.loadBoard(repoRoot, latestRun(repoRoot, runId));
-  if (!git.branchExists(repoRoot, board.runBranch)) throw new CliError(`${board.runBranch} no longer exists`);
-  if (!git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes; commit them before merging');
-  git.git(repoRoot, ['merge', '--no-edit', board.runBranch]);
-  console.log(green(`merged ${board.runBranch} into ${git.currentBranch(repoRoot)}`));
+  const id = latestRun(repoRoot, runId);
+  const release = acquireRunLock(repoRoot, id);
+  try {
+    const board = store.loadBoard(repoRoot, id);
+    assertMergeReady(repoRoot, board);
+    if (!git.branchExists(repoRoot, board.runBranch)) throw new CliError(`${board.runBranch} no longer exists`);
+    if (!git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes; commit them before merging');
+    git.git(repoRoot, ['merge', '--no-edit', board.runBranch]);
+    console.log(green(`merged ${board.runBranch} into ${git.currentBranch(repoRoot)}`));
+  } finally { release(); }
+}
+
+function assertMergeReady(root: string, board: Board): void {
+  if (board.settings && !board.finalVerification) throw new CliError('The final result has not been verified. Resume the run before merging.');
+  if (board.finalVerification && (board.finalVerification.results.some((r) => !r.ok) || board.finalVerification.ref !== git.git(root, ['rev-parse', board.runBranch]))) throw new CliError('Final verification failed or is stale. Resume the run to verify its current result before merging.');
+  if (board.docs?.status === 'failed' || board.docs?.status === 'running') throw new CliError('Documentation is unfinished. Resume the run before merging.');
 }
 
 /**
@@ -285,15 +336,19 @@ export function initRepo(dir: string): void {
 }
 
 export function clean(repoRoot: string): void {
-  for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('dulger-wip/'))) {
-    git.removeWorktree(repoRoot, w.path);
-    console.log(`removed worktree ${w.path} (${w.branch})`);
-  }
-  for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees')]) {
-    if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); console.log(`removed ${dir}`); }
-  }
-  const wip = git.git(repoRoot, ['branch', '--list', 'dulger-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);
-  for (const b of wip) { git.git(repoRoot, ['branch', '-D', b], { allowFail: true }); console.log(`deleted branch ${b}`); }
+  const releases: Array<() => void> = [];
+  try {
+    for (const id of store.listRuns(repoRoot)) releases.push(acquireRunLock(repoRoot, id));
+    for (const w of git.listWorktrees(repoRoot).filter((w) => w.branch?.startsWith('dulger-wip/'))) {
+      git.removeWorktree(repoRoot, w.path);
+      console.log(`removed worktree ${w.path} (${w.branch})`);
+    }
+    for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees')]) {
+      if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); console.log(`removed ${dir}`); }
+    }
+    const wip = git.git(repoRoot, ['branch', '--list', 'dulger-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);
+    for (const b of wip) { git.git(repoRoot, ['branch', '-D', b], { allowFail: true }); console.log(`deleted branch ${b}`); }
+  } finally { for (const release of releases.reverse()) release(); }
 }
 
 export function memoryCommand(repoRoot: string, config: Config, sub: string, args: string[]): void {
@@ -346,6 +401,11 @@ export function printBoard(board: Board, width = terminalWidth()): void {
     const deps = c.dependsOn.length ? dim(` after ${c.dependsOn.join(',')}`) : '';
     console.log(fit(`  ${bold(c.id)} ${c.title}${deps}`, width));
     for (const t of c.tasks) console.log(fit(dim(`     ${t.id} ${t.title}`), width));
+    if (c.progress && (c.status === 'in_progress' || c.status === 'review')) {
+      const p = c.progress;
+      const ago = dim(` (${fmtDuration(Math.max(0, Date.now() - Date.parse(p.at)))} ago)`);
+      console.log(fit(cyan(`     ◔ ${p.note}`) + (p.attention ? yellow(` — ${p.attention}`) : '') + ago, width));
+    }
     const notes = c.reviewNotes?.length ?? 0;
     if (notes) console.log(yellow(`     ${notes} reviewer note${notes === 1 ? '' : 's'}`) + dim(' (dulger report --full lists them)'));
   }

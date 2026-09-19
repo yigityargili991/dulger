@@ -11,7 +11,7 @@ docs as pages, built by dulger itself from this README.
 
 ```sh
 cd your-repo
-dulger                       # interactive prompt: type a goal, or /help
+dulger                       # choose harness and models, then type a goal
 dulger run "Add CSV export to the reports page"
 ```
 
@@ -26,13 +26,77 @@ npm install -g @zamazingobjk/dulger         # or install the `dulger` command
 
 From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm link`.
 
+## Session setup
+
+Starting `dulger` in a terminal opens a keyboard menu before the goal prompt. The current repository
+and CLI settings are already selected; press Enter on **Start session** to keep them, or change:
+
+- **Harness:** Claude Code, Codex, the fake demo, or a configured API provider. Changing it resets
+  role overrides to that harness's automatic tiers.
+- **Model set:** automatic routing, a balanced set (high planner/reviewer, medium worker, low
+  docs/reporter), or the configured low/high tier for every role.
+- **One model for all roles**, or a separate harness and model for each role. Model lists include
+  configured IDs and, for API providers with credentials available, the endpoint's models.
+  You can always enter a custom model ID if the endpoint is unavailable.
+
+Arrow keys select, Enter accepts, and typing filters a list. Escape clears the filter or goes back;
+Ctrl-C cancels setup. The overview shows the effective model for every role before starting.
+An automatic worker follows the planner's task difficulty and escalates on retries. A pinned worker
+model overrides both. API providers without a model must have one chosen before starting.
+
+Choices are session-only until `/config save`. `/setup` reopens the menu between runs; cancelling
+keeps the previous settings. `--yes`, `--quiet`, or a disabled TUI skip automatic setup.
+Direct commands such as `dulger run` and `dulger resume` keep their existing flag-driven behavior.
+
+## Profiles, recovery and run controls
+
+Setup can save a named profile, load it into the draft, and adjust parallel cards and run/card
+budgets. Profiles live in `.dulger/profiles.json` for this repository. Saving a profile is an
+explicit write; replacing one asks first. API key values and environment values are never copied.
+Dollar limits cannot account for harnesses that report tokens without prices.
+
+Choose **Check readiness**, use `/doctor`, or run `dulger doctor` to check executables, key
+availability, model configuration, Git identity and worktree-directory access. Blocking checks also
+run before agent calls. These checks do not make paid requests or verify account/model access;
+provider authentication and model availability are established by the first real call.
+A failing worktree setup now stops that card before its agents run and can be retried with resume.
+
+- **`/runs`** opens a searchable run browser on a terminal, with report, diff, resume, retry and
+  plan-edit actions. Noninteractive output remains a list. Startup surfaces unfinished runs.
+- **`/edit [runId]`**, or **`/edit` at plan approval**, edits an unstarted plan: titles, descriptions,
+  acceptance criteria, task instructions, dependencies, verification commands and worker models.
+  Save validates the dependency graph; cancel discards edits. Commands are edited individually.
+- **`/resume [runId]`** keeps the run's saved execution settings. Interactive resume can show the
+  differences and choose current settings; `/resume [runId] current` or CLI `--current-settings`
+  explicitly replaces them. Old runs without saved settings use current settings.
+- While cards run, **p** pauses/resumes dispatch. Active cards finish while paused. **x** stops the
+  selected card after typing `stop`; its worktree is kept and `/retry` resumes it. **i** adds
+  instructions for the next worker attempt, leaving a call already running unchanged. Instructions
+  appear in card detail. These controls do not intercept typing in a prompt.
+- **`/review [runId]`** opens the persistent result review: full report, verification, feedback and
+  per-file diffs. Merge names the target branch and asks for confirmation. The same review opens
+  after an interactive run lands work.
+
+After documentation, dulger reruns the unique verification commands of landed cards in a temporary
+worktree on the exact final result. Failed or stale verification blocks dulger's merge actions;
+resume rechecks the result. A run with no verification commands says so. Verification is cancellable
+and its subprocesses are stopped on interruption. A failed final check does not automatically call
+an agent to repair it: inspect its output, fix the result branch, then resume to recheck.
+
+Runs store versioned execution settings and lifecycle checkpoints. Execution locks prevent two
+processes from running or editing the same run; merge and cleanup respect these locks too. A dead
+local owner's execution lock is recovered automatically. A lock whose owner cannot be verified
+requires inspection of the displayed path.
+
 ## How a run works
 
 1. **Plan.** The planner explores the repo and writes cards: acceptance criteria, 1–4 tasks each,
    dependencies. It lists its assumptions and anything it left out of the goal. You read the board
    and press Enter, or use `/order` to talk it through first.
 2. **Build.** Each card gets its own worktree and branch. Workers run its tasks in sequence; cards run
-   in parallel.
+   in parallel. While a card is in progress, a lightweight progress reporter summarizes what its
+   worker is doing onto the card — one cheap headless call every `progressIntervalSec` seconds on the
+   low-tier model, so the board explains itself without you reading raw agent logs.
 3. **Verify.** Each card names the commands that prove it (build, tests, lint); the planner picks
    them from the project. Once the card's work is committed and synced with the result branch, dulger
    runs them itself. A non-zero exit sends the card back to a worker with the output, without paying
@@ -52,10 +116,14 @@ Your checkout is untouched. The result is on `dulger/<runId>`; `git merge` it wh
 ## The screen
 
 On a terminal a run takes the whole screen: the cards as columns, the agents under them with what
-each one is doing, the log, and a prompt line whenever the run asks you something. Arrow keys (or
+each one is doing, the log, and a prompt line whenever the run asks you something. An in-progress
+card shows the progress reporter's latest note under its title (with a warning marker when the
+reporter flagged something); a fresh note always beats the raw agent line, and both are in the card
+when you open it. Arrow keys (or
 hjkl) select a card, Enter opens it (description, acceptance criteria, tasks, review remarks, the
 agent's last actions), Esc closes it, PgUp/PgDn scroll the log. Tab moves between the prompt and the
-board while a question is open. Ctrl-C stops the agents and saves the board. When the run ends the
+board while a question is open; with the prompt focused, Tab takes the dim prediction instead — see
+[Command prediction](#command-prediction). Ctrl-C stops the agents and saves the board. When the run ends the
 screen goes away and the report prints where you can scroll back to it.
 
 Icons come from a Nerd Font when the terminal is ghostty, kitty, WezTerm, Alacritty or foot, and are
@@ -82,9 +150,29 @@ dulger clean                  remove leftover worktrees and wip branches
 --yes                         --no-docs             --merge               --allow-dirty
 --base-url <url>              --api-key-env <name>  --no-routing
 --repo <path>                 --quiet               --max-replans <n>     --version
+--no-progress                 --progress-interval <sec>
 ```
 
 `--harness fake` runs the whole pipeline without an LLM, for trying things out.
+
+## Command prediction
+
+The prompt knows what each command takes, so a half-typed line is completed from it, in `dulger` and on
+the full-screen view's prompt line alike:
+
+- The rest of the word is shown dim after the cursor, and **Tab** takes it.
+- When several words fit they are listed under the line, each with what it does. More than a handful
+  match? Then the count is shown instead: keep typing to narrow them.
+- Arguments are completed wherever they are known, and from the repository where they live: run ids for
+  `/board`, `/report`, `/resume`, `/merge` and `/retry`; the latest run's failed cards for `/retry`;
+  roles, aliases, backends and harnesses for `/model`; configured providers for `/provider`; what agents
+  learned for `/memory rm`; each setting's own values for `/set` and for the setting commands; `save`
+  for `/config`.
+- The plan approval prompt completes `go` and `cancel`, the same words Enter and a plain `cancel` mean.
+
+Prediction is only ever drawn, never typed. A goal line (anything that does not start with `/`), a
+cursor in the middle of the line, a line past its last argument, and a terminal too narrow for the list
+are all left alone.
 
 ## Configuration
 
@@ -99,6 +187,7 @@ dulger clean                  remove leftover worktrees and wip branches
   "maxReplans": 1,
   "stallTimeoutSec": 600,          // kill an agent that goes silent this long
   "docs": true,
+  "progressIntervalSec": 120,       // a lightweight agent notes each running card this often; 0 disables it
   "checker": { "allowedCommands": ["npm test", "npm run typecheck"] },   // what the reviewer may run, on top of the card's verify commands
   "verifyTimeoutSec": 600,         // a verify command that runs longer is killed and counts as failed
   "budgetUsd": 200,                // stop the run (resumable) at this spend; --budget on the command line
@@ -121,7 +210,12 @@ Automatic routing is on by default. The planner labels each task `low`, `medium`
 | Medium: routine features, fixes, tests | `sonnet` | `gpt-5.6-sol` |
 | High: architecture, security, difficult debugging | `claude-fable-5-1` | `gpt-6-astra` |
 
-Planning and review always use high: what the reviewer misses lands unseen. Documentation uses low.
+Planning and review always use high: what the reviewer misses lands unseen. Documentation and the
+progress reporter use low. The reporter works from a digest of the worker's live activity, never
+touches the worktree, and its cost lands on the run, not the card.
+Tool-free reporting is supported by Claude Code and API providers. Codex CLI cannot disable every
+built-in tool, so a Codex reporter is skipped with a log message; set `roles.reporter.harness` to
+`claude` or a configured API provider to use progress notes with Codex workers.
 Unlabelled tasks on older boards use medium. A failed worker attempt retries one tier up; continuations
 keep the same model and session. Fix tasks and merge-conflict resolution run one tier up. Selected models
 appear in the log and live agent list. The Fable model ID follows the
@@ -153,6 +247,7 @@ Configure a mixed-model run without editing JSON:
 /model worker deepseek
 /model checker sonnet
 /model docs haiku
+/model reporter haiku
 /model
 ```
 
@@ -180,6 +275,9 @@ Custom model names use an explicit backend/model pair:
 - `/model <name>` sets a global fallback pin; explicit session role choices and resets take precedence,
   regardless of command order. `/model off` clears that global pin and keeps the role choices.
   The overview always shows which setting applies. `/set model ...` accepts the same arguments.
+- `/progress` shows the progress reporter's interval; `/progress on|off|<sec>` changes it
+  (`--no-progress` and `--progress-interval <sec>` do the same on the command line). It is on with
+  a 120-second interval by default, and `roles.reporter` picks its backend and model like any role.
 - Changes remain session-only until `/config save`. Saving writes explicit configuration changes,
   including the effective model mix, to `.dulger/config.json` and preserves unrelated settings.
   `yes`, `quiet` and `dirty` remain session-only. API keys stay in environment variables; saving
@@ -301,7 +399,8 @@ when a card lands.
 
 - Workers write only inside their worktree (`bypassPermissions` / `workspace-write`). Planner and
   reviewer are read-only, with an allow-list of commands. A refused command is logged and noted on
-  the card, so a review that had to take something on trust says so.
+  the card, so a review that had to take something on trust says so. The progress reporter gets the
+  activity digest in its prompt and no commands at all; it has nothing to refuse.
 - The verify commands come from the planner and run with your shell's privileges in the card's
   worktree, the same access the workers already have there. Read them on the board before dispatching.
 - Agents never run git; dulger commits, merges, cleans up.
@@ -315,7 +414,7 @@ when a card lands.
 ## Known limitations
 
 Codex reports tokens but no prices and no plan-window figure, so its runs show only tokens. The
-documentation agent's commit is the one piece of work nobody reviews. Old runs are never deleted;
+documentation agent's commit has final command verification but no additional agent review. Old runs are never deleted;
 remove `.dulger/runs/<runId>` by hand. CLI workers use their configured harness permissions and integrations; direct API workers use local file
 and shell tools. Provider-specific tool calling behavior can vary; an OpenAI-style key alone does not
 guarantee that an endpoint supports the required Chat Completions tools.

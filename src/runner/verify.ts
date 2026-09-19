@@ -2,27 +2,48 @@
 // in the card's worktree, after its work is committed and synced with the result branch. Whether they
 // pass is a fact the harness establishes, not a judgement an agent makes; a failure sends the card back
 // with the output before any reviewer is paid to look at it.
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import type { VerificationResult } from '../types.ts';
 
 const OUTPUT_TAIL = 3000;
 
-export function runVerification(cwd: string, commands: string[], opts: { timeoutSec: number; signal?: AbortSignal }): VerificationResult[] {
+export async function runVerification(cwd: string, commands: string[], opts: { timeoutSec: number; signal?: AbortSignal }): Promise<VerificationResult[]> {
   const results: VerificationResult[] = [];
   for (const command of commands) {
     if (opts.signal?.aborted) break;
-    const started = Date.now();
-    const r = spawnSync(command, {
-      cwd, shell: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: opts.timeoutSec * 1000, maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, CI: '1', NO_COLOR: '1' },
-    });
-    const timedOut = r.error && (r.error as NodeJS.ErrnoException).code === 'ETIMEDOUT';
-    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
-    const output = timedOut ? `${out}\n[dulger: killed after ${opts.timeoutSec}s]`.trim() : r.error && !r.status ? `${out}\n${r.error.message}`.trim() : out;
-    results.push({
-      command, ok: r.status === 0 && !r.error, exitCode: r.status ?? -1, durationMs: Date.now() - started,
-      output: output.length > OUTPUT_TAIL ? '…' + output.slice(-OUTPUT_TAIL) : output,
-    });
+    results.push(await new Promise<VerificationResult>((resolve) => {
+      const started = Date.now();
+      let output = '';
+      let truncated = false;
+      let reason: string | undefined;
+      let escalation: ReturnType<typeof setTimeout> | undefined;
+      const child = spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, CI: '1', NO_COLOR: '1' } });
+      const append = (text: string) => { output += text; if (output.length > OUTPUT_TAIL) { output = output.slice(-OUTPUT_TAIL); truncated = true; } };
+      child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+      child.stdout.on('data', append); child.stderr.on('data', append);
+      const kill = (signal: NodeJS.Signals) => {
+        if (!child.pid) return;
+        try { if (process.platform === 'win32') child.kill(signal); else process.kill(-child.pid, signal); }
+        catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') child.kill(signal); }
+      };
+      const stop = (why: string) => {
+        if (reason) return;
+        reason = why;
+        kill('SIGTERM');
+        escalation = setTimeout(() => kill('SIGKILL'), 1000);
+      };
+      const abort = () => stop('cancelled');
+      const timer = setTimeout(() => stop(`killed after ${opts.timeoutSec}s`), opts.timeoutSec * 1000);
+      opts.signal?.addEventListener('abort', abort, { once: true });
+      if (opts.signal?.aborted) abort();
+      child.on('error', (err) => { reason = err.message; });
+      child.on('close', (code) => {
+        if (reason) kill('SIGKILL');
+        clearTimeout(timer); clearTimeout(escalation);
+        opts.signal?.removeEventListener('abort', abort);
+        resolve({ command, ok: code === 0 && !reason, exitCode: code ?? -1, durationMs: Date.now() - started, output: `${truncated ? '…' : ''}${output.trim()}${reason ? `\n[dulger: ${reason}]` : ''}`.trim() });
+      });
+    }));
   }
   return results;
 }

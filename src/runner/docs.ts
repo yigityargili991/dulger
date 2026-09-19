@@ -1,3 +1,5 @@
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 // The documentation agent: one write session on top of the merged result, merged back like a card.
 import * as store from '../board/store.ts';
 import * as git from '../git/worktree.ts';
@@ -18,8 +20,13 @@ export async function runDocs(rt: Runtime): Promise<void> {
   board.docs = { status: 'running' };
   save('docs_started');
   log('documentation agent started');
-  git.createWorktree(rt.repoRoot, cwd, branch, board.runBranch);
-  rt.setupWorktree(cwd);
+  if (!existsSync(join(cwd, '.git'))) git.createWorktree(rt.repoRoot, cwd, branch, board.runBranch);
+  try { await rt.setupWorktree(cwd); } catch (err) {
+    board.docs = { status: 'failed', summary: (err as Error).message };
+    save('docs_failed');
+    log(board.docs.summary!);
+    return;
+  }
   const stat = git.diffStat(cwd, board.baseRef);
   const r = await rt.agent<DocsResult>('docs', {
     prompt: P.docsPrompt(board, stat, rt.context({ root: cwd })), systemPrompt: P.docsSystem(), cwd, schema: DOCS_SCHEMA, access: 'write',

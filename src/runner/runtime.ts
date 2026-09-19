@@ -1,6 +1,6 @@
 // What every step of a run shares: the board and how to persist it, the registry the UI watches,
 // memory, prompt context, cost accounting, and one way to run an agent for a role.
-import { execSync } from 'node:child_process';
+import { runVerification } from './verify.ts';
 import { mkdirSync } from 'node:fs';
 import { getAdapter } from '../adapters/index.ts';
 import type { AdapterResult, AdapterRunOptions } from '../adapters/types.ts';
@@ -25,7 +25,7 @@ export interface RunHooks {
 export const USAGE_LIMIT = /hit your \w+ limit|usage limit|rate.?limit|too many requests|\b429\b/i;
 
 /** What a step passes to run an agent; model, budget, logging and cancellation are filled in per role. */
-export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd'>;
+export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd'> & { signal?: AbortSignal };
 
 export type AgentResult<T> = Omit<AdapterResult, 'output'> & { output?: T };
 
@@ -45,7 +45,7 @@ export interface Runtime {
   /** The reason a card must stop now, when it has spent its budget. */
   overBudget(card: Card): string | undefined;
   /** Run config.worktreeSetup in a freshly created worktree (installs dependencies and the like). */
-  setupWorktree(cwd: string): void;
+  setupWorktree(cwd: string, signal?: AbortSignal): Promise<void>;
   /** The common prompt context (run, board, learnings, project notes) for a given working directory. */
   context(opts?: ContextOptions): string;
   agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>>;
@@ -65,18 +65,21 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
   const memory = openMemory(repoRoot, config.memory);
 
   async function agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>> {
+    const { signal: requestSignal, ...run } = request;
     const card = board.cards.find((c) => c.id === ids.cardId);
     const task = card?.tasks.find((t) => t.id === ids.taskId);
     const rc = roleConfig(config, role, { card, task });
+    const adapter = getAdapter(rc.harness, config);
+    if (run.access === 'none' && adapter.capabilities?.toolFree === false) return { ok: false, text: '', exitCode: -1, error: `${rc.harness} does not support tool-free execution; choose another reporter harness.` };
     hooks.log?.(`${role}${ids.cardId ? ` ${ids.cardId}${ids.taskId ? `/${ids.taskId}` : ''}` : ''} → ${rc.harness}${rc.model ? ` / ${rc.model}` : ''}`);
     const r = await runAgent({
-      registry, adapter: getAdapter(rc.harness, config), role, harness: rc.harness,
+      registry, adapter, role, harness: rc.harness,
       cardId: ids.cardId, taskId: ids.taskId, logDir, logName: ids.logName,
-      stallTimeoutSec: config.stallTimeoutSec, parentSignal: signal,
-      run: { ...request, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
+      stallTimeoutSec: config.stallTimeoutSec, parentSignal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
+      run: { ...run, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
-    if (!r.ok && r.error && USAGE_LIMIT.test(r.error) && !signal.aborted) hooks.halt?.(r.error);
+    if (role !== 'reporter' && !r.ok && r.error && USAGE_LIMIT.test(r.error) && !signal.aborted) hooks.halt?.(r.error);
     if (r.denied?.length) hooks.log?.(yellow(`${role}${ids.cardId ? ` ${ids.cardId}` : ''} was denied ${r.denied.length === 1 ? 'a command' : `${r.denied.length} commands`}: ${r.denied.join('; ')}`));
     if (r.rateLimits) board.rateLimits = r.rateLimits; // a snapshot: the latest reading wins
     return { ...r, output: r.output as T | undefined };
@@ -113,15 +116,10 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       const limit = config.cardBudgetUsd;
       return limit !== undefined && card.costUsd >= limit ? `card budget of $${limit} reached ($${card.costUsd.toFixed(2)} spent)` : undefined;
     },
-    setupWorktree(cwd) {
+    async setupWorktree(cwd, setupSignal = signal) {
       if (!config.worktreeSetup) return;
-      try {
-        execSync(config.worktreeSetup, { cwd, stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 60_000 });
-      } catch (err) {
-        const e = err as { stderr?: Buffer; message: string };
-        const tail = e.stderr?.toString().trim().split('\n').slice(-3).join(' | ') || e.message;
-        hooks.log?.(`worktree setup failed in ${cwd}: ${tail}`);
-      }
+      const result = (await runVerification(cwd, [config.worktreeSetup], { timeoutSec: 600, signal: setupSignal }))[0];
+      if (!result?.ok) throw new Error(`worktree setup failed: ${result?.output || 'cancelled'}`);
     },
     context: (opts = {}) => buildCommonContext(repoRoot, board, memory, opts),
   };

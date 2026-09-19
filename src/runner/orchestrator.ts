@@ -1,15 +1,17 @@
+import { checkpoint } from '../board/lifecycle.ts';
+import { verifyFinalResult } from './finalVerification.ts';
 // The run: plan -> (approval happens in the CLI) -> dispatch ready cards in parallel -> docs.
-// Card and docs lifecycles live in card.ts and docs.ts; this file only schedules them.
+// Dispatch owns scheduling and live controls; this module coordinates the run phases.
 import { mkdirSync, rmdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Config } from '../config.ts';
 import { worktreesDir } from '../paths.ts';
 import * as store from '../board/store.ts';
-import { allTerminal, blockUnreachable, readyCards } from '../board/scheduler.ts';
 import { PLANNER_SCHEMA } from '../roles/schemas.ts';
 import * as P from '../roles/prompts.ts';
-import { markFailed, type AgentRegistry } from './agentProcess.ts';
-import { runCard } from './card.ts';
+import type { AgentRegistry } from './agentProcess.ts';
+import { createDispatcher } from './dispatch.ts';
+import { startProgressReporter } from './progress.ts';
 import { yellow } from '../ui/ansi.ts';
 import { runDocs } from './docs.ts';
 import { createRuntime, type AgentRequest, type RunHooks } from './runtime.ts';
@@ -36,12 +38,16 @@ export interface Orchestrator {
   /** Run all cards + docs until the board is terminal. */
   execute(): Promise<void>;
   abort(): void;
+  togglePause(): boolean;
+  stopCard(id: string): void;
+  guideCard(id: string, text: string): void;
 }
 
 export function createOrchestrator(repoRoot: string, board: Board, config: Config, hooks: OrchestratorHooks = {}): Orchestrator {
   const ctrl = new AbortController();
   const rt = createRuntime(repoRoot, board, config, { ...hooks, halt }, ctrl.signal);
   const { log, save } = rt;
+  const dispatch = createDispatcher(rt, replan, () => ctrl.abort());
 
   function halt(reason: string): void {
     if (board.halted) return;
@@ -55,6 +61,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   async function plan(feedback?: string): Promise<void> {
     const revising = feedback !== undefined;
     const revision = revising ? (board.plan?.revisions ?? 0) + 1 : 0;
+    checkpoint(board, 'planning');
+    save('checkpoint');
     log(revising ? `revising the plan (${revision})…` : 'planning…');
 
     const r = await rt.agent<PlannerResult>('planner', plannerRequest(feedback), { logName: revising ? `planner.rev${revision}` : 'planner' });
@@ -62,6 +70,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     if (!r.ok || !r.output?.cards?.length) throw new Error(`planner failed: ${r.error ?? 'no cards returned'}`);
 
     applyPlan(r.output, r.sessionId, revision);
+    checkpoint(board, 'ready');
     save('planned', { data: { cards: board.cards.length, revision } });
     log(`${revising ? 'revised' : 'planned'}: ${board.cards.length} cards`);
     for (const w of planWarnings(board.cards)) log(yellow(`plan: ${w}`));
@@ -122,45 +131,36 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   async function execute(): Promise<void> {
     if (board.cards.length === 0) throw new Error('board has no cards; run plan() first');
     mkdirSync(join(worktreesDir(repoRoot), board.runId), { recursive: true });
-    const inFlight = new Map<string, Promise<void>>();
-    // Failures present at the start (a resumed run) were dealt with before; only new ones trigger a replan.
-    const handledFailures = new Set(board.cards.filter((c) => c.status === 'failed').map((c) => c.id));
-
-    while (!allTerminal(board) && !ctrl.signal.aborted) {
-      const failed = board.cards.filter((c) => c.status === 'failed' && !handledFailures.has(c.id));
-      for (const c of failed) handledFailures.add(c.id);
-      const byWork = failed.filter((c) => c.failure !== 'infrastructure');
-      for (const c of failed) if (c.failure === 'infrastructure') log(`card ${c.id} failed on dulger's side, not on its work; dulger resume retries it from its worktree`);
-      if (byWork.length && (board.replans ?? 0) < config.maxReplans) await replan(byWork);
-      if (ctrl.signal.aborted) break;
-      for (const c of blockUnreachable(board)) {
-        log(`card ${c.id} ${c.reason}`);
-        save('card_blocked', { cardId: c.id, message: c.reason });
-      }
-      for (const card of readyCards(board, config.concurrency)) {
-        inFlight.set(card.id, runCard(rt, card).catch((err) => {
-          card.status = 'failed';
-          markFailed(rt.registry, card.id);
-          card.reason = `internal error: ${(err as Error).message}`;
-          log(`card ${card.id} crashed: ${(err as Error).message}`);
-          save('card_failed', { cardId: card.id, message: (err as Error).message });
-        }).finally(() => inFlight.delete(card.id)));
-      }
-      if (inFlight.size === 0) {
-        if (allTerminal(board)) break;
-        throw new Error('scheduler stuck: no runnable cards and nothing in flight');
-      }
-      await Promise.race(inFlight.values());
+    checkpoint(board, 'running');
+    save('checkpoint');
+    const progress = startProgressReporter(rt);
+    try {
+      await dispatch.run();
+    } finally {
+      progress.stop();
+      await progress.done;
+      // Cancelled and discarded notes still cost tokens, including on halted runs.
+      if (ctrl.signal.aborted) checkpoint(board, 'stopped');
+      store.saveBoard(repoRoot, board);
     }
-    await Promise.all(inFlight.values());
     if (ctrl.signal.aborted) { if (!board.halted) save('aborted'); return; }
+    checkpoint(board, 'docs');
+    save('checkpoint');
     await runDocs(rt);
+    if (ctrl.signal.aborted) { checkpoint(board, 'stopped'); save('aborted'); return; }
+    checkpoint(board, 'verifying');
+    save('checkpoint');
+    await verifyFinalResult(rt);
     try { rmdirSync(join(worktreesDir(repoRoot), board.runId)); } catch { /* not empty: failed worktrees are kept */ }
-    save('finished');
+    checkpoint(board, ctrl.signal.aborted ? 'stopped' : 'finished');
+    save(ctrl.signal.aborted ? 'aborted' : 'finished');
   }
 
   return {
     board, registry: rt.registry, plan, execute,
     abort() { ctrl.abort(); },
+    togglePause: dispatch.togglePause,
+    stopCard: dispatch.stopCard,
+    guideCard: dispatch.guideCard,
   };
 }

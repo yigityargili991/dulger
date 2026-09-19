@@ -7,7 +7,14 @@ import { P, c, role as roleColour, segments, status as statusColour, window as w
 import { layout, compactBoard, CARD_ROWS } from './layout.ts';
 import { bar, cell, fit, plainText, repeat, spread, width, wrap } from './text.ts';
 
-export interface Prompt { label: string; text: string; cursor: number; hint: string }
+export interface Prompt {
+  label: string;
+  text: string;
+  cursor: number;
+  hint: string;
+  /** The dim prediction shown after the cursor, empty when there is none. */
+  ghost?: string;
+}
 
 export interface ViewState {
   board: Board;
@@ -175,7 +182,8 @@ function boardPane(s: ViewState, height: number): string[] {
 }
 
 function agentFor(s: ViewState, card: Card): AgentStatus | undefined {
-  const mine = s.agents.filter((a) => a.cardId === card.id);
+  // Reporters describe the card's agent; they are not it. The card box and detail show the worker.
+  const mine = s.agents.filter((a) => a.cardId === card.id && a.role !== 'reporter');
   return mine.find((a) => a.state === 'running' || a.state === 'starting') ?? mine.at(-1);
 }
 
@@ -242,10 +250,26 @@ function stateLine(s: ViewState, card: Card, w: number): string {
   }
 }
 
+/** How long a progress note is still shown as the card's line before the live agent message takes back over. */
+const NOTE_FRESH_MS = 5 * 60_000;
+
+/** The reporter's note, when it is fresh enough to still describe what the card is doing. */
+function progressLine(s: ViewState, card: Card): string | undefined {
+  const p = card.progress;
+  if (!p || s.now - Date.parse(p.at) > NOTE_FRESH_MS) return undefined;
+  const body = roleColour.reporter(s.g.reporter) + ' ' + c.info(plainText(p.note));
+  return p.attention ? body + c.warn(` — ${plainText(p.attention)}`) : body;
+}
+
 function agentLine(s: ViewState, card: Card): string {
   const a = agentFor(s, card);
   switch (card.status) {
-    case 'in_progress': case 'review':
+    case 'in_progress': {
+      const note = progressLine(s, card);
+      if (note) return note;
+      return a ? roleColour[a.role](s.g[a.role]) + ' ' + c.muted(plainText(a.lastMessage ?? a.state)) : '';
+    }
+    case 'review':
       return a ? roleColour[a.role](s.g[a.role]) + ' ' + c.muted(plainText(a.lastMessage ?? a.state)) : '';
     case 'done': return c.muted(plainText(card.review ?? card.summary ?? ''));
     case 'failed': case 'blocked': return c.muted(`${card.attempts} attempt${card.attempts === 1 ? '' : 's'} · ${fmtSpend(card)}`);
@@ -262,6 +286,8 @@ function cardDetail(s: ViewState, card: Card, w: number): string[] {
   out.push(spread(`${cardIcon(s, card)} ${c.bold(plainText(card.id))} ${c.bold(plainText(card.title))}`, right, w));
   out.push(...wrap(card.description, w, 4).map((l) => c.muted(l)));
   if (card.dependsOn.length) out.push(c.muted(`after ${plainText(card.dependsOn.join(', '))}`));
+  if (card.worker) out.push(...wrap(`Worker: ${card.worker.harness ?? 'session harness'} / ${card.worker.model ?? 'automatic'}`, w));
+  for (const note of card.guidance ?? []) out.push(...wrap(`User instruction: ${note}`, w).map((line) => c.info(line)));
   out.push('');
 
   const half = w < 50 ? w : Math.floor((w - 2) / 2);
@@ -278,6 +304,14 @@ function cardDetail(s: ViewState, card: Card, w: number): string[] {
   }
   if (w < 50) out.push(...left, '', ...rightCol);
   else for (let i = 0; i < Math.max(left.length, rightCol.length); i++) out.push(cell(left[i] ?? '', half) + '  ' + cell(rightCol[i] ?? '', half));
+
+  if (card.progress) {
+    const p = card.progress;
+    out.push('');
+    out.push(spread(`${roleColour.reporter(g.reporter)} ${c.accent('Progress')}`, c.muted(`${fmtDuration(Math.max(0, s.now - Date.parse(p.at)))} ago`), w));
+    for (const l of wrap(p.note, w - 2)) out.push(c.info(`  ${l}`));
+    if (p.attention) for (const l of wrap(p.attention, w - 2)) out.push(c.warn(`${g.warn} ${l}`));
+  }
 
   if (card.verification?.length) {
     out.push('');
@@ -315,7 +349,7 @@ function agentLines(s: ViewState): string[] {
     const icon = liveNow ? c.warn(spinner(s)) : a.state === 'done' ? c.ok(g.check) : c.bad(g.cross);
     const where = a.cardId ? (a.taskId ? `${a.cardId}/${a.taskId}` : a.cardId) : 'run';
     const paint = liveNow ? c.text : c.muted;
-    const head = `${icon} ${c.bold(plainText(a.id).padEnd(3))} ${roleColour[a.role](g[a.role] + ' ' + a.role.padEnd(7))} ${paint(plainText(where).padEnd(9))} ${c.muted(plainText(a.model ?? a.harness))} ${c.muted(fmtDuration((a.endedAt ?? s.now) - a.startedAt).padStart(5))} ${c.muted(`${a.turns}t`.padStart(4))}  `;
+    const head = `${icon} ${c.bold(plainText(a.id).padEnd(3))} ${roleColour[a.role](g[a.role] + ' ' + a.role.padEnd(8))} ${paint(plainText(where).padEnd(9))} ${c.muted(plainText(a.model ?? a.harness))} ${c.muted(fmtDuration((a.endedAt ?? s.now) - a.startedAt).padStart(5))} ${c.muted(`${a.turns}t`.padStart(4))}  `;
     const tail = liveNow ? c.text(plainText(a.lastMessage ?? a.state)) : c.muted(plainText(a.state === 'stalled' ? 'stalled' : (a.lastMessage ?? a.state)));
     lines.push(head + fit(tail, cols - width(head)));
   }
@@ -345,7 +379,9 @@ function promptLine(p: Prompt, cols: number): { line: string; cursorCol: number 
   while (width(chars.slice(from, cursor).join('')) >= avail) from++;
   let visible = chars.slice(from).join('');
   if (width(visible) > avail) visible = fit(visible, avail, '');
-  return { line: head + visible, cursorCol: headW + width(chars.slice(from, cursor).join('')) };
+  // The prediction belongs after what is typed: only show it with the cursor at the end of the line.
+  const ghost = p.ghost && cursor === chars.length ? fit(p.ghost, Math.max(0, avail - width(visible)), '') : '';
+  return { line: head + visible + (ghost ? c.muted(ghost) : ''), cursorCol: headW + width(chars.slice(from, cursor).join('')) };
 }
 
 function bottomBar(s: ViewState): string {
@@ -353,7 +389,7 @@ function bottomBar(s: ViewState): string {
   const key = (k: string, what: string) => `${c.key(` ${k} `)}${c.keyText(`${what} `)}`;
   let hints: string;
   if (s.prompt && s.focus === 'input') {
-    hints = key('tab', 'board') + key('↑↓', 'history') + c.keyText(` ${plainText(s.prompt.hint)}`);
+    hints = key('tab', s.prompt.ghost ? 'take' : 'board') + key('↑↓', 'history') + c.keyText(` ${plainText(s.prompt.hint)}`);
   } else if (s.open) {
     hints = key('↑↓', 'scroll') + key('esc', 'back') + (s.prompt ? key('tab', 'prompt') : key('^c', 'stop'));
   } else {

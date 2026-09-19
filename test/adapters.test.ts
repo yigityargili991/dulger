@@ -106,3 +106,14 @@ test('arg builders encode access mode', () => {
   assert.deepEqual(cxr.slice(0, 3), ['exec', 'resume', 'id1']);
   assert.ok(!cxr.includes('-C') && !cxr.includes('--sandbox'));
 });
+
+test('tool-free CLI requests disable Claude tools and reject unsupported Codex calls', () => {
+  const opts = { prompt: 'digest', systemPrompt: '[role:reporter]', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal, access: 'none', mcp: true, allowedCommands: ['npm test'] } as const;
+  const claude = buildClaudeArgs({ ...opts, allowedCommands: [...opts.allowedCommands] });
+  assert.equal(claude[claude.indexOf('--tools') + 1], '');
+  assert.ok(claude.includes('--strict-mcp-config'));
+  assert.ok(claude.includes('--disable-slash-commands'));
+  assert.ok(claude.includes('{"disableAllHooks":true}'));
+  assert.ok(!claude.includes('--allowedTools'));
+  assert.throws(() => buildCodexArgs({ ...opts, allowedCommands: [] }, { lastMessage: '/l' }, { bypassSandbox: true }), /does not support tool-free reporting/);
+});

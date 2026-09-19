@@ -1,3 +1,4 @@
+import { transitionCard } from '../board/lifecycle.ts';
 // One card's life: worktree -> tasks (sequential, with continuations and retries) -> commit -> sync
 // with the result branch -> check -> land. Review rejections and merge conflicts append fix tasks; the
 // card fails after maxAttempts rejections or when a task is out of tries.
@@ -25,7 +26,7 @@ const CONFLICT_FEEDBACK = (files: string) =>
  * aborted (the board stays resumable).
  */
 export async function runCard(rt: Runtime, card: Card): Promise<void> {
-  const cwd = prepareWorktree(rt, card);
+  const cwd = await prepareWorktree(rt, card);
   let conflicts = 0;
   let checkFailures = 0;
   while (!rt.signal.aborted) {
@@ -68,14 +69,15 @@ type Outcome =
   | { kind: 'conflict'; files: string };
 
 /** The card's worktree on its wip branch, reused when resuming. */
-function prepareWorktree(rt: Runtime, card: Card): string {
+async function prepareWorktree(rt: Runtime, card: Card): Promise<string> {
   const cwd = store.worktreeDir(rt.repoRoot, rt.board.runId, card.id);
   card.branch = `dulger-wip/${rt.board.runId}/${card.id}`;
-  card.status = 'in_progress';
+  transitionCard(card, 'in_progress');
   if (!existsSync(join(cwd, '.git'))) {
     git.createWorktree(rt.repoRoot, cwd, card.branch, rt.board.runBranch);
-    rt.setupWorktree(cwd);
+    card.worktreeReady = false;
   }
+  if (!card.worktreeReady) { await rt.setupWorktree(cwd, rt.signal); card.worktreeReady = true; }
   rt.save('card_started', { cardId: card.id });
   rt.log(`card ${card.id} started (${card.tasks.length} task${card.tasks.length === 1 ? '' : 's'})`);
   return cwd;
@@ -111,14 +113,15 @@ async function runPendingTasks(rt: Runtime, card: Card, cwd: string): Promise<Ta
 /** Commit, then under the merge queue: sync with the result branch, review the integrated state, land. */
 async function reviewAndLand(rt: Runtime, card: Card, cwd: string): Promise<Outcome> {
   const { board, signal } = rt;
-  card.status = 'review';
+  transitionCard(card, 'review');
   git.commitAll(cwd, `dulger: ${card.id} ${card.title}`);
   rt.save('card_review', { cardId: card.id });
   if (rt.integrating()) rt.log(`card ${card.id} waiting for the merge queue`);
   return rt.integrate(async () => {
+    if (signal.aborted) return { kind: 'aborted' };
     const merged = git.mergeFrom(cwd, board.runBranch, { keepConflicts: true });
     if (!merged.ok) return { kind: 'conflict', files: merged.conflicts?.join(', ') ?? '' };
-    if (!verify(rt, card, cwd)) return { kind: 'rejected', verdict: { pass: false, feedback: verificationFeedback(card.verification ?? []), summary: '' } };
+    if (!await verify(rt, card, cwd)) return { kind: 'rejected', verdict: { pass: false, feedback: verificationFeedback(card.verification ?? []), summary: '' } };
     if (signal.aborted) return { kind: 'aborted' };
     const checked = await check(rt, card, cwd);
     if (signal.aborted) return { kind: 'aborted' };
@@ -165,6 +168,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
   const sys = P.workerSystem();
   const ctx = rt.context({ files: cardFiles(card, cwd), root: cwd });
   let prompt = task.kind === 'fix' ? P.workerFixPrompt(board, card, task, ctx) : P.workerPrompt(board, card, task, ctx);
+  if (card.guidance?.length) prompt += `\n\nUser instructions for this attempt:\n${card.guidance.join('\n')}`;
   let sessionId: string | undefined;
   let last: WorkerResult | undefined;
 
@@ -205,10 +209,10 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
  * The verification gate: run the card's verify commands in its worktree. False when one fails; the card
  * then goes back to work with the output, without a reviewer looking at it first.
  */
-function verify(rt: Runtime, card: Card, cwd: string): boolean {
+async function verify(rt: Runtime, card: Card, cwd: string): Promise<boolean> {
   if (!card.verify.length) { card.verification = undefined; return true; }
   rt.log(`card ${card.id} verifying: ${card.verify.join(', ')}`);
-  card.verification = runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal });
+  card.verification = await runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal });
   const failed = card.verification.filter((r) => !r.ok);
   if (!failed.length) return true;
   rt.log(`card ${card.id} verification failed: ${verificationSummary(failed)}`);
@@ -242,9 +246,7 @@ function recordReview(card: Card, verdict: CheckResult): void {
 }
 
 function finishCard(rt: Runtime, card: Card, cwd: string, status: 'done' | 'failed', reason?: string, failure: 'work' | 'infrastructure' = 'work'): void {
-  card.status = status;
-  card.reason = status === 'failed' ? reason : undefined;
-  card.failure = status === 'failed' ? failure : undefined;
+  transitionCard(card, status, reason, failure);
   if (status === 'done') {
     git.removeWorktree(rt.repoRoot, cwd, card.branch);
     rt.log(`card ${card.id} done → merged into ${rt.board.runBranch}`);

@@ -1,0 +1,53 @@
+image: node:24-bookworm-slim
+
+stages: [test, build, deploy]
+
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
+test:
+  stage: test
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends git
+    - git config --global user.name 'Dulger CI'
+    - git config --global user.email 'ci@dulger.invalid'
+    - npm ci --ignore-scripts
+  script:
+    - npm run typecheck
+    - npm test
+
+docs:build:
+  stage: build
+  script:
+    - npm ci --prefix docs
+    - npm run --prefix docs build
+    - npm test --prefix docs
+  artifacts:
+    paths: [docs/dist/]
+    expire_in: 1 week
+
+docs:deploy:
+  stage: deploy
+  needs: [docs:build]
+  resource_group: docs-production
+  environment:
+    name: docs-production
+    url: https://dulger-site-production.up.railway.app
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+      changes:
+        - README.md
+        - CHANGELOG.md
+        - package.json
+        - docs/**/*
+        - .gitlab-ci.yml
+  script:
+    - ': "${RAILWAY_TOKEN:?Set the protected, masked Railway production project token in GitLab CI variables}"'
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates
+    - sh docs/install-railway.sh
+    - railway up docs/dist --path-as-root --ci --project b72364bc-f1c7-4f92-a6b7-bd140de14567 --environment bb539c7c-4029-4764-9d55-a38f6ea49a3c --service 79220dd3-cc00-4631-9428-f36ae76980f2
+    - npm run --prefix docs verify-deployment

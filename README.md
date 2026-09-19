@@ -7,7 +7,7 @@ Agents use headless [Claude Code](https://claude.com/claude-code) or
 CLI backends use your existing login; API backends use environment variables. No build step.
 
 Website: [dulger-site-production.up.railway.app](https://dulger-site-production.up.railway.app) — the
-docs as pages, built by dulger itself from this README.
+docs as pages, generated from this README and CHANGELOG on releases and documentation updates.
 
 ```sh
 cd your-repo
@@ -109,7 +109,9 @@ requires inspection of the displayed path.
    from its worktree.
 5. **Replan.** If a card fails, the planner replans the remaining work once.
 6. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
-7. **Report.** What landed, what did not, what was verified, files, reviewer notes, spend, next step.
+7. **Final verification.** Rerun the landed cards' commands after documentation on the exact result
+   revision. Failed or stale checks block dulger's merge actions.
+8. **Report.** What landed, what did not, what was verified, files, reviewer notes, spend, next step.
 
 Your checkout is untouched. The result is on `dulger/<runId>`; `git merge` it when you are happy.
 
@@ -143,6 +145,7 @@ dulger resume [runId]         continue an interrupted run
 dulger retry <card> [runId]   give a failed card one more review round, then continue the run
 dulger board | report [runId] print a run's board / what it landed (report --full: every summary, review and note)
 dulger runs                   list runs
+dulger doctor                 check backend and repository readiness without a model call
 dulger memory [list|add|rm|compact|path]
 dulger clean                  remove leftover worktrees and wip branches
 
@@ -151,6 +154,7 @@ dulger clean                  remove leftover worktrees and wip branches
 --base-url <url>              --api-key-env <name>  --no-routing
 --repo <path>                 --quiet               --max-replans <n>     --version
 --no-progress                 --progress-interval <sec>
+--current-settings            --budget <usd>         --card-budget <usd>
 ```
 
 `--harness fake` runs the whole pipeline without an LLM, for trying things out.

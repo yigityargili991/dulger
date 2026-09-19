@@ -1,0 +1,13 @@
+{
+  "name": "dulger-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "verify-deployment": "node verify-deployment.mjs"
+  },
+  "devDependencies": {
+    "marked": "18.0.13"
+  }
+}

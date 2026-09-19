@@ -114,3 +114,13 @@ status, goal and spend visible before presenting recovery or merge actions.
 `UX-CONTRACT.md` records navigation, draft, confirmation and recovery semantics.
 Live controls use the existing prompt editor and status bar, with textual hints;
 no additional palette, fonts, modal system or animation is introduced.
+
+## Documentation website
+
+The public documentation is a separate content surface, preserving the original site's 46rem
+reading column, wrapping text navigation, system sans-serif prose and monospace examples.
+`docs/style.css` owns the existing light/dark web palette and shared page styling; terminal tokens
+do not apply to the website. `docs/build.mjs` owns the common navigation, version label and footer.
+Content comes from README and CHANGELOG, with existing routes retained. Use semantic headings,
+a skip link, visible focus, browser-native links and locally scrolling code/tables on small screens.
+There is no client-side state, animation, font download or theme flash.

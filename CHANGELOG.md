@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-09-19
 
 - Added readiness checks, repository-local named profiles, execution limits in setup, a searchable
   run browser, direct plan editing, live pause/stop/instruction controls, and a persistent result

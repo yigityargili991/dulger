@@ -42,7 +42,7 @@ ${VERIFY_RULES(allowedCommands)}
 - Do not include a documentation card; a separate documentation agent runs at the end.`;
 }
 
-export function replanSystem(existingIds: string[], allowedCommands: string[]): string {
+export function replanSystem(existingIds: string[], allowedCommands: string[], boardCommands: string[]): string {
   return `[role:planner] You are the lead engineer replanning a kanban board after part of the work failed.
 
 ${RULES_COMMON}
@@ -54,6 +54,7 @@ Replanning rules:
 - Your answer REPLACES every card that is currently waiting (backlog or blocked). Return the complete set of remaining cards: keep the ones that are still right by returning them again, changed or not.
 - Return an empty list of cards if nothing more can usefully be done.
 - Every card id must be new. Ids already in use: ${existingIds.join(', ')}.
+- Reuse the verify commands already on the board where they fit: ${boardCommands.join(', ') || '(none)'}. Any other verify command, unless it is one the reviewer may run (listed below), needs the person's approval, and your whole answer is dropped if they refuse.
 - Explore the repository as needed; the planning rules below still apply.
 - The goal is still the contract: what it asks for, with the technologies it names. List decisions in "assumptions" and anything you leave out in "omitted" with the reason; never reinterpret the goal silently.
 

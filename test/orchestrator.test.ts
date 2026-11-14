@@ -481,6 +481,93 @@ test('a replan agent that dies gets one more session before the replan counts as
   assert.equal(board.cards.find((c) => c.id === 'c4')?.status, 'done');
 });
 
+/** c1 never passes review, so a replan answers with `cards`. c2 verifies with `true`, which puts `true` on the board. */
+function replanScript(cards: PlannerResult['cards'], systemPrompts: string[] = []): FakeScript {
+  const first = structuredClone(DEFAULT_FAKE_SCRIPT.planner as PlannerResult);
+  first.cards[1]!.verify = ['true'];
+  return {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    checker: (opts) => (/Card under review: c1 /.test(opts.prompt) ? { pass: false, feedback: ['never good enough'], summary: '' } : { pass: true, feedback: [], summary: 'ok' }),
+    planner: (opts, i) => { if (i === 0) return first; systemPrompts.push(opts.systemPrompt); return { cards }; },
+  };
+}
+const smoke = (verify: string[], id = 'c4'): PlannerResult['cards'][number] => ({ id, title: 'Smoke test', description: '', acceptanceCriteria: [], dependsOn: ['c2'], verify, tasks: [{ id: 't1', title: 'test', instructions: '' }] });
+
+test('a replan that only reuses approved verify commands is applied without asking', async () => {
+  const systemPrompts: string[] = [];
+  registerAdapter('fake', createFakeAdapter(replanScript([smoke(['true', ' test -f README.md '])], systemPrompts)));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-approved');
+  let asked = 0;
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, checker: { allowedCommands: ['test -f README.md'] } }, { approveCommands: async () => { asked++; return false; } });
+  await orch.plan();
+  await orch.execute();
+  assert.equal(asked, 0, 'on the board or in checker.allowedCommands means approved');
+  assert.equal(board.cards.find((c) => c.id === 'c4')?.status, 'done');
+  assert.match(systemPrompts[0]!, /Reuse the verify commands already on the board where they fit: true\./);
+});
+
+test('a replan that adds a verify command is applied once the person approves it', async () => {
+  const asked: Array<{ commands: string[]; cards: string[] }> = [];
+  registerAdapter('fake', createFakeAdapter(replanScript([smoke(['true', 'echo new-check'], 'c3')])));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-yes');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { approveCommands: async (commands, cards) => { asked.push({ commands, cards: cards.map((c) => c.id) }); return true; } });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(asked, [{ commands: ['echo new-check'], cards: ['c3-r1'] }], 'asked once, about the new command only, naming the card as it lands');
+  assert.equal(board.cards.find((c) => c.id === 'c3-r1')?.status, 'done');
+  assert.equal(board.cards.find((c) => c.id === 'c3')?.status, 'replaced');
+});
+
+test('a replan whose new verify command is refused, or that nobody can approve, leaves the board as it is', async () => {
+  for (const [name, hooks] of [['refused', { approveCommands: async () => false }], ['no hook', {}]] as const) {
+    registerAdapter('fake', createFakeAdapter(replanScript([smoke(['echo new-check'])])));
+    const repo = tempRepo();
+    const board = createBoard(repo, 'demo', 'run-replan-no');
+    const logs: string[] = [];
+    const orch = createOrchestrator(repo, board, { ...config, docs: false }, { ...hooks, log: (m) => logs.push(m) });
+    await orch.plan();
+    await orch.execute();
+    assert.deepEqual(board.cards.map((c) => c.id), ['c1', 'c2', 'c3'], name);
+    assert.equal(board.cards[2]!.status, 'blocked', `${name}: the waiting card was not replaced`);
+    assert.equal(board.replans, 1, name);
+    const events = readFileSync(join(store.runDir(repo, board.runId), 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    assert.match(events.find((e) => e.type === 'replan_failed')?.message ?? '', /^refused because its new verify command was not approved: `echo new-check`$/, name);
+    assert.ok(logs.some((l) => l.startsWith('replan failed: refused because')), name);
+    assert.ok(!existsSync(store.worktreeDir(repo, board.runId, 'c4')), `${name}: nothing ran the new command`);
+  }
+});
+
+test('an approved command does not approve a longer one that starts with it', async () => {
+  const asked: string[][] = [];
+  registerAdapter('fake', createFakeAdapter(replanScript([smoke(['npm test', 'npm test; echo x', 'true && curl x'])])));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-prefix');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, checker: { allowedCommands: ['npm test'] } }, { approveCommands: async (commands) => { asked.push(commands); return false; } });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(asked, [['npm test; echo x', 'true && curl x']]);
+});
+
+test('stopping the run while a replan waits for approval refuses it instead of hanging', { timeout: 5000 }, async () => {
+  registerAdapter('fake', createFakeAdapter(replanScript([smoke(['echo new-check'])])));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-abort');
+  let taken = false;
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, { approveCommands: (_commands, _cards, signal) => {
+    signal.addEventListener('abort', () => { taken = true; });
+    setTimeout(() => orch.abort(), 5);
+    return new Promise<boolean>(() => {}); // never answered
+  } });
+  await orch.plan();
+  await orch.execute();
+  assert.equal(taken, true, 'the question is told to go away');
+  assert.ok(!board.cards.some((c) => c.id === 'c4'));
+  assert.equal(board.checkpoint?.phase, 'stopped');
+});
+
 test('planWarnings flags cards too big to review and foundation cards that do too much', () => {
   const card = (id: string, tasks: number, dependsOn: string[] = []) => ({
     id, title: id, description: '', acceptanceCriteria: [], dependsOn, verify: [], status: 'backlog' as const, attempts: 0, feedback: [], costUsd: 0,

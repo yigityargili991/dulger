@@ -38,6 +38,16 @@ with a keyboard. No new web, locale, payment or identity workflows are introduce
   `stop`, cancels that card, preserves its worktree, and leaves it available for retry.
   It does not trigger a planner replan. Added instructions affect the next worker
   attempt, not a call already in progress.
+- A fresh plan is approved at the plan prompt. Off a terminal it is not dispatched without `--yes`:
+  the board is printed with its verify commands, the run stays in the backlog with a non-zero exit,
+  and resume is the explicit go. `--yes` dispatches unreviewed and logs the verify commands it accepted.
+  Resume and retry of a board that has cards dispatch without asking.
+- A replan that adds verify commands not already on the board or in `checker.allowedCommands`
+  (exact string match) requires typing `yes`, like stop requires `stop`; the prompt recalls no
+  history and predicts nothing. Enter, other text, dismissal, the view closing or the run stopping
+  refuse it: the replan is dropped and the board is unchanged. Active cards keep running while it is
+  open. The person's `--yes` (or `/yes on`) accepts and logs them; without a terminal or `--yes` they
+  are refused. The internal skip of the plan pause on resume and retry never accepts them.
 - Live control keystrokes do not act as shortcuts while typing into a prompt.
   Ctrl-C within a control prompt cancels the action; outside prompts it stops the run.
 - Review remains open until dismissed. Files open in the shared diff pager. Merge
@@ -51,7 +61,8 @@ with a keyboard. No new web, locale, payment or identity workflows are introduce
 ## Verification
 
 `test/features.test.ts` covers profiles, snapshots, locks, preflight, plan validation,
-controls, cancellation, final verification and resume. `test/runUi.test.ts` covers
-control prompts, keyboard isolation, paging and resize. Existing setup and TUI tests
-cover cancellation and tiny/large terminal dimensions. Real PTY smoke checks use
-only the fake harness in a temporary repository.
+controls, cancellation, final verification and resume, and plan and replan approval
+(`test/orchestrator.test.ts` covers the replan side). `test/runUi.test.ts` and
+`test/prompt.test.ts` cover control and confirmation prompts, keyboard isolation, paging
+and resize. Existing setup and TUI tests cover cancellation and tiny/large terminal
+dimensions. Real PTY smoke checks use only the fake harness in a temporary repository.

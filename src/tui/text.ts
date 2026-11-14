@@ -79,6 +79,20 @@ export function wrap(text: string, w: number, maxLines = Infinity): string[] {
   return lines;
 }
 
+/** Plain text in lines of at most `w` cells with nothing dropped, for what must be read whole (a command to approve). */
+export function chop(text: string, w: number): string[] {
+  const lines: string[] = [];
+  let line = '';
+  let used = 0;
+  for (const { segment } of segmenter.segment(plainText(text))) {
+    const cw = stringWidth(segment);
+    if (used + cw > w && line) { lines.push(line); line = ''; used = 0; }
+    line += segment;
+    used += cw;
+  }
+  return [...lines, line];
+}
+
 export function repeat(ch: string, n: number): string {
   return n > 0 ? ch.repeat(n) : '';
 }

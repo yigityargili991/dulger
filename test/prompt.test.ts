@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough } from 'node:stream';
-import { ask } from '../src/ui/prompt.ts';
+import { ask, history } from '../src/ui/prompt.ts';
 import { suggestCommand, suggestPlan, type PredictContext, type Suggestion } from '../src/replCommands.ts';
 
 // readline echoes keys verbatim and never calls the completer when it thinks the terminal is dumb,
@@ -179,4 +179,22 @@ test('prediction respects UTF-16 readline cursor positions and wrapped input', a
   ] });
   const wrapped = await session(['a'.repeat(25), '\r'], menu, 20);
   assert.ok(!plain(wrapped.steps[0]!).includes('choice'), 'no menu on a wrapped line');
+});
+
+test('a confirmation recalls nothing typed earlier, and its signal closes it unanswered', async () => {
+  const output = { isTTY: true, columns: 60, rows: 24, write: () => true, on: () => {}, off: () => {}, once: () => {}, removeListener: () => {}, emit: () => {}, end: () => {} } as unknown as NodeJS.WriteStream;
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  history.unshift('yes');
+  try {
+    const input = fakeInput();
+    const confirm = ask('approve › ', { input, output, history: [] });
+    await settle();
+    for (const key of ['\x1b[A', '\r']) { (input as unknown as PassThrough).write(key); await settle(); }
+    assert.equal(await confirm, '', 'up finds no earlier yes, so Enter sends an empty line');
+    assert.equal(history[0], 'yes', 'and the shared history is left alone');
+    const controller = new AbortController();
+    const pending = ask('approve › ', { input: fakeInput(), output, history: [], signal: controller.signal });
+    controller.abort();
+    assert.equal(await pending, undefined);
+  } finally { history.shift(); }
 });

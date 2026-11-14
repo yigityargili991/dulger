@@ -26,8 +26,11 @@ export interface Tui {
   note(msg: string): void;
   /** What the run is doing, for the bottom bar. */
   setPhase(phase: string): void;
-  /** Show the prompt line and wait for a line; undefined on Ctrl-C / Ctrl-D. */
-  ask(label: string, hint: string, suggest?: (line: string) => Suggestion): Promise<string | undefined>;
+  /**
+   * Show the prompt line and wait for a line; undefined on Ctrl-C / Ctrl-D. `history` is what ↑ recalls
+   * (the shared prompt history by default); aborting `signal` closes the question as Ctrl-C would.
+   */
+  ask(label: string, hint: string, suggest?: (line: string) => Suggestion, o?: { history?: string[]; signal?: AbortSignal }): Promise<string | undefined>;
   /** Leave the alternate screen. The log lines are returned so the caller can keep what matters. */
   close(): string[];
 }
@@ -160,10 +163,12 @@ export function createTui(o: TuiOptions): Tui {
       paint();
     },
     setPhase(p) { phase = p; paint(); },
-    ask(label, hint, suggest) {
+    ask(label, hint, suggest, o = {}) {
       return new Promise((resolve) => {
-        prompt = { label, hint, suggest, editor: createEditor(history), resolve };
+        if (o.signal?.aborted) return resolve(undefined);
+        prompt = { label, hint, suggest, editor: createEditor(o.history ?? history), resolve };
         focus = 'input';
+        o.signal?.addEventListener('abort', () => { if (prompt?.resolve === resolve) { finishPrompt(undefined); paint(); } }, { once: true });
         paint();
       });
     },

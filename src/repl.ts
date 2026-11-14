@@ -110,7 +110,7 @@ export async function repl(repoRoot: string, session: Session, version: string):
 async function goal(text: string, repoRoot: string, session: Session, config: Config): Promise<void> {
   if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
   const board = createBoard(repoRoot, text);
-  const r = await runBoard(repoRoot, board, config, { yes: session.yes, quiet: session.quiet, merge: false, fresh: true, interactive: true });
+  const r = await runBoard(repoRoot, board, config, { yes: session.yes, assumeYes: session.yes, quiet: session.quiet, merge: false, fresh: true, interactive: true });
   if (r.aborted) { console.log(dim(`run ${board.runId} stopped; /resume continues it`)); return; }
   if (r.landed > 0) await offerMerge(repoRoot, board.runId, board.runBranch);
 }
@@ -169,7 +169,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
       });
       return false;
     case 'resume': {
-      const r = await resumeRun(repoRoot, config(), args[0] === 'current' ? undefined : args[0], { currentSettings: args.includes('current'), quiet: session.quiet, merge: false, interactive: true });
+      const r = await resumeRun(repoRoot, config(), args[0] === 'current' ? undefined : args[0], { currentSettings: args.includes('current'), assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0] === 'current' ? undefined : args[0]));
         await offerMerge(repoRoot, board.runId, board.runBranch);
@@ -177,7 +177,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
       return false;
     }
     case 'retry': {
-      const r = await retryRun(repoRoot, config(), args[0], args[1], { quiet: session.quiet, merge: false, interactive: true });
+      const r = await retryRun(repoRoot, config(), args[0], args[1], { assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[1]));
         await offerMerge(repoRoot, board.runId, board.runBranch);
@@ -192,7 +192,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
         text = a.trim();
       }
       if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
-      const r = await orderRun(repoRoot, text, config(), { quiet: session.quiet, merge: false, interactive: true });
+      const r = await orderRun(repoRoot, text, config(), { assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
       if (!r.aborted && r.landed > 0) {
         const board = store.loadBoard(repoRoot, latestRun(repoRoot));
         await offerMerge(repoRoot, board.runId, board.runBranch);

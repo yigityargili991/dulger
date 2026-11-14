@@ -16,6 +16,10 @@ export const history: string[] = [];
 export interface AskOptions {
   /** What the line predicts. Without it nothing is drawn and Tab only offers the history. */
   suggest?(line: string): Suggestion;
+  /** What ↑ recalls and where the answer is kept; the shared history by default. A confirmation passes its own, so nothing typed earlier can answer it. */
+  history?: string[];
+  /** Aborting it closes the question as Ctrl-C would. */
+  signal?: AbortSignal;
   /** Both default to the process streams; the tests pass fakes. */
   input?: NodeJS.ReadStream;
   output?: NodeJS.WriteStream;
@@ -54,10 +58,11 @@ export function askSecret(prompt: string): Promise<string | undefined> {
 export function ask(prompt: string, o: AskOptions = {}): Promise<string | undefined> {
   const input = o.input ?? process.stdin;
   const output = o.output ?? process.stdout;
-  if (!input.isTTY) return Promise.resolve(undefined);
+  const past = o.history ?? history;
+  if (!input.isTTY || o.signal?.aborted) return Promise.resolve(undefined);
   return new Promise((resolve) => {
     const rl = createInterface({
-      input, output, terminal: true, history: [...history], historySize: 200,
+      input, output, terminal: true, history: [...past], historySize: 200,
       completer: o.suggest ? (line: string): [string[], string] => {
         if (rl.cursor !== rl.line.length) return [[], ''];
         const s = o.suggest!(line);
@@ -69,12 +74,15 @@ export function ask(prompt: string, o: AskOptions = {}): Promise<string | undefi
     const done = (answer: string | undefined) => {
       if (settled) return;
       settled = true;
+      o.signal?.removeEventListener('abort', cancel);
       predictor?.stop();
-      if (answer?.trim() && answer !== history[0]) history.unshift(answer);
+      if (answer?.trim() && answer !== past[0]) past.unshift(answer);
       rl.close();
       if (answer === undefined) output.write('\n');
       resolve(answer);
     };
+    const cancel = () => done(undefined);
+    o.signal?.addEventListener('abort', cancel, { once: true });
     predictor?.start();
     rl.question(prompt, (answer) => done(answer));
     rl.on('SIGINT', () => done(undefined));

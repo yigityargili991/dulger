@@ -19,7 +19,7 @@ import { sessionConfig } from '../src/replModels.ts';
 import { preflight, cardModelIssues } from '../src/preflight.ts';
 import { editPlan, validatePlanDraft } from '../src/planEditor.ts';
 import { runStatus, recoverableRuns } from '../src/runViews.ts';
-import { mergeRun, runBoard, resumeRun } from '../src/commands.ts';
+import { approveReplanCommands, mergeRun, runBoard, resumeRun, type RunUi } from '../src/commands.ts';
 import { runVerification } from '../src/runner/verify.ts';
 import type { Session } from '../src/repl.ts';
 import type { PlannerResult } from '../src/types.ts';
@@ -197,6 +197,88 @@ test('resume uses original settings by default and explicit current settings rep
   await resumeRun(root, current, b.runId, { quiet: true, merge: false, currentSettings: true });
   assert.equal(store.loadBoard(root, b.runId).settings!.config.concurrency, 7);
   assert.ok(!existsSync(join(store.runDir(root, b.runId), 'execution.lock')));
+});
+
+test('a fresh plan off a terminal is not dispatched without --yes; resume is the go, and --yes logs what it accepted', async (t) => {
+  const root = fixture(t);
+  registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, planner: plan(['test -f README.md']), checker: goodCheck, delayMs: 1 }));
+  const out: string[] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => out.push(args.join(' ')));
+  const b = createBoard(root, 'unreviewed', 'unreviewed');
+  assert.deepEqual(await runBoard(root, b, config, { yes: false, quiet: true, merge: false, fresh: true }), { landed: 0, aborted: true });
+  const saved = store.loadBoard(root, b.runId);
+  assert.deepEqual(saved.cards.map((c) => c.status), ['backlog']);
+  assert.equal(saved.checkpoint?.phase, 'ready');
+  assert.ok(!existsSync(store.worktreeDir(root, b.runId, 'c1')), 'nothing was dispatched');
+  const text = out.join('\n');
+  assert.match(text, /Board unreviewed[\s\S]*\$ test -f README\.md/, 'the board is printed with its verify commands');
+  assert.match(text, /not dispatched: nobody could review the plan here \(stdin is not a terminal\)/);
+  assert.match(text, /`dulger resume unreviewed` dispatches it as it is \(`dulger board unreviewed` shows it again\); rerun with --yes/);
+  assert.equal((await resumeRun(root, config, b.runId, { quiet: true, merge: false })).landed, 1, 'an explicit resume dispatches it');
+
+  out.length = 0;
+  const accepted = createBoard(root, 'accepted', 'accepted');
+  assert.equal((await runBoard(root, accepted, config, { yes: true, assumeYes: true, quiet: true, merge: false, fresh: true })).landed, 1);
+  assert.match(out.join('\n'), /--yes: dispatching without a review; verify commands: `test -f README\.md`/);
+});
+
+test('resuming a board without cards plans it, then follows the fresh-run rule', async (t) => {
+  const root = fixture(t); registerAdapter('fake', fake());
+  t.mock.method(console, 'log', () => {});
+  const b = createBoard(root, 'empty', 'empty');
+  assert.equal((await resumeRun(root, config, b.runId, { quiet: true, merge: false })).aborted, true);
+  assert.deepEqual(store.loadBoard(root, b.runId).cards.map((c) => c.status), ['backlog']);
+  assert.equal((await resumeRun(root, config, b.runId, { quiet: true, merge: false })).landed, 1);
+});
+
+test('verify commands a replan adds are accepted by the person\'s --yes, not by the yes resume and retry set', async (t) => {
+  const root = fixture(t);
+  // c1 never passes review; c2 waits for it, so the run replans instead of ending.
+  const first = plan(['true']); first.cards.push({ ...first.cards[0]!, id: 'c2', title: 'Two', dependsOn: ['c1'] });
+  const script = () => createFakeAdapter({
+    planner: (_o, i) => (i === 0 ? first : { cards: [{ ...plan().cards[0]!, id: 'c3', title: 'Three', verify: ['echo new-check'] }] }),
+    checker: (o) => (/Card under review: c1 /.test(o.prompt) ? { pass: false, feedback: ['not yet'], summary: '' } : goodCheck()),
+    delayMs: 1,
+  });
+  const out: string[] = [];
+  t.mock.method(console, 'log', (...args: unknown[]) => out.push(args.join(' ')));
+  const c = { ...config, maxReplans: 1 };
+
+  registerAdapter('fake', script());
+  const accepted = createBoard(root, 'replan yes', 'replan-yes');
+  await runBoard(root, accepted, c, { yes: true, assumeYes: true, quiet: true, merge: false, fresh: true });
+  assert.equal(accepted.cards.find((k) => k.id === 'c3')?.status, 'done');
+  assert.match(out.join('\n'), /--yes: accepted the replan's new verify commands: `echo new-check`/);
+
+  out.length = 0;
+  registerAdapter('fake', script());
+  const refused = createBoard(root, 'replan no', 'replan-no');
+  await runBoard(root, refused, c, { yes: true, quiet: true, merge: false, fresh: true });
+  assert.deepEqual(refused.cards.map((k) => [k.id, k.status]), [['c1', 'failed'], ['c2', 'blocked']]);
+  assert.match(out.join('\n'), /nobody can approve new verify commands here \(stdin is not a terminal\); --yes accepts them/);
+  assert.match(out.join('\n'), /replan failed: refused because its new verify command was not approved: `echo new-check`/);
+});
+
+test('on a terminal only a typed yes approves new verify commands', async () => {
+  const card = { ...store.cardsFromPlan(plan(['echo new-check']))[0]!, id: 'c3-r1', title: 'Smoke' };
+  const signal = new AbortController().signal;
+  type Question = Parameters<RunUi['ask']>[0];
+  const questions: Question[] = []; const phases: string[] = []; const notes: string[] = [];
+  const ui = (answer: string | undefined) => () => ({ ask: async (q: Question) => { questions.push(q); return answer; }, note: (m: string) => { notes.push(m); }, setPhase: (p: string) => { phases.push(p); } });
+  for (const [answer, ok] of [['', false], [undefined, false], ['y', false], ['go', false], ['yes', true], ['  YES ', true]] as const) {
+    assert.equal(await approveReplanCommands({}, ui(answer), true)(['echo new-check'], [card], signal), ok, `answer ${JSON.stringify(answer)}`);
+  }
+  assert.match(questions[0]!.intro, /echo new-check {2}for c3-r1 Smoke[\s\S]*Type yes to run them/);
+  assert.ok(questions[0]!.details?.some((d) => /echo new-check {2}for c3-r1 Smoke/.test(d)), 'the full-screen view logs what the plain prompt lists');
+  assert.deepEqual(questions[0]!.history, [], 'nothing typed earlier can answer it');
+  assert.equal(questions[0]!.signal, signal);
+  assert.deepEqual([...new Set(phases)], ['running'], 'the live view comes back afterwards');
+
+  questions.length = 0;
+  assert.equal(await approveReplanCommands({ assumeYes: true }, ui(undefined), false)(['echo new-check'], [card], signal), true);
+  assert.equal(await approveReplanCommands({}, ui('yes'), false)(['echo new-check'], [card], signal), false, 'off a terminal nobody can say yes');
+  assert.equal(questions.length, 0);
+  assert.match(notes.join('\n'), /--yes: accepted the replan's new verify commands: `echo new-check`/);
 });
 
 test('lock recovery preserves incomplete, invalid and foreign owners; release preserves a replacement owner', (t) => {

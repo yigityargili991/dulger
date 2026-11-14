@@ -23,6 +23,21 @@ test('live controls require stop confirmation, cancel independently and never co
   } finally { tui.close(); }
   assert.equal(mock.closed, 1);
 });
+test('a confirmation prompt recalls nothing typed earlier, and its signal closes it unanswered', async () => {
+  const mock = mockScreen();
+  const tui = createTui({ screen: mock.screen, getBoard: () => board, getAgents: () => [], icons: 'ascii', onInterrupt() {} });
+  try {
+    const plan = tui.ask('plan', 'reply'); for (const ch of 'yes') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.equal(await plan, 'yes');
+    const confirm = tui.ask('approve', 'type yes', undefined, { history: [] }); mock.key({ name: 'up' }); mock.key({ name: 'enter' });
+    assert.equal(await confirm, '', 'up finds no earlier yes, so Enter sends an empty line');
+    const controller = new AbortController();
+    const pending = tui.ask('approve', 'type yes to confirm', undefined, { history: [], signal: controller.signal });
+    assert.ok(mock.lines.join('\n').includes('type yes to confirm'));
+    controller.abort();
+    assert.equal(await pending, undefined);
+    assert.ok(!mock.lines.join('\n').includes('type yes to confirm'), 'the prompt line is gone');
+  } finally { tui.close(); }
+});
 test('pager scrolls and reflows long diffs, strips control sequences and restores terminal once', async () => {
   const mock = mockScreen();
   const pending = pager('Diff', Array.from({ length: 100 }, (_, i) => `line ${i} ${'wide '.repeat(20)}`).join('\n') + '\x1b[2J', mock.screen);

@@ -43,7 +43,8 @@ Options:
   --base-url <url>                 API base URL for the selected API harness
   --api-key-env <name>             environment variable holding its API key
   --current-settings              resume/retry using current settings instead of the saved run settings
-  --yes                           skip the board approval pause
+  --yes                           dispatch the plan without reviewing it (needed when not on a terminal);
+                                  also accepts the new verify commands a replan adds
   --no-docs                       skip the documentation agent
   --no-progress                   no live progress notes on in-progress cards
   --progress-interval <sec>       how often a lightweight agent notes each running card's progress (default: 120)
@@ -127,7 +128,7 @@ async function main(argv: string[]): Promise<void> {
   }
   const config = readConfig(repoRoot, overrides);
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs', 'reporter'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
-  const runOpts = { currentSettings: Boolean(v['current-settings']), quiet: Boolean(v.quiet), merge: Boolean(v.merge) };
+  const runOpts = { currentSettings: Boolean(v['current-settings']), quiet: Boolean(v.quiet), merge: Boolean(v.merge), assumeYes: Boolean(v.yes) };
 
   switch (cmd) {
     case undefined:

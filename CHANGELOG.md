@@ -14,6 +14,19 @@
   `apiKeyEnv`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
   `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Other variables, such as a project's
   `NPM_TOKEN`, still pass through. Claude Code and Codex themselves keep their environment.
+- A plan nobody could review is no longer dispatched. Without a terminal (piped stdin, CI) and
+  without `--yes`, a new run, an order, or a resume of a run that has no cards yet plans, prints the
+  board and stops with a non-zero exit; the run waits in the backlog. `dulger resume <runId>`
+  dispatches it as it is, or rerun with `--yes`. A plan dispatched unreviewed because of `--yes` logs
+  the verify commands it will run. `dulger board` and the plan prompt outside the full-screen view
+  now list each card's verify commands.
+- Verify commands a replan adds need approval. When the planner's new cards use a command that is
+  neither on the board already nor in `checker.allowedCommands` (exact match, so `npm test; curl x | sh`
+  is not `npm test`), the run asks before applying the replan and only a typed `yes` accepts. Enter,
+  any other answer, dismissing the question or stopping the run drop the replan and leave the board
+  as it was; running cards carry on meanwhile. `--yes` accepts them and logs which; it now reaches
+  `dulger order`, `resume` and `retry` too, and `/yes on` does the same. Without a terminal or
+  `--yes` the replan is dropped. The replanning planner is told to reuse the board's commands.
 
 ## 0.6.0 — 2026-09-19
 

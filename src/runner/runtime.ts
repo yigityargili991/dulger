@@ -21,6 +21,12 @@ export interface RunHooks {
   log?: (msg: string) => void;
   /** Stop the run: an agent reported that the account cannot run anything more right now. */
   halt?: (reason: string) => void;
+  /**
+   * Whether a replan may add verify commands nobody approved yet (`cards` are the proposed cards that use
+   * them). dulger runs them in a shell, so no hook or a false answer drops the replan. `signal` aborts
+   * when the run stops; the question should go away then.
+   */
+  approveCommands?: (commands: string[], cards: Card[], signal: AbortSignal) => Promise<boolean>;
 }
 
 export const USAGE_LIMIT = /hit your \w+ limit|usage limit|rate.?limit|too many requests|\b429\b/i;

@@ -13,7 +13,7 @@ import { STATE_DIR, type Config } from './config.ts';
 import * as store from './board/store.ts';
 import { resetInterrupted, retryCard } from './board/scheduler.ts';
 import * as git from './git/worktree.ts';
-import { createOrchestrator, type Orchestrator } from './runner/orchestrator.ts';
+import { createOrchestrator, verifyCommands, type Orchestrator, type OrchestratorHooks } from './runner/orchestrator.ts';
 import { createBoard } from './board/create.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { worktreesDir } from './paths.ts';
@@ -22,7 +22,7 @@ import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
 import { suggestPlan, type Suggestion } from './replCommands.ts';
 import { bold, cyan, dim, green, red, yellow, fmtDuration, fmtSpend, terminalWidth } from './ui/ansi.ts';
-import { fit, logLine, wrap } from './tui/text.ts';
+import { chop, fit, logLine, plainText, wrap } from './tui/text.ts';
 import { ensureKeys } from './replProviders.ts';
 import { createTui, tuiUsable } from './tui/tui.ts';
 import { resolveIcons } from './tui/theme.ts';
@@ -31,7 +31,13 @@ import type { AgentStatus, Board, Card } from './types.ts';
 export { CliError } from './errors.ts';
 
 export interface RunOptions {
+  /** Skip the plan pause. resume and retry set it for a board that already has cards. */
   yes: boolean;
+  /**
+   * The person's own --yes (the flag, or /yes on): a plan off a terminal is dispatched without a review,
+   * and verify commands a replan adds are accepted. Never set on the person's behalf.
+   */
+  assumeYes?: boolean;
   quiet: boolean;
   merge: boolean;
   fresh: boolean;
@@ -52,12 +58,16 @@ export interface RunOutcome {
  * What a run shows while it happens: the full-screen view on a terminal, the redrawn table when the
  * screen is too small, plain log lines when quiet or piped. Every variant can ask the person a question.
  */
-interface RunUi {
+export interface RunUi {
   update(): void;
   note(msg: string): void;
   setPhase(phase: string): void;
-  /** In the plain variants the board is printed and `intro` explains the choice; the full-screen view shows `hint` instead. */
-  ask(q: { label: string; intro: string; hint: string; suggest?(line: string): Suggestion }): Promise<string | undefined>;
+  /**
+   * In the plain variants the board is printed and `intro` explains the choice; the full-screen view shows
+   * `hint` instead and writes `details` (what `intro` lists) to its log. `history` replaces what ↑ recalls;
+   * aborting `signal` closes the question unanswered.
+   */
+  ask(q: { label: string; intro: string; hint: string; suggest?(line: string): Suggestion; details?: string[]; history?: string[]; signal?: AbortSignal }): Promise<string | undefined>;
   close(): void;
 }
 
@@ -65,24 +75,38 @@ function createUi(repoRoot: string, board: Board, config: Config, o: RunOptions,
   const quiet = o.quiet || !process.stdout.isTTY || !tuiUsable();
   if (!quiet && config.tui.enabled && tuiUsable()) {
     const tui = createTui({ getBoard: () => board, getAgents: agents, icons: resolveIcons(config.tui.icons), onInterrupt, controls });
-    return { update: tui.update, note: tui.note, setPhase: tui.setPhase, ask: (q) => tui.ask(q.label, q.hint, q.suggest), close: () => { tui.close(); } };
+    return {
+      update: tui.update, note: tui.note, setPhase: tui.setPhase, close: () => { tui.close(); },
+      // The log pane cuts long lines, so details are broken up instead: a command to approve is seen whole.
+      ask: (q) => { for (const d of q.details ?? []) for (const line of chop(d, Math.max(20, (process.stdout.columns ?? 100) - 12))) tui.note(line); return tui.ask(q.label, q.hint, q.suggest, { history: q.history, signal: q.signal }); },
+    };
   }
   // The table is up while agents run and comes down for a question; the next phase brings it back.
   let view: LiveView | undefined;
+  // Cards may still run while a question is open: their log lines wait for the answer instead of breaking the prompt line.
+  let held: string[] | undefined;
   const show = () => { if (!quiet && !view) view = createLiveView(() => board, agents); };
   const hide = () => { view?.stop(); view = undefined; };
+  const note = (msg: string) => { if (held) held.push(msg); else if (view) view.note(msg); else console.log(logLine(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`, terminalWidth(200))); };
   process.on('SIGINT', onInterrupt);
   show();
   return {
     update: () => view?.update(),
-    note: (msg) => (view ? view.note(msg) : console.log(logLine(`${dim(new Date().toISOString().slice(11, 19))} ${msg}`, terminalWidth(200)))),
+    note,
     setPhase: (phase) => { if (phase !== 'plan ready') show(); },
     async ask(q) {
       hide();
       console.log();
       printBoard(board);
       console.log(`\n${q.intro}`);
-      return ask(`${bold(cyan(q.label))} ${dim('›')} `, { suggest: q.suggest });
+      held = [];
+      try {
+        return await ask(`${bold(cyan(q.label))} ${dim('›')} `, { suggest: q.suggest, history: q.history, signal: q.signal });
+      } finally {
+        const lines = held;
+        held = undefined;
+        for (const msg of lines) note(msg);
+      }
     },
     close() {
       hide();
@@ -110,9 +134,40 @@ function startRun(repoRoot: string, board: Board, config: Config, o: RunOptions)
   let orch: Orchestrator | undefined;
   run.reopen = () => createUi(repoRoot, board, config, o, () => orch?.registry.statuses.values() ?? [], onInterrupt, { togglePause: () => run.orch.togglePause(), stopCard: (id) => run.orch.stopCard(id), guideCard: (id, text) => run.orch.guideCard(id, text) });
   run.ui = run.reopen();
-  orch = createOrchestrator(repoRoot, board, config, { log: (msg) => run.ui.note(msg), onBoardChange: () => run.ui.update() });
+  orch = createOrchestrator(repoRoot, board, config, { log: (msg) => run.ui.note(msg), onBoardChange: () => run.ui.update(), approveCommands: approveReplanCommands(o, () => run.ui) });
   run.orch = orch;
   return run;
+}
+
+const commandList = (commands: string[]) => commands.map((c) => `\`${c}\``).join(', ') || 'none';
+
+/**
+ * The person's go for verify commands a replan adds. Their own --yes accepts them. On a terminal they are
+ * asked, and only a typed `yes` approves: the question can appear while they are moving around the board,
+ * so Enter, another word, or a dismissed question never runs a new shell command. Otherwise nobody can say yes.
+ */
+export function approveReplanCommands(o: Pick<RunOptions, 'assumeYes'>, ui: () => Pick<RunUi, 'ask' | 'note' | 'setPhase'>, terminal = Boolean(process.stdin.isTTY)): NonNullable<OrchestratorHooks['approveCommands']> {
+  return async (commands, cards, signal) => {
+    if (o.assumeYes) {
+      ui().note(yellow(`--yes: accepted the replan's new verify commands: ${commandList(commands)}`));
+      return true;
+    }
+    if (!terminal) {
+      ui().note(yellow('nobody can approve new verify commands here (stdin is not a terminal); --yes accepts them'));
+      return false;
+    }
+    const details = [
+      yellow('The replan adds verify commands nobody has approved; dulger would run them in a shell:'),
+      ...commands.map((c) => `  ${plainText(c)}  ${dim(`for ${cards.filter((k) => k.verify.some((v) => v.trim() === c)).map((k) => `${k.id} ${plainText(k.title)}`).join(', ')}`)}`),
+    ];
+    const answer = await ui().ask({
+      label: 'approve', details, history: [], signal,
+      intro: `${details.join('\n')}\nType ${bold('yes')} to run them and apply the replan. Anything else drops the replan; running cards carry on.`,
+      hint: `type ${bold('yes')} to run the new verify commands listed in the log · anything else drops the replan`,
+    });
+    ui().setPhase('running');
+    return answer?.trim().toLowerCase() === 'yes';
+  };
 }
 
 const PLAN_INTRO = `${dim('Reply to change the plan (same planner session).')} ${bold('Enter')} or ${bold('go')} dispatches, ${bold('cancel')} deletes the run, Ctrl-C keeps it in the backlog. Type /edit to edit cards directly.`;
@@ -179,6 +234,16 @@ function leaveInBacklog(run: Run, board: Board): RunOutcome {
   return { landed: 0, aborted: true };
 }
 
+/** Off a terminal nobody saw the plan or its verify commands: it waits in the backlog for an explicit go. */
+function leaveUnreviewed(run: Run, board: Board): RunOutcome {
+  run.ui.close();
+  console.log();
+  printBoard(board);
+  console.log(`\n${yellow('not dispatched: nobody could review the plan here (stdin is not a terminal)')}`);
+  console.log(dim(`\`dulger resume ${board.runId}\` dispatches it as it is (\`dulger board ${board.runId}\` shows it again); rerun with --yes to dispatch without a review`));
+  return { landed: 0, aborted: true };
+}
+
 function cancelRun(run: Run, repoRoot: string, board: Board): RunOutcome {
   run.ui.close();
   store.removeRun(repoRoot, board.runId);
@@ -187,7 +252,7 @@ function cancelRun(run: Run, repoRoot: string, board: Board): RunOutcome {
   return { landed: 0, aborted: true };
 }
 
-/** Plan (when fresh), talk the plan through unless --yes, then execute. */
+/** Plan (when fresh), talk the plan through unless --yes (off a terminal it needs --yes), then execute. */
 export async function runBoard(repoRoot: string, board: Board, config: Config, o: RunOptions): Promise<RunOutcome> {
   const release = acquireRunLock(repoRoot, board.runId);
   let run: Run | undefined;
@@ -229,7 +294,8 @@ export async function runBoard(repoRoot: string, board: Board, config: Config, o
           case 'cancel': return cancelRun(run, repoRoot, board);
           case 'go': board.cards = store.loadBoard(repoRoot, board.runId).cards;
         }
-      }
+      } else if (!o.yes && !o.assumeYes) return leaveUnreviewed(run, board);
+      else run.ui.note(yellow(`--yes: dispatching without a review; verify commands: ${commandList(verifyCommands(board.cards))}`));
     }
     const issues = cardModelIssues(config, board.cards);
     if (issues.length) throw new CliError(issues.join('\n'));
@@ -401,6 +467,8 @@ export function printBoard(board: Board, width = terminalWidth()): void {
     const deps = c.dependsOn.length ? dim(` after ${c.dependsOn.join(',')}`) : '';
     console.log(fit(`  ${bold(c.id)} ${c.title}${deps}`, width));
     for (const t of c.tasks) console.log(fit(dim(`     ${t.id} ${t.title}`), width));
+    // dulger runs these in a shell and dispatching approves them, so they are shown whole, never cut to the width.
+    for (const v of c.verify) console.log(dim(`     $ ${plainText(v)}`));
     if (c.progress && (c.status === 'in_progress' || c.status === 'review')) {
       const p = c.progress;
       const ago = dim(` (${fmtDuration(Math.max(0, Date.now() - Date.parse(p.at)))} ago)`);

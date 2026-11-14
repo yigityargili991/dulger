@@ -92,7 +92,9 @@ requires inspection of the displayed path.
 
 1. **Plan.** The planner explores the repo and writes cards: acceptance criteria, 1–4 tasks each,
    dependencies. It lists its assumptions and anything it left out of the goal. You read the board
-   and press Enter, or use `/order` to talk it through first.
+   and press Enter, or use `/order` to talk it through first. Off a terminal (a pipe, CI) nothing is
+   dispatched without `--yes`: the board is printed, the run waits in the backlog, and
+   `dulger resume <runId>` dispatches it.
 2. **Build.** Each card gets its own worktree and branch. Workers run its tasks in sequence; cards run
    in parallel. While a card is in progress, a lightweight progress reporter summarizes what its
    worker is doing onto the card — one cheap headless call every `progressIntervalSec` seconds on the
@@ -107,7 +109,10 @@ requires inspection of the displayed path.
    reviewer asked for and was refused. A reviewer that cannot run at all is dulger's failure, not
    the card's: no round is spent, no worker is asked to fix it, and `dulger resume` retries the card
    from its worktree.
-5. **Replan.** If a card fails, the planner replans the remaining work once.
+5. **Replan.** If a card fails, the planner replans the remaining work once. When its cards bring a
+   verify command that is not already on the board or in `checker.allowedCommands`, the run asks
+   first and only a typed `yes` (or `--yes`) applies the replan; otherwise it is dropped and the
+   board stays as it was.
 6. **Docs.** A documentation agent updates README / CHANGELOG for what landed.
 7. **Final verification.** Rerun the landed cards' commands after documentation on the exact result
    revision. Failed or stale checks block dulger's merge actions.
@@ -412,7 +417,11 @@ when a card lands.
   says so. The progress reporter gets the activity digest in its prompt and no commands at all; it has
   nothing to refuse.
 - The verify commands come from the planner and run with your shell's privileges in the card's
-  worktree, the same access the workers already have there. Read them on the board before dispatching.
+  worktree, the same access the workers already have there. Read them before dispatching: `dulger board`
+  and the plan prompt outside the full-screen view list them under each card, and `/edit` shows them.
+  Dispatching approves them; `--yes` approves them unread, and off a terminal nothing is dispatched
+  without it. A replan's verify commands that are not already on the board or in
+  `checker.allowedCommands` (exact match) need a typed `yes`, or `--yes`, or the replan is dropped.
   They, `worktreeSetup` and the API tools' shell commands get your environment without the credentials
   dulger runs agents with: every provider's `apiKeyEnv`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
   `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Your project's

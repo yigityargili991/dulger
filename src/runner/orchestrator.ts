@@ -30,6 +30,11 @@ export function planWarnings(cards: Card[]): string[] {
   return out;
 }
 
+/** The distinct verify commands of these cards, trimmed. */
+export function verifyCommands(cards: Card[]): string[] {
+  return [...new Set(cards.flatMap((c) => c.verify.map((v) => v.trim())))];
+}
+
 export interface Orchestrator {
   board: Board;
   registry: AgentRegistry;
@@ -98,14 +103,17 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     board.plan = { sessionId, assumptions: output.assumptions ?? [], omitted: output.omitted ?? [], revisions: revision };
   }
 
-  /** Ask the planner for a new set of remaining cards after `failed` cards gave up. Leaves the board as is when it cannot. */
+  /**
+   * Ask the planner for a new set of remaining cards after `failed` cards gave up. Leaves the board as is
+   * when it cannot, or when the person does not approve the verify commands it adds.
+   */
   async function replan(failed: Card[]): Promise<void> {
     const n = (board.replans ?? 0) + 1;
     const waiting = board.cards.filter((c) => c.status === 'backlog' || c.status === 'blocked');
     log(`card${failed.length === 1 ? '' : 's'} ${failed.map((c) => c.id).join(', ')} failed; replanning (${n}/${config.maxReplans})…`);
     const request = {
       prompt: P.replanPrompt(board, failed, waiting, rt.context({ root: repoRoot })),
-      systemPrompt: P.replanSystem(board.cards.map((c) => c.id), config.checker.allowedCommands), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly' as const,
+      systemPrompt: P.replanSystem(board.cards.map((c) => c.id), config.checker.allowedCommands, verifyCommands(board.cards)), cwd: repoRoot, schema: PLANNER_SCHEMA, access: 'readonly' as const,
     };
     // A planner that died made no decision, so it does not count against maxReplans.
     let r = await rt.agent<PlannerResult>('planner', request, { logName: `replan${n}` });
@@ -118,6 +126,12 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     if (ctrl.signal.aborted) return;
     try {
       if (!r.ok || !r.output) throw new Error(r.error ?? 'no output');
+      // A dry run on a copy validates the answer and names the cards as they would land.
+      const proposed = store.applyReplan(structuredClone(board), r.output).added;
+      const unapproved = unapprovedCommands(proposed);
+      if (unapproved.length && !(await approve(unapproved, proposed.filter((c) => c.verify.some((v) => unapproved.includes(v.trim())))))) {
+        throw new Error(`refused because its new verify command${unapproved.length === 1 ? ' was' : 's were'} not approved: ${unapproved.map((c) => `\`${c}\``).join(', ')}`);
+      }
       const { replaced, added } = store.applyReplan(board, r.output);
       save('replanned', { data: { replaced: replaced.map((c) => c.id), added: added.map((c) => c.id) } });
       log(`replanned: ${added.length} new card${added.length === 1 ? '' : 's'}${added.length ? ` (${added.map((c) => c.id).join(', ')})` : ''}, ${replaced.length} replaced`);
@@ -126,6 +140,27 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       save('replan_failed', { message: (err as Error).message });
       log(`replan failed: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * The verify commands in `cards` that nobody approved: on no card of the board (every card got there
+   * through an approval, whatever its status now) and not in checker.allowedCommands. Exact matches
+   * only: these strings go to a shell, so `npm test; curl x | sh` does not ride on an approved `npm test`.
+   */
+  function unapprovedCommands(cards: Card[]): string[] {
+    const approved = new Set([...verifyCommands(board.cards), ...config.checker.allowedCommands.map((c) => c.trim())]);
+    return verifyCommands(cards).filter((c) => !approved.has(c));
+  }
+
+  /** The person's go for new verify commands. No hook, a failing one, or the run stopping all mean no; a stopped run never waits on the answer. */
+  async function approve(commands: string[], cards: Card[]): Promise<boolean> {
+    if (!hooks.approveCommands) return false;
+    const signal = ctrl.signal;
+    const stopped = new Promise<boolean>((resolve) => {
+      if (signal.aborted) resolve(false);
+      else signal.addEventListener('abort', () => resolve(false), { once: true });
+    });
+    return Promise.race([hooks.approveCommands(commands, cards, signal).then((ok) => ok === true, () => false), stopped]);
   }
 
   async function execute(): Promise<void> {

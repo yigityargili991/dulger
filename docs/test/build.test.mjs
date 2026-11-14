@@ -10,32 +10,46 @@ const docs = fileURLToPath(new URL('../', import.meta.url));
 const root = dirname(docs.replace(/\/$/, ''));
 const site = join(docs, 'dist/public');
 const html = (path) => readFileSync(join(site, path), 'utf8');
+const pages = readdirSync(site, { recursive: true }).filter((p) => p.endsWith('.html'));
 
-test('all generated pages have one title, unique anchors and working local links', () => {
-  const pages = readdirSync(site, { recursive: true }).filter((p) => p.endsWith('.html'));
+test('all generated pages have one title and unique anchors', () => {
   assert.ok(pages.length >= 10);
   for (const path of pages) {
     const body = html(path);
     assert.equal([...body.matchAll(/<h1\b/g)].length, 1, path);
     const ids = [...body.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
     assert.equal(ids.length, new Set(ids).size, `${path}: duplicate anchors`);
-    for (const [, href] of body.matchAll(/href="([^"]+)"/g)) {
-      if (/^(https?:|data:|mailto:)/.test(href)) continue;
-      const url = new URL(href, `https://docs.invalid/${path}`);
-      const target = url.pathname.endsWith('/') ? `${url.pathname}index.html` : url.pathname;
-      assert.ok(existsSync(join(site, target)), `${path}: broken link ${href}`);
-      if (url.hash) assert.ok(html(target).includes(`id="${decodeURIComponent(url.hash.slice(1))}"`), `${path}: broken anchor ${href}`);
+  }
+});
+
+test('local links and the stylesheet work with the site at a domain root or under a path', () => {
+  for (const mount of ['/', '/dulger/']) {
+    for (const path of pages) {
+      // A page is served at its directory URL; 404.html as a miss directly under the site root.
+      const page = new URL(mount + path.replace(/index\.html$/, ''), 'https://docs.invalid');
+      for (const [, href] of html(path).matchAll(/href="([^"]+)"/g)) {
+        if (/^(https?:|data:|mailto:)/.test(href)) continue;
+        const url = new URL(href, page);
+        const where = `${mount} ${path}: ${href}`;
+        assert.ok(url.origin === page.origin && url.pathname.startsWith(mount), `${where} leaves the site`);
+        const target = url.pathname.slice(mount.length).replace(/(^|\/)$/, '$1index.html');
+        assert.ok(existsSync(join(site, target)), `${where} is broken`);
+        if (url.hash) assert.ok(html(target).includes(`id="${decodeURIComponent(url.hash.slice(1))}"`), `${where} has no anchor`);
+      }
     }
   }
+  assert.ok(html('install/index.html').includes('<link rel="stylesheet" href="../style.css">'));
+  assert.ok(html('index.html').includes('<link rel="stylesheet" href="./style.css">'));
 });
 
 test('published docs cover the released setup and recovery features', () => {
   const setup = html('session-setup/index.html');
   for (const term of ['/doctor', '/profile', '/review', 'Harness', '--current-settings']) assert.ok(setup.includes(term), term);
-  assert.ok(html('how-a-run-works/index.html').includes('/commands/#command-prediction'));
+  assert.ok(html('how-a-run-works/index.html').includes('href="../commands/#command-prediction"'));
   const { version } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   assert.ok(html('changelog/index.html').includes(`${version} —`));
   assert.equal(JSON.parse(html('version.json')).version, version);
+  assert.deepEqual(readdirSync(join(docs, 'dist')), ['public']);
 });
 
 test('new sections cannot disappear silently; fenced headings stay in their example', (t) => {

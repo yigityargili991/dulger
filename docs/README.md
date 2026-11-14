@@ -13,8 +13,10 @@ python3 -m http.server 4173 --directory docs/dist/public
 
 `build.mjs` maps README sections to pages while keeping existing public URLs. New or renamed
 top-level sections must be mapped there; otherwise the build fails instead of dropping content.
-Cross-page README anchors are rewritten. Every page shows the package version; `/version.json`
-identifies the exact source build. The generated `docs/dist/` directory is ignored by Git.
+Cross-page README anchors are rewritten. Links and the stylesheet are relative to each page, so the
+site works at a domain root or under a path. Every page shows the package version; `version.json`
+at the site root identifies the exact source build. The generated `docs/dist/` directory is ignored
+by Git.
 
 ## CI and deployment
 
@@ -23,19 +25,24 @@ the default branch and stable `vX.Y.Z` tags. Deployment runs after successful ch
 or when docs/build inputs change on the default branch. Release tags must match `package.json` and
 the version must have a changelog entry. Keep release tags protected (`v*`).
 
-The deploy job uploads only the tested artifact, never the application checkout or local config.
-The existing Railway project and production service IDs are in `.gitlab-ci.yml`. Caddy serves the
-static files, including a real 404 page. Jobs serialize through `docs-production`; GitLab's
-**Prevent outdated deployment jobs** setting must remain enabled. The final job polls the live
-source hash and revision, so a successful build alone is not reported as a successful deployment.
+The site is hosted on GitLab Pages. The `docs:pages` job publishes the tested `docs/dist/public`
+artifact with `pages.publish`, never the application checkout or local config. It needs no token
+or CI variable. GitLab deploys the files after the job (`pages:deploy` in the pipeline), and the
+site can take a few minutes to update after the pipeline completes. On GitLab.com the site is
+public. A missing page gets the generated `404.html`, whose links are right for a miss directly
+under the site root.
 
-GitLab needs `RAILWAY_TOKEN`: a production-environment project token for `dulger-site`, stored as a
-masked, protected CI variable scoped to `docs-production`. Never put this token in repository files.
-Use a fresh environment-scoped token when rotating it. No npm publishing credential is needed.
+GitLab assigns the address on the first deployment; **Deploy > Pages** shows it. With
+**Use unique domain** turned on, the default for new projects, the site is at the root of its own
+`gitlab.io` domain; with it turned off, the site is under `zamazingo99.gitlab.io/dulger/`.
+Until the address is linked from the README, the package `homepage` is the GitLab project.
 
-To roll back, redeploy a previous successful deployment in Railway. To retain the fix across future
-CI runs, revert the responsible documentation commit as well. A manual pipeline on the default
-branch can rebuild and deploy the current documentation.
+To check a deployment, open `version.json` on the site: `revision` is the commit it was built from.
+`npm run --prefix docs verify-deployment -- <site URL>` waits for the live `version.json` to match a
+local build of the same commit (the source hash, and the revision when the build has one).
 
-The former site was uploaded via Railway CLI with no connected repository. Its plain reading
-layout and existing routes are preserved here; the site no longer depends on that missing checkout.
+To roll back, revert the responsible documentation commit on the default branch; its pipeline
+deploys the result. Re-running the Pages job of an older default-branch pipeline is no rollback:
+GitLab refuses to replace a deployment from a newer pipeline with it.
+
+The site keeps the plain reading layout and the routes of the original site.

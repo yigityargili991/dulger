@@ -8,7 +8,7 @@
     "type": "git",
     "url": "git+https://gitlab.com/zamazingo99/dulger.git"
   },
-  "homepage": "https://dulger-site-production.up.railway.app",
+  "homepage": "https://gitlab.com/zamazingo99/dulger",
   "bugs": "https://gitlab.com/zamazingo99/dulger/-/issues",
   "keywords": [
     "agents",

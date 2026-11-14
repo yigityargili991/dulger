@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The documentation site is built for and deployed to GitLab Pages instead of its former host, and
+  its links are relative, so it works at a domain root or under a path. Until the Pages address
+  exists, the package homepage points at the GitLab repository.
+
 ## 0.7.0 — 2026-11-14
 
 - A process sandbox, new and built on Anthropic's sandbox runtime (a beta research preview), for

@@ -18,6 +18,9 @@ if (!changelog.includes(`## ${version} —`)) throw new Error(`Missing changelog
 
 const slug = (text) => text.toLowerCase().replace(/<[^>]*>/g, '').replace(/[^\p{L}\p{N}\s-]/gu, '').trim().replace(/\s+/g, '-');
 const escape = (text) => text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+// Links are relative, so the site works at a domain root or under a path. Routes are one level deep.
+const rel = (from, to) => (from === '/' ? '.' : '..') + to;
+let current = '/';
 const markdown = new Marked();
 // Split tokens, not lines: a heading inside a fenced example is still code.
 const sections = new Map();
@@ -63,6 +66,7 @@ markdown.use({ renderer: {
       if (!target) throw new Error(`Missing README anchor: ${token.href}`);
       token = { ...token, href: target };
     }
+    if (token.href.startsWith('/')) token = { ...token, href: rel(current, token.href) };
     return `<a href="${escape(token.href)}">${this.parser.parseInline(token.tokens)}</a>`;
   },
   table(token) {
@@ -74,13 +78,14 @@ markdown.use({ renderer: {
 } });
 
 function page(route, content) {
-  const nav = routes.map((r) => `<li><a href="${r.path}"${route.path === r.path ? ' aria-current="page"' : ''}>${r.title}</a></li>`).join('');
+  const from = route.path ?? '/';
+  const nav = routes.map((r) => `<li><a href="${rel(from, r.path)}"${route.path === r.path ? ' aria-current="page"' : ''}>${r.title}</a></li>`).join('');
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${escape(route.title)} — dulger docs</title><meta name="description" content="Dulger ${escape(version)} documentation: ${escape(route.title)}.">
-<link rel="stylesheet" href="/style.css"><link rel="icon" href="data:,"></head>
+<link rel="stylesheet" href="${rel(from, '/style.css')}"><link rel="icon" href="data:,"></head>
 <body><a class="skip-link" href="#main">Skip to content</a><header><nav aria-label="Main"><ul>${nav}</ul></nav></header>
-<main id="main" tabindex="-1"><p class="version">Documentation for <a href="/changelog/">v${escape(version)}</a></p>${content}</main>
+<main id="main" tabindex="-1"><p class="version">Documentation for <a href="${rel(from, '/changelog/')}">v${escape(version)}</a></p>${content}</main>
 <footer><a href="https://gitlab.com/zamazingo99/dulger">Source on GitLab</a> · <a href="https://www.npmjs.com/package/@zamazingobjk/dulger">Install from npm</a></footer></body></html>\n`;
 }
 
@@ -89,7 +94,6 @@ mkdirSync(join(out, 'public'), { recursive: true });
 for (const route of routes) {
   let body = route.path === '/changelog/' ? changelog : route.sections.map((name) => sections.get(name)).join('\n');
   if (route.path === '/') {
-    body = body.replace(/Website: [\s\S]*?\n\n/, '');
     body += '\n## Get started\n\n' + routes.slice(1).map((r) => `- [${r.title}](${r.path})`).join('\n');
   } else if (route.path !== '/changelog/') {
     const first = markdown.lexer(body).find((t) => t.type === 'heading');
@@ -98,12 +102,13 @@ for (const route of routes) {
   }
   const dir = join(out, 'public', route.path);
   mkdirSync(dir, { recursive: true });
+  current = route.path;
   writeFileSync(join(dir, 'index.html'), page(route, markdown.parse(body)));
 }
-writeFileSync(join(out, 'public/404.html'), page({ title: 'Page not found' }, '<h1>Page not found</h1><p>Use the navigation above or <a href="/">return to the docs home page</a>.</p>'));
+// Served for a miss at any depth; its links are right for a miss directly under the site root.
+writeFileSync(join(out, 'public/404.html'), page({ title: 'Page not found' }, '<h1>Page not found</h1><p>Use the navigation above or <a href="./">return to the docs home page</a>.</p>'));
 cpSync(join(docs, 'style.css'), join(out, 'public/style.css'));
-for (const file of ['Dockerfile', 'Caddyfile', 'railway.json']) cpSync(join(docs, file), join(out, file));
 const sourceHash = createHash('sha256');
-for (const file of ['README.md', 'CHANGELOG.md', 'package.json', 'docs/build.mjs', 'docs/style.css', 'docs/package-lock.json', 'docs/Caddyfile', 'docs/Dockerfile', 'docs/railway.json']) sourceHash.update(file).update('\0').update(read(file)).update('\0');
+for (const file of ['README.md', 'CHANGELOG.md', 'package.json', 'docs/build.mjs', 'docs/style.css', 'docs/package-lock.json']) sourceHash.update(file).update('\0').update(read(file)).update('\0');
 writeFileSync(join(out, 'public/version.json'), JSON.stringify({ version, sourceHash: sourceHash.digest('hex'), revision: process.env.CI_COMMIT_SHA ?? null }) + '\n');
 console.log(`Built ${routes.length} documentation pages for ${version}`);

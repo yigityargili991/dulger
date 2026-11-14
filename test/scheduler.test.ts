@@ -46,6 +46,20 @@ test('validateBoard rejects cycles and unknown deps', () => {
   assert.throws(() => validateBoard(b), /unknown card/);
 });
 
+test('validateBoard rejects card ids that would share a transcript directory, and so does a replan', () => {
+  const b = board();
+  for (const [id, other] of [['a_x', 'a-x'], ['A-x', 'a-x'], ['Q', 'q']]) {
+    const alike = board();
+    alike.cards[0]!.id = other!;
+    alike.cards[1]!.id = id!;
+    alike.cards[1]!.dependsOn = [];
+    assert.throws(() => validateBoard(alike), new RegExp(`^Error: card ids ${other} and ${id} differ only in case or in _ against -; rename one$`), id);
+  }
+  b.cards[3]!.status = 'blocked';
+  assert.throws(() => applyReplan(b, { cards: [{ id: 'D', title: '', description: '', acceptanceCriteria: [], dependsOn: [], tasks: [{ id: 't1', title: '', instructions: '' }] }] }), /card ids d and D differ only/);
+  assert.deepEqual([b.cards.map((x) => x.status), b.replans], [['backlog', 'backlog', 'backlog', 'blocked'], undefined], 'a rejected plan changes nothing');
+});
+
 test('resetInterrupted sends interrupted cards back to the backlog and keeps finished tasks', () => {
   const b = board();
   const [a, bb, c, d] = b.cards as [Board['cards'][0], Board['cards'][0], Board['cards'][0], Board['cards'][0]];

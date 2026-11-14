@@ -417,10 +417,12 @@ when a card lands.
   write only their worktree and reach only Anthropic's API and the hosts you grant. API workers' file
   tools stay inside the worktree; their shell commands do not, unless the sandbox is on. Planner and reviewer are read-only. On Claude Code and API
   backends they run only allowed commands: for the reviewer, `checker.allowedCommands` and the card's
-  verify commands, the latter exactly as written; Codex runs theirs in its read-only sandbox. A
-  refused command is logged and noted on the card, so a review that had to take something on trust
-  says so. The progress reporter gets the activity digest in its prompt and no commands at all; it has
-  nothing to refuse.
+  verify commands, the latter exactly as written; Codex runs theirs in its read-only sandbox. A verify
+  or configured command that is blank or contains `*`, `(`, `)`, `\\`, a trailing `\` or a control
+  character such as a newline is not offered to a Claude Code reviewer, whose permission rules would
+  read it as a different rule. A refused command is logged and noted on the card, so a review that
+  had to take something on trust says so. The progress reporter gets the activity digest in its
+  prompt and no commands at all; it has nothing to refuse.
 - The verify commands come from the planner and run in the card's worktree with your shell's
   privileges, the same access unsandboxed Claude Code workers have there, or confined by the
   [sandbox](#sandbox) when it is on. Read them before dispatching: `dulger board`
@@ -433,7 +435,9 @@ when a card lands.
   `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Your project's
   own variables pass through. Claude Code and Codex, and the commands they run, still get your whole
   environment.
-- Agents never run git; dulger commits, merges, cleans up.
+- Agents never run git; dulger commits, merges, cleans up. dulger's commits, merges and branch updates
+  in worktrees run no git hooks. Merging the result branch into your branch runs your repository's
+  hooks like any merge, including any the run added, so read the diff first.
 - Ctrl-C stops the agents and saves the board. `dulger resume` picks it up, and also retries cards
   that failed on dulger's side (a reviewer that would not start, an agent that hung) rather than on
   their work. When the harness account hits its usage limit the run stops itself the same way, so a
@@ -460,9 +464,12 @@ A sandboxed command or Claude Code agent
 - **writes** only its own worktree (a card's, the documentation's or final verification's, never
   your own checkout), a private temp dir (`$TMPDIR`, kept under `~/.local/share/dulger/<project>/sandbox/`
   and removed when the run finishes), and what you grant with `allowWrite`. `$HOME`, `/tmp` and your
-  checkout are read-only. `.claude/`, `.husky/` and `.githooks/` in the worktree are read-only when they
-  exist; the runtime itself protects shell rc files, `.gitconfig`, `.gitmodules`, `.mcp.json`,
-  `.vscode/`, `.idea/`, `.claude/commands` and `.claude/agents`, and git's hooks and config;
+  checkout are read-only, and so is the repository's `.git`, its hooks and config included. Hook
+  locations inside the tree (a relative `core.hooksPath`, a hook manager's config) are ordinary files a
+  worker may write, except an existing `.claude/`, `.husky/` or `.githooks/`, which are read-only;
+  dulger's own git commands in worktrees run no hooks. The runtime itself protects shell rc files,
+  `.gitconfig`, `.gitmodules`, `.mcp.json`, `.vscode/`, `.idea/`, `.claude/commands` and
+  `.claude/agents`;
 - **reads** everything your user can except `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
   `~/.config/gcloud`, `~/.config/gh`, `~/.config/dulger`, `~/.netrc`, `~/.npmrc`, `~/.docker`,
   `~/.kube`, `~/.git-credentials`, the agents' own credentials (`~/.claude`, `~/.claude.json`,
@@ -473,8 +480,11 @@ A sandboxed command or Claude Code agent
 
 **Claude Code agents.** The worker, the reviewer and the documentation agent run in their worktree;
 the reviewer's permission mode still keeps it from editing files, but the tests it re-runs can write
-their build output. The planner runs in your checkout, which stays read-only. The progress reporter
-has no tools and is not wrapped. On top of what a command gets, an agent
+their build output. Those re-runs are in the reviewer's sandbox, with an agent's grants: a host a
+verify command needs must be in `domains.agent` too, and a path it writes outside the worktree in
+`allowWrite`, for the reviewer's re-run to work. The planner runs in your checkout, which stays
+read-only. The progress reporter has no tools and is not wrapped. On top of what a command gets, an
+agent
 
 - reaches `api.anthropic.com`, `claude.ai` and `platform.claude.com` (the last two to refresh a
   login), the host of `ANTHROPIC_BASE_URL` when you use a gateway, and the hosts in `domains.agent`;
@@ -484,8 +494,9 @@ has no tools and is not wrapped. On top of what a command gets, an agent
   dulger creates before the call so that resuming a session and structured answers work. Claude Code
   logs the other writes it cannot make (`~/.claude.json`, plugin caches, locks) and carries on. The
   planner's directory is the one your own Claude Code sessions in this repository use, so the
-  planner could write there, but not to its `memory/`: Claude Code's auto-memory, which later
-  sessions read, stays read-only;
+  planner can add its own session there but change nothing already there except the session it
+  resumes: your sessions' files and `memory/`, Claude Code's auto-memory that later sessions read,
+  stay read-only;
 - runs with Claude Code's own Bash sandbox switched off, since that cannot start inside this one.
   dulger passes `--settings '{"sandbox":{"enabled":false}}'`, which overrides your user and project
   settings but not managed ones;
@@ -580,8 +591,9 @@ Limitations:
   `.claude/commands|agents`, nor change an existing `.claude/`, `.husky/` or `.githooks/`: a task
   that has to edit them fails in the sandbox. A verify command that checks `git status` is clean sees
   the placeholders as untracked, and so does an agent. They go when the command or agent ends; when
-  one could not clean up, dulger removes untracked empty leftovers before it commits. Nothing appears
-  in your checkout, where the planner runs: nothing is writable there.
+  one could not clean up, dulger removes untracked empty leftovers before it commits, also when the
+  run is resumed without the sandbox. Nothing appears in your checkout, where the planner runs:
+  nothing is writable there.
 - Inside, `git status`, `diff` and `log` work; `git add`, `commit` and `stash` do not (the repository's
   `.git` stays read-only). dulger does the committing.
 - Each command or agent call costs about 0.2 s and 90 MB more. A Claude Code call measured no slower

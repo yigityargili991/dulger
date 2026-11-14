@@ -1,6 +1,6 @@
 import { CLAUDE_CAPABILITIES } from './capabilities.ts';
 // Adapter for Claude Code: `claude -p ... --output-format stream-json`.
-import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { sandboxNote } from '../roles/prompts.ts';
@@ -11,6 +11,12 @@ import { spawnLines, tryParseJson, extractJson } from './process.ts';
 const READONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'];
 const PROBES = ['cargo --version', 'rustc --version', 'node --version', 'npm --version', 'python --version', 'python3 --version', 'go version', 'git --version'];
 const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(git status)', 'Bash(ls *)', 'Bash(cat *)', ...PROBES.map((p) => `Bash(${p})`)];
+/**
+ * Whether `Bash(<cmd>)` is one rule allowing exactly `cmd`. Claude Code (2.1) ends a rule at a comma or space
+ * after a `)`, reads `*` as a wildcard and `Bash()` as all of Bash, and unescapes `\\`, `\(` and `\)`; a
+ * command that would be read otherwise, or holds a control character, is not offered and so is denied.
+ */
+const ruleSafe = (cmd: string) => cmd.trim() !== '' && !/[*()\p{Cc}]|\\\\|\\$/u.test(cmd);
 /** Claude Code's own Bash sandbox is bubblewrap too, and bubblewrap cannot start inside dulger's. */
 const INNER_SANDBOX_OFF = '{"sandbox":{"enabled":false}}';
 
@@ -36,9 +42,8 @@ export function buildClaudeArgs(opts: AdapterRunOptions, sandboxed?: { writable:
     args.push('--permission-mode', 'dontAsk', '--tools', '', '--disable-slash-commands', '--settings', '{"disableAllHooks":true}');
   } else {
     const allowed = [...READONLY_ALLOWED];
-    for (const cmd of opts.allowedCommands ?? []) allowed.push(`Bash(${cmd})`, `Bash(${cmd} *)`);
-    // A `*` in a rule is a wildcard, so a command containing one cannot be allowed exactly; it is left out.
-    for (const cmd of opts.exactCommands ?? []) if (!cmd.includes('*')) allowed.push(`Bash(${cmd})`);
+    for (const cmd of (opts.allowedCommands ?? []).filter(ruleSafe)) allowed.push(`Bash(${cmd})`, `Bash(${cmd} *)`);
+    for (const cmd of (opts.exactCommands ?? []).filter(ruleSafe)) allowed.push(`Bash(${cmd})`);
     args.push('--permission-mode', 'dontAsk', '--tools', READONLY_TOOLS.join(','), '--allowedTools', allowed.join(','));
   }
   return args;
@@ -184,7 +189,8 @@ export function claudeProjectDir(cwd: string, env: NodeJS.ProcessEnv = process.e
 /**
  * How to spawn one call: through the sandbox when it is active, for every role but the tool-free reporter.
  * Inside, ~/.claude is read-only (Claude Code logs the writes it cannot make and carries on) except the
- * call's own transcript directory, without which there is no --resume and no structured output.
+ * call's own transcript directory, without which there is no --resume and no structured output; for the
+ * planner only what the session itself writes there.
  */
 function claudeCommand(opts: AdapterRunOptions): { bin: string; args: string[]; env?: NodeJS.ProcessEnv; transcripts?: string } {
   const bin = process.env.DULGER_CLAUDE_BIN ?? 'claude';
@@ -192,12 +198,17 @@ function claudeCommand(opts: AdapterRunOptions): { bin: string; args: string[]; 
   if (!sandbox) return { bin, args: buildClaudeArgs(opts) };
   const writable = sandbox.writable(opts.cwd);
   const transcripts = claudeProjectDir(opts.cwd);
-  // Outside a worktree (the planner, in your checkout) the directory is the one your own sessions there use,
-  // and their auto-memory in memory/ is read by every later session: never writable. srt creates a missing
-  // write-denied path on the host, and a write grant on a missing path grants nothing, so both exist first.
+  // Outside a worktree (the planner, in your checkout) the directory is the one your own sessions there use.
+  // Their auto-memory in memory/ is read by every later session, and the files and directories already there
+  // are their transcripts: none of it is writable but the session being resumed, while a new session can add
+  // its own. srt creates a missing write-denied path on the host, and a write grant on a missing path grants
+  // nothing, so both exist first.
   const memory = join(transcripts, 'memory');
   mkdirSync(writable ? transcripts : memory, { recursive: true });
-  const wrapped = sandbox.wrap('agent', opts.cwd, [bin, ...buildClaudeArgs(opts, { writable })], process.env, { allowWrite: [transcripts], denyWrite: writable ? [] : [memory] });
+  const resumed = opts.resumeSessionId ? [opts.resumeSessionId, `${opts.resumeSessionId}.jsonl`] : [];
+  const existing = writable ? [] : readdirSync(transcripts, { withFileTypes: true })
+    .filter((e) => (e.isFile() || e.isDirectory()) && e.name !== 'memory' && !resumed.includes(e.name)).map((e) => join(transcripts, e.name)).sort();
+  const wrapped = sandbox.wrap('agent', opts.cwd, [bin, ...buildClaudeArgs(opts, { writable })], process.env, { allowWrite: [transcripts], denyWrite: writable ? [] : [memory, ...existing] });
   if (!wrapped) throw new Error('the sandbox is active but did not wrap the agent');
   return { ...wrapped, transcripts };
 }

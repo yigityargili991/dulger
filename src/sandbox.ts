@@ -156,7 +156,7 @@ function runProbe(): SandboxProbe {
     const reason = r.error ? `srt did not answer (${r.error.message})` : said ?? `srt exited with ${r.status ?? r.signal}`;
     const missing = process.platform === 'linux' ? missingTools() : [];
     const fix = missing.length ? installFix(missing)
-      : process.platform === 'linux' ? 'bubblewrap must be able to create user namespaces (Ubuntu 24.04 and later restrict them); the Sandbox section of dulger\'s README has the details'
+      : process.platform === 'linux' ? 'bubblewrap cannot create its namespaces here: an unprivileged container, or a kernel that restricts unprivileged user namespaces such as Ubuntu 24.04 and later; the Sandbox section of dulger\'s README has the details'
       : 'the Sandbox section of dulger\'s README has the details';
     return { ok: false, reason, fix };
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -279,7 +279,11 @@ export interface Sandbox {
   wrap(kind: SandboxKind, cwd: string, command: string | string[], env: NodeJS.ProcessEnv, extra?: SandboxExtra): WrappedCommand | undefined;
   /** Whether a command wrapped in `cwd` may write there: a card's worktree, never your checkout. */
   writable(cwd: string): boolean;
-  /** Remove placeholders an interrupted srt left in `cwd`, before dulger commits it; returns what went. */
+  /**
+   * Remove placeholders an interrupted srt left in `cwd`, before dulger commits it; returns what went. Only
+   * where this run wraps or has wrapped commands: the sandbox is active, or the run's directory (kept until
+   * the run finishes) is there, as on a resume without the sandbox after dulger was killed while srt ran.
+   */
   scrub(cwd: string): string[];
   /** Remove this run's settings files and temp dirs. */
   dispose(): void;
@@ -328,7 +332,7 @@ export function createSandbox(repoRoot: string, runId: string, config: SandboxCo
       return { bin: process.execPath, args: [cli, '--settings', file, '--', ...argv], env: { ...env, ...policy.env } };
     },
     writable: (cwd) => within(worktreesDir(repoRoot), cwd),
-    scrub: (cwd) => (status.active ? scrubPlaceholders(cwd) : []),
+    scrub: (cwd) => (status.active || existsSync(runDir) ? scrubPlaceholders(cwd) : []),
     dispose() {
       try { rmSync(runDir, { recursive: true, force: true }); } catch { /* left for dulger clean */ }
     },

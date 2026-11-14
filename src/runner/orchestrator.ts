@@ -129,8 +129,11 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       // A dry run on a copy validates the answer and names the cards as they would land.
       const proposed = store.applyReplan(structuredClone(board), r.output).added;
       const unapproved = unapprovedCommands(proposed);
-      if (unapproved.length && !(await approve(unapproved, proposed.filter((c) => c.verify.some((v) => unapproved.includes(v.trim())))))) {
-        throw new Error(`refused because its new verify command${unapproved.length === 1 ? ' was' : 's were'} not approved: ${unapproved.map((c) => `\`${c}\``).join(', ')}`);
+      if (unapproved.length) {
+        const approved = await approve(unapproved, proposed.filter((c) => c.verify.some((v) => unapproved.includes(v.trim()))));
+        // Stopped while asking, the person made no decision: like a dead planner, it does not count.
+        if (ctrl.signal.aborted) return;
+        if (!approved) throw new Error(`refused because its new verify command${unapproved.length === 1 ? ' was' : 's were'} not approved: ${unapproved.map((c) => `\`${c}\``).join(', ')}`);
       }
       const { replaced, added } = store.applyReplan(board, r.output);
       save('replanned', { data: { replaced: replaced.map((c) => c.id), added: added.map((c) => c.id) } });

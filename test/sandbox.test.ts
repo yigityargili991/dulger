@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createServer, type AddressInfo } from 'node:net';
 import * as git from '../src/git/worktree.ts';
@@ -301,6 +301,24 @@ test('scrubbing removes only untracked, empty placeholders', (t) => {
   assert.ok(existsSync(join(kept, '.claude', 'notes.md')));
 });
 
+test('a run resumed without the sandbox still scrubs what a killed srt left; a run that never used the sandbox is not scrubbed', (t) => {
+  const root = repo(t);
+  const leave = () => { writeFileSync(join(root, '.bashrc'), ''); mkdirSync(join(root, '.vscode'), { recursive: true }); };
+  const off = { mode: 'off', active: false } as const;
+  leave();
+  assert.deepEqual(createSandbox(root, 'never', policy(), off).scrub(root), [], 'never wrapped: left as it always was');
+  assert.deepEqual(untracked(root), ['?? .bashrc'], 'and git sees what it saw before');
+
+  // A command of this run was wrapped, and dulger was killed while srt ran it.
+  createSandbox(root, 'killed', policy({ mode: 'auto' }), { mode: 'auto', active: true, available: true }).wrap('verify', root, 'true', {});
+  const resumed = createSandbox(root, 'killed', policy(), off);
+  assert.deepEqual(resumed.scrub(root).sort(), ['.bashrc', '.vscode'], 'resumed with the sandbox off');
+  assert.deepEqual(untracked(root), []);
+  resumed.dispose();
+  leave();
+  assert.deepEqual(resumed.scrub(root), [], 'a finished run has no directory left, and nothing to scrub');
+});
+
 test('required mode: preflight refuses a run where the runtime does not work, before any planning; it starts where it does', async (t) => {
   const root = repo(t);
   const required: Config = { ...base, sandbox: policy({ mode: 'required' }) };
@@ -533,17 +551,45 @@ test('in the sandbox the planner reads your checkout, writes nothing there nor i
   assert.deepEqual(untracked(root), []);
 });
 
+test('in the sandbox the planner cannot change the sessions already in its transcript directory, but adds its own and continues the one it resumes', real, async (t) => {
+  const { root, sandbox } = sandboxed(t);
+  fakeClaude(t);
+  const own = claudeProjectDir(root);
+  mkdirSync(join(own, 'yours'), { recursive: true });
+  writeFileSync(join(own, 'yours.jsonl'), 'your session\n');
+  writeFileSync(join(own, 'yours', 'tool-result.txt'), 'yours\n');
+  const resume = randomUUID();
+  writeFileSync(join(own, `${resume}.jsonl`), '{"earlier":true}\n');
+  const tries = [join(own, 'yours.jsonl'), join(own, 'yours', 'tool-result.txt'), join(own, 'yours', 'added.txt'), join(own, 'added.jsonl')];
+  const r = await claudeCall(root, sandbox, { prompt: JSON.stringify({ write: tries }), systemPrompt: '[role:planner] p', access: 'readonly', resumeSessionId: resume });
+  assert.equal(r.ok, true, r.error);
+  const report = r.output as FakeReport;
+  assert.deepEqual(tries.map((p) => report.writes[p] === 'ok'), [false, false, false, true], JSON.stringify(report.writes));
+  assert.deepEqual([readFileSync(join(own, 'yours.jsonl'), 'utf8'), readFileSync(join(own, 'yours', 'tool-result.txt'), 'utf8')], ['your session\n', 'yours\n']);
+  assert.ok(!existsSync(join(own, 'yours', 'added.txt')));
+  assert.equal(readFileSync(join(own, 'added.jsonl'), 'utf8'), 'written by fake claude\n', 'a new file can be created, as a new session must');
+  assert.deepEqual([r.sessionId, report.transcript, readFileSync(join(own, `${resume}.jsonl`), 'utf8')], [resume, 'ok', '{"earlier":true}\n{}\n'], 'the resumed session is appended to');
+});
+
 test('a sandboxed Claude Code agent that is stopped gets SIGTERM, fails, and leaves no process, socket or placeholder', real, async (t) => {
   const { cwd, sandbox } = sandboxed(t);
   const { dir } = fakeClaude(t);
   const before = { sockets: sockets(), bridges: bridges() };
   const ctrl = new AbortController();
   let placeholders: string[] = [];
+  let groups: string[] = [];
   let abortedAt = 0;
-  setTimeout(() => { placeholders = untracked(cwd); abortedAt = Date.now(); ctrl.abort(); }, 1500);
+  const pgid = (pid: string | number) => spawnSync('ps', ['-o', 'pgid=', '-p', String(pid)], { encoding: 'utf8' }).stdout.trim();
+  setTimeout(() => {
+    placeholders = untracked(cwd);
+    groups = running(`sandbox-runtime/dist/cli\\.js --settings .* -- ${join(dir, 'claude')}`).split('\n').filter(Boolean).map(pgid);
+    abortedAt = Date.now();
+    ctrl.abort();
+  }, 1500);
   const r = await claudeCall(cwd, sandbox, { prompt: JSON.stringify({ sleepMs: 60_000 }), signal: ctrl.signal });
   assert.deepEqual([r.ok, r.error], [false, 'aborted']);
   assert.ok(placeholders.includes('?? .bashrc'), `it was running in the sandbox: ${placeholders.join(', ')}`);
+  assert.deepEqual(groups, [pgid(process.pid)], 'srt is in dulger\'s process group, so a closed terminal\'s hangup reaches it');
   assert.ok(Date.now() - abortedAt < STOP_GRACE_MS, `srt passed the SIGTERM on and ended before the SIGKILL (${Date.now() - abortedAt}ms)`);
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(running(dir), '', 'no process survived');

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as wt from '../src/git/worktree.ts';
@@ -102,6 +102,37 @@ test('mergeFrom with keepConflicts leaves markers that commitAll can resolve', (
   assert.equal(wt.commitAll(w2, 'resolved'), true);
   assert.equal(wt.land(w2, 'dulger/run3'), true);
   assert.equal(wt.git(repo, ['show', 'dulger/run3:README.md']), 'from c1 and c2');
+});
+
+test('dulger\'s own git in and about worktrees runs no hooks, though core.hooksPath points into the tree', () => {
+  const repo = tempRepo();
+  const marker = join(mkdtempSync(join(tmpdir(), 'dulger-hooks-')), 'fired');
+  mkdirSync(join(repo, 'tools', 'hooks'), { recursive: true });
+  for (const hook of ['post-checkout', 'post-commit', 'post-merge', 'prepare-commit-msg', 'reference-transaction']) {
+    writeFileSync(join(repo, 'tools', 'hooks', hook), `#!/bin/sh\necho ${hook} >> "${marker}"\n`, { mode: 0o755 });
+  }
+  wt.git(repo, ['add', '.']);
+  wt.git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'hooks']);
+  // Relative: git runs the copy in the tree it works in, which in a worktree is a worker's to write.
+  wt.git(repo, ['config', 'core.hooksPath', 'tools/hooks']);
+  wt.createBranch(repo, 'dulger/run4', wt.headRef(repo));
+  const w1 = join(worktrees, 'h1');
+  const w2 = join(worktrees, 'h2');
+  wt.createWorktree(repo, w1, 'dulger-wip/run4/h1', 'dulger/run4');
+  wt.createWorktree(repo, w2, 'dulger-wip/run4/h2', 'dulger/run4');
+  writeFileSync(join(w1, 'a.txt'), 'a\n');
+  writeFileSync(join(w2, 'b.txt'), 'b\n');
+  assert.equal(wt.commitAll(w1, 'h1') && wt.commitAll(w2, 'h2'), true);
+  assert.equal(wt.land(w1, 'dulger/run4'), true);
+  assert.deepEqual(wt.mergeFrom(w2, 'dulger/run4'), { ok: true }, 'a merge commit, not a fast-forward');
+  assert.equal(wt.land(w2, 'dulger/run4'), true);
+  wt.removeWorktree(repo, w1, 'dulger-wip/run4/h1');
+  wt.removeWorktree(repo, w2, 'dulger-wip/run4/h2');
+  wt.deleteBranch(repo, 'dulger/run4');
+  assert.equal(existsSync(marker), false, existsSync(marker) ? `hooks ran: ${readFileSync(marker, 'utf8').trim().split('\n').join(', ')}` : '');
+  // The hooks are live: git run as usual in the checkout fires them.
+  wt.git(repo, ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '--allow-empty', '-m', 'yours']);
+  assert.match(readFileSync(marker, 'utf8'), /post-commit/);
 });
 
 test('initRepo creates a repository with a first commit and is a no-op afterwards', async () => {

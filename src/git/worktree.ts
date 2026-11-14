@@ -24,6 +24,15 @@ export function git(cwd: string, args: string[], opts: { allowFail?: boolean } =
   }
 }
 
+/**
+ * git for dulger's own commits, merges and branch updates in and about worktrees, with no hooks: a relative
+ * core.hooksPath, or a hook manager configured in the tree, would run files a worker wrote, unsandboxed, and
+ * `--no-verify` skips only two hooks.
+ */
+function plumbing(cwd: string, args: string[], opts: { allowFail?: boolean } = {}): string {
+  return git(cwd, ['-c', 'core.hooksPath=/dev/null', ...args], opts);
+}
+
 export function repoRoot(cwd: string): string {
   return git(cwd, ['rev-parse', '--show-toplevel']);
 }
@@ -50,18 +59,18 @@ export function branchExists(cwd: string, branch: string): boolean {
 }
 
 export function deleteBranch(cwd: string, branch: string): void {
-  git(cwd, ['branch', '-D', branch], { allowFail: true });
+  plumbing(cwd, ['branch', '-D', branch], { allowFail: true });
 }
 
 export function createBranch(cwd: string, branch: string, from: string): void {
-  git(cwd, ['branch', '--no-track', branch, from]);
+  plumbing(cwd, ['branch', '--no-track', branch, from]);
 }
 
 /** Create (or recreate) a worktree for `branch` at `path`, starting from `from`. */
 export function createWorktree(repo: string, path: string, branch: string, from: string): void {
   removeWorktree(repo, path, branch);
-  git(repo, ['worktree', 'add', '--no-checkout', '-b', branch, path, from]);
-  git(path, ['checkout', '--quiet']);
+  plumbing(repo, ['worktree', 'add', '--no-checkout', '-b', branch, path, from]);
+  plumbing(path, ['checkout', '--quiet']);
 }
 
 export interface WorktreeInfo {
@@ -82,18 +91,18 @@ export function listWorktrees(repo: string): WorktreeInfo[] {
 
 export function removeWorktree(repo: string, path: string, branch?: string): void {
   if (existsSync(path)) {
-    git(repo, ['worktree', 'remove', '--force', path], { allowFail: true });
+    plumbing(repo, ['worktree', 'remove', '--force', path], { allowFail: true });
     if (existsSync(path)) rmSync(path, { recursive: true, force: true });
   }
-  git(repo, ['worktree', 'prune'], { allowFail: true });
-  if (branch && branchExists(repo, branch)) git(repo, ['branch', '-D', branch], { allowFail: true });
+  plumbing(repo, ['worktree', 'prune'], { allowFail: true });
+  if (branch && branchExists(repo, branch)) plumbing(repo, ['branch', '-D', branch], { allowFail: true });
 }
 
 /** Stage everything (except .dulger/) and commit. Returns false when there was nothing to commit. */
 export function commitAll(cwd: string, message: string): boolean {
   git(cwd, ['add', '-A', '--', '.', ':(exclude).dulger']);
   if (git(cwd, ['diff', '--cached', '--quiet'], { allowFail: true }) === '' && git(cwd, ['diff', '--cached', '--name-only']) === '') return false;
-  git(cwd, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'commit', '--quiet', '--no-verify', '-m', message]);
+  plumbing(cwd, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'commit', '--quiet', '--no-verify', '-m', message]);
   return true;
 }
 
@@ -128,11 +137,11 @@ export interface MergeResult {
  */
 export function mergeFrom(worktree: string, branch: string, opts: { keepConflicts?: boolean } = {}): MergeResult {
   try {
-    git(worktree, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'merge', '--quiet', '--no-edit', branch]);
+    plumbing(worktree, ['-c', 'user.name=dulger', '-c', 'user.email=dulger@localhost', 'merge', '--quiet', '--no-edit', branch]);
     return { ok: true };
   } catch (e) {
     const conflicts = git(worktree, ['diff', '--name-only', '--diff-filter=U'], { allowFail: true }).split('\n').filter(Boolean);
-    if (!opts.keepConflicts || conflicts.length === 0) git(worktree, ['merge', '--abort'], { allowFail: true });
+    if (!opts.keepConflicts || conflicts.length === 0) plumbing(worktree, ['merge', '--abort'], { allowFail: true });
     return { ok: false, conflicts: conflicts.length ? conflicts : [(e as Error).message] };
   }
 }
@@ -148,7 +157,7 @@ export function isAncestor(cwd: string, ancestor: string, ref: string): boolean 
  */
 export function land(worktree: string, runBranch: string): boolean {
   if (!isAncestor(worktree, runBranch, 'HEAD')) return false;
-  git(worktree, ['branch', '-f', runBranch, 'HEAD']);
+  plumbing(worktree, ['branch', '-f', runBranch, 'HEAD']);
   return true;
 }
 

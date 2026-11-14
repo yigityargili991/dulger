@@ -563,6 +563,19 @@ test('a replan whose new verify command is refused, or that nobody can approve, 
   }
 });
 
+test('a replan with a card id that differs from one on the board only in case or _ is dropped like any invalid replan', async () => {
+  registerAdapter('fake', createFakeAdapter(replanScript([smoke(['true'], 'C2')])));
+  const repo = tempRepo();
+  const board = createBoard(repo, 'demo', 'run-replan-alike');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false });
+  await orch.plan();
+  await orch.execute();
+  assert.deepEqual(board.cards.map((c) => c.id), ['c1', 'c2', 'c3']);
+  assert.equal(board.replans, 1);
+  const events = readFileSync(join(store.runDir(repo, board.runId), 'events.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(events.find((e) => e.type === 'replan_failed')?.message, 'card ids c2 and C2 differ only in case or in _ against -; rename one');
+});
+
 test('an approved command does not approve a longer one that starts with it', async () => {
   const asked: string[][] = [];
   registerAdapter('fake', createFakeAdapter(replanScript([smoke(['npm test', 'npm test; echo x', 'true && curl x'])])));
@@ -574,7 +587,7 @@ test('an approved command does not approve a longer one that starts with it', as
   assert.deepEqual(asked, [['npm test; echo x', 'true && curl x']]);
 });
 
-test('stopping the run while a replan waits for approval refuses it instead of hanging', { timeout: 5000 }, async () => {
+test('stopping the run while a replan waits for approval drops it without using it up, instead of hanging', { timeout: 5000 }, async () => {
   registerAdapter('fake', createFakeAdapter(replanScript([smoke(['echo new-check'])])));
   const repo = tempRepo();
   const board = createBoard(repo, 'demo', 'run-replan-abort');
@@ -589,6 +602,11 @@ test('stopping the run while a replan waits for approval refuses it instead of h
   assert.equal(taken, true, 'the question is told to go away');
   assert.ok(!board.cards.some((c) => c.id === 'c4'));
   assert.equal(board.checkpoint?.phase, 'stopped');
+  // Nobody refused it: the run stopped. Like a planner that died, it does not count against maxReplans.
+  assert.equal(board.replans, undefined);
+  assert.equal(store.loadBoard(repo, board.runId).replans, undefined);
+  const events = readFileSync(join(store.runDir(repo, board.runId), 'events.jsonl'), 'utf8');
+  assert.doesNotMatch(events, /"type":"replan_failed"/);
 });
 
 test('planWarnings flags cards too big to review and foundation cards that do too much', () => {

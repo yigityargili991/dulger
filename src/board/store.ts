@@ -130,10 +130,17 @@ export function applyReplan(board: Board, plan: PlannerResult): { replaced: Card
 /** Throws with a readable message when the board is structurally broken (e.g. after hand edits). */
 export function validateBoard(board: Board): void {
   const ids = new Set<string>();
+  // Claude Code names a transcript directory after the cwd with every `_` made `-`, and some filesystems
+  // ignore case: cards whose ids differ only so would share one.
+  const alike = new Map<string, string>();
   for (const card of board.cards) {
     if (!card.id || !/^[A-Za-z0-9_-]+$/.test(card.id)) throw new Error(`card has invalid id: ${JSON.stringify(card.id)}`);
     if (ids.has(card.id)) throw new Error(`duplicate card id: ${card.id}`);
     ids.add(card.id);
+    const key = card.id.toLowerCase().replaceAll('_', '-');
+    const other = alike.get(key);
+    if (other !== undefined) throw new Error(`card ids ${other} and ${card.id} differ only in case or in _ against -; rename one`);
+    alike.set(key, card.id);
     if (!Array.isArray(card.tasks) || card.tasks.length === 0) throw new Error(`card ${card.id} has no tasks`);
     const taskIds = new Set<string>();
     for (const t of card.tasks) {

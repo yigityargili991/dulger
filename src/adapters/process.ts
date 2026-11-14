@@ -14,9 +14,10 @@ export interface SpawnLinesOptions {
   /** The child's environment; process.env when not given. */
   env?: NodeJS.ProcessEnv;
   /**
-   * The child is srt running the harness. It gets a process group of its own and is stopped with SIGTERM
-   * to that group, which srt passes on and cleans up after, then SIGKILL after a grace period: srt killed
-   * outright leaves its proxy bridge, socket and placeholder files behind. Stopped, srt exits 0.
+   * The child is srt running the harness. It is stopped with SIGTERM, which srt passes on and cleans up
+   * after, then SIGKILL after a grace period: srt killed outright leaves its proxy bridge, socket and
+   * placeholder files behind. Stopped, srt exits 0. It stays in dulger's process group, so the hangup a
+   * closed terminal sends ends it as it ends an unsandboxed harness.
    */
   sandboxed?: boolean;
 }
@@ -35,17 +36,14 @@ export function spawnLines(opts: SpawnLinesOptions): Promise<SpawnLinesResult> {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       env: opts.env ?? process.env,
-      detached: opts.sandboxed,
     });
     const log = createWriteStream(opts.logFile, { flags: 'a' });
     let stderr = '';
 
     let escalation: NodeJS.Timeout | undefined;
-    const group = (signal: NodeJS.Signals) => { try { process.kill(-child.pid!, signal); } catch { /* already gone */ } };
     const onAbort = () => {
-      if (!opts.sandboxed) { child.kill('SIGTERM'); return; }
-      group('SIGTERM');
-      escalation = setTimeout(() => group('SIGKILL'), STOP_GRACE_MS);
+      child.kill('SIGTERM');
+      if (opts.sandboxed) escalation = setTimeout(() => child.kill('SIGKILL'), STOP_GRACE_MS);
     };
     if (opts.signal.aborted) onAbort();
     else opts.signal.addEventListener('abort', onAbort, { once: true });
@@ -69,8 +67,6 @@ export function spawnLines(opts: SpawnLinesOptions): Promise<SpawnLinesResult> {
     child.on('close', (code) => {
       opts.signal.removeEventListener('abort', onAbort);
       clearTimeout(escalation);
-      // srt has cleaned up and gone; whatever of its group is left goes with it.
-      if (opts.sandboxed) group('SIGKILL');
       log.end();
       resolve({ exitCode: code ?? -1, stderr });
     });

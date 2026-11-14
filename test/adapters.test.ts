@@ -333,10 +333,13 @@ test('a sandboxed harness stays in dulger\'s process group, and gets SIGTERM fir
     const lines: string[] = [];
     return spawnLines({ bin: '/bin/sh', args: ['-c', script, marker], cwd: dir, logFile: join(dir, 'log'), signal: o.signal ?? new AbortController().signal, onLine: (l) => lines.push(l), sandboxed: o.sandboxed, env: o.env }).then((r) => ({ ...r, lines }));
   };
-  const dulgers = spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim();
+  // The process group from /proc where there is one: slim CI images have no ps.
+  const pgrp = (stat: string) => stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]!;
+  const dulgers = existsSync('/proc/self/stat') ? pgrp(readFileSync(`/proc/${process.pid}/stat`, 'utf8')) : spawnSync('ps', ['-o', 'pgid=', '-p', String(process.pid)], { encoding: 'utf8' }).stdout.trim();
+  const ownGroup = 'if [ -r /proc/$$/stat ]; then cut -d" " -f5 /proc/$$/stat; else ps -o pgid= -p $$; fi';
   for (const sandboxed of [false, true]) {
     // A closed terminal hangs up dulger's foreground group: a harness in it goes with dulger.
-    assert.equal((await run('ps -o pgid= -p $$', { sandboxed })).lines[0]!.trim(), dulgers, `sandboxed ${sandboxed}: in dulger's group`);
+    assert.equal((await run(ownGroup, { sandboxed })).lines[0]!.trim(), dulgers, `sandboxed ${sandboxed}: in dulger's group`);
   }
   assert.deepEqual((await run('echo "$DULGER_SPAWN_TEST"', { env: { DULGER_SPAWN_TEST: 'given' } })).lines, ['given']);
 
@@ -344,11 +347,12 @@ test('a sandboxed harness stays in dulger\'s process group, and gets SIGTERM fir
   const started = Date.now();
   setTimeout(() => ctrl.abort(), 200);
   // exec: the shell is the harness itself, as srt is, and keeps ignoring SIGTERM.
-  const stubborn = await run('trap "" TERM; echo ready; exec sleep 68', { sandboxed: true, signal: ctrl.signal });
+  const stubborn = await run('trap "" TERM; echo $$; exec sleep 68', { sandboxed: true, signal: ctrl.signal });
   const took = Date.now() - started;
   assert.ok(took >= STOP_GRACE_MS && took < STOP_GRACE_MS + 3000, `a child that ignores SIGTERM is killed after the grace period (${took}ms)`);
-  assert.deepEqual(stubborn.lines, ['ready']);
-  assert.equal(spawnSync('pgrep', ['-f', '^sleep 68$']).stdout.toString().trim(), '');
+  assert.match(stubborn.lines.join('\n'), /^\d+$/);
+  // Its own pid, kept across the exec: no pgrep needed to see that it is gone.
+  assert.throws(() => process.kill(Number(stubborn.lines[0]), 0), /ESRCH/, 'nothing is left of it');
 });
 
 test('tool-free CLI requests disable Claude tools and reject unsupported Codex calls', () => {

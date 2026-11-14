@@ -156,8 +156,8 @@ function runProbe(): SandboxProbe {
     const reason = r.error ? `srt did not answer (${r.error.message})` : said ?? `srt exited with ${r.status ?? r.signal}`;
     const missing = process.platform === 'linux' ? missingTools() : [];
     const fix = missing.length ? installFix(missing)
-      : process.platform === 'linux' ? 'bubblewrap cannot create its namespaces here: an unprivileged container, or a kernel that restricts unprivileged user namespaces such as Ubuntu 24.04 and later; the Sandbox section of dulger\'s README has the details'
-      : 'the Sandbox section of dulger\'s README has the details';
+      : process.platform === 'linux' ? 'bubblewrap cannot create its namespaces here: an unprivileged container, or a kernel that restricts unprivileged user namespaces such as Ubuntu 24.04 and later; see https://yigityargili991.github.io/dulger/how-a-run-works/#sandbox'
+      : 'see https://yigityargili991.github.io/dulger/how-a-run-works/#sandbox';
     return { ok: false, reason, fix };
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -192,7 +192,7 @@ export function sandboxCheck(s: SandboxStatus): { status: 'pass' | 'warning' | '
   const broken = `the runtime does not work here: ${s.reason}. Fix: ${s.fix}.`;
   if (s.mode === 'off') {
     const here = s.available === undefined ? '' : s.available ? ' The runtime works here.' : ` When enabled, ${broken}`;
-    return { status: 'warning', detail: `off: agents, ${COMMANDS} run with your privileges.${here} Set "sandbox": { "mode": "auto" } in ${userConfigFile()}, or pass --sandbox auto, to confine Claude Code agents and those commands; the README's Sandbox section says what it does and does not confine.` };
+    return { status: 'warning', detail: `off: agents, ${COMMANDS} run with your privileges.${here} Set "sandbox": { "mode": "auto" } in ${userConfigFile()}, or pass --sandbox auto, to confine Claude Code agents and those commands; https://yigityargili991.github.io/dulger/how-a-run-works/#sandbox says what it does and does not confine.` };
   }
   if (s.mode === 'auto') return { status: 'warning', detail: `auto, but ${broken} Until then ${COVERS} run with your privileges.` };
   return { status: 'error', detail: `required, but ${broken} No run starts until it works or the mode changes.` };

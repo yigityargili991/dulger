@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- The README is now a short introduction. The full manual moved to `docs/manual.md`, and the
+  documentation site is built from it.
+
 ## 0.7.2 — 2026-11-14
 
 - The project moved from GitLab to GitHub: the repository and issues are at

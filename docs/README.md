@@ -1,7 +1,8 @@
 # Documentation website
 
-The website is generated from the root `README.md`, `CHANGELOG.md` and package version.
-Edit those files alongside application changes; there is no second copy of the prose to update.
+The website is generated from `docs/manual.md`, the root `CHANGELOG.md` and the package version.
+Edit those files alongside application changes. The root `README.md` is a short introduction that
+links to the site; it is not a source for it.
 This publishes maintained documentation automatically; it does not invent documentation from code.
 
 ```sh
@@ -11,9 +12,9 @@ npm test --prefix docs
 python3 -m http.server 4173 --directory docs/dist/public
 ```
 
-`build.mjs` maps README sections to pages while keeping existing public URLs. New or renamed
+`build.mjs` maps the manual's sections to pages while keeping existing public URLs. New or renamed
 top-level sections must be mapped there; otherwise the build fails instead of dropping content.
-Cross-page README anchors are rewritten. Links and the stylesheet are relative to each page, so the
+Cross-page anchors in the manual are rewritten. Links and the stylesheet are relative to each page, so the
 site works at a domain root or under a path. Every page shows the package version; `version.json`
 at the site root identifies the exact source build. The generated `docs/dist/` directory is ignored
 by Git.

@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const docs = join(root, 'docs');
 const out = join(docs, 'dist');
 const read = (path) => readFileSync(join(root, path), 'utf8');
-const readme = read('README.md');
+const manual = read('docs/manual.md');
 const changelog = read('CHANGELOG.md');
 const { version } = JSON.parse(read('package.json'));
 if (process.env.GITHUB_REF_TYPE === 'tag' && process.env.GITHUB_REF_NAME !== `v${version}`) {
@@ -25,7 +25,7 @@ const markdown = new Marked();
 // Split tokens, not lines: a heading inside a fenced example is still code.
 const sections = new Map();
 let section = 'Introduction';
-for (const token of markdown.lexer(readme)) {
+for (const token of markdown.lexer(manual)) {
   if (token.type === 'heading' && token.depth === 2) section = token.text;
   sections.set(section, (sections.get(section) ?? '') + token.raw);
 }
@@ -42,10 +42,10 @@ const routes = [
 ];
 const covered = routes.flatMap((route) => route.sections);
 for (const name of sections.keys()) {
-  if (covered.filter((item) => item === name).length !== 1) throw new Error(`README section needs one docs route: ${name}`);
+  if (covered.filter((item) => item === name).length !== 1) throw new Error(`Manual section needs one docs route: ${name}`);
 }
 for (const name of covered) {
-  if (!sections.has(name)) throw new Error(`Docs route refers to missing README section: ${name}`);
+  if (!sections.has(name)) throw new Error(`Docs route refers to missing manual section: ${name}`);
 }
 const anchors = new Map();
 for (const route of routes) {
@@ -63,7 +63,7 @@ markdown.use({ renderer: {
   link(token) {
     if (token.href.startsWith('#')) {
       const target = anchors.get(token.href.slice(1));
-      if (!target) throw new Error(`Missing README anchor: ${token.href}`);
+      if (!target) throw new Error(`Missing manual anchor: ${token.href}`);
       token = { ...token, href: target };
     }
     if (token.href.startsWith('/')) token = { ...token, href: rel(current, token.href) };
@@ -94,7 +94,6 @@ mkdirSync(join(out, 'public'), { recursive: true });
 for (const route of routes) {
   let body = route.path === '/changelog/' ? changelog : route.sections.map((name) => sections.get(name)).join('\n');
   if (route.path === '/') {
-    body = body.replace(/Website: [\s\S]*?\n\n/, '');
     body += '\n## Get started\n\n' + routes.slice(1).map((r) => `- [${r.title}](${r.path})`).join('\n');
   } else if (route.path !== '/changelog/') {
     const first = markdown.lexer(body).find((t) => t.type === 'heading');
@@ -110,6 +109,6 @@ for (const route of routes) {
 writeFileSync(join(out, 'public/404.html'), page({ title: 'Page not found' }, '<h1>Page not found</h1><p>Use the navigation above or <a href="./">return to the docs home page</a>.</p>'));
 cpSync(join(docs, 'style.css'), join(out, 'public/style.css'));
 const sourceHash = createHash('sha256');
-for (const file of ['README.md', 'CHANGELOG.md', 'package.json', 'docs/build.mjs', 'docs/style.css', 'docs/package-lock.json']) sourceHash.update(file).update('\0').update(read(file)).update('\0');
+for (const file of ['docs/manual.md', 'CHANGELOG.md', 'package.json', 'docs/build.mjs', 'docs/style.css', 'docs/package-lock.json']) sourceHash.update(file).update('\0').update(read(file)).update('\0');
 writeFileSync(join(out, 'public/version.json'), JSON.stringify({ version, sourceHash: sourceHash.digest('hex'), revision: process.env.GITHUB_SHA ?? null }) + '\n');
 console.log(`Built ${routes.length} documentation pages for ${version}`);

@@ -55,16 +55,16 @@ test('published docs cover the released setup and recovery features', () => {
 test('new sections cannot disappear silently; fenced headings stay in their example', (t) => {
   const fixture = mkdtempSync(join(tmpdir(), 'dulger-docs-'));
   t.after(() => rmSync(fixture, { recursive: true, force: true }));
-  for (const file of ['README.md', 'CHANGELOG.md', 'package.json']) cpSync(join(root, file), join(fixture, file));
+  for (const file of ['CHANGELOG.md', 'package.json']) cpSync(join(root, file), join(fixture, file));
   cpSync(docs, join(fixture, 'docs'), { recursive: true, filter: (path) => !/\/(node_modules|dist)(\/|$)/.test(path) });
   symlinkSync(join(docs, 'node_modules'), join(fixture, 'docs/node_modules'), 'dir');
-  const readme = readFileSync(join(fixture, 'README.md'), 'utf8');
+  const manual = readFileSync(join(fixture, 'docs/manual.md'), 'utf8');
   const { version } = JSON.parse(readFileSync(join(fixture, 'package.json'), 'utf8'));
   const run = (tag = '') => spawnSync(process.execPath, ['docs/build.mjs'], { cwd: fixture, encoding: 'utf8', env: { ...process.env, GITHUB_REF_TYPE: tag && 'tag', GITHUB_REF_NAME: tag } });
-  writeFileSync(join(fixture, 'README.md'), `${readme}\n\n\`\`\`md\n## Example heading\n\`\`\`\n`);
+  writeFileSync(join(fixture, 'docs/manual.md'), `${manual}\n\n\`\`\`md\n## Example heading\n\`\`\`\n`);
   assert.equal(run().status, 0);
   assert.equal(run(`v${version}`).status, 0);
-  writeFileSync(join(fixture, 'README.md'), `${readme}\n\n## New feature\nMust not be lost.\n`);
-  assert.match(run().stderr, /README section needs one docs route: New feature/);
+  writeFileSync(join(fixture, 'docs/manual.md'), `${manual}\n\n## New feature\nMust not be lost.\n`);
+  assert.match(run().stderr, /Manual section needs one docs route: New feature/);
   assert.match(run('v999.0.0').stderr, /Release tag must match/);
 });

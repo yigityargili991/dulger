@@ -75,7 +75,7 @@ glyphs. Keep the setup view usable with plain Unicode arrows and ASCII markers.
 | Capability | Canonical owner | Source of truth | Allowed variants | Verification |
 |---|---|---|---|---|
 | Select/Listbox | `src/tui/select.ts` | This document and `src/tui/theme.ts` | Filterable keyboard menu | `test/select.test.ts`, real PTY checks |
-| Form | `src/sessionSetup.ts` | README configuration rules and `src/replModels.ts` | Session draft, per-role override | `test/sessionSetup.test.ts` |
+| Form | `src/sessionSetup.ts` | The manual's configuration rules (`docs/manual.md`) and `src/replModels.ts` | Session draft, per-role override | `test/sessionSetup.test.ts` |
 | Terminal lifecycle | `src/tui/screen.ts` | Existing run screen | Alternate screen, raw keys, resize | `test/tui.test.ts` |
 
 Arrow keys and Tab move selection; Enter chooses; Home/End and Page Up/Down
@@ -121,6 +121,6 @@ The public documentation is a separate content surface, preserving the original 
 reading column, wrapping text navigation, system sans-serif prose and monospace examples.
 `docs/style.css` owns the existing light/dark web palette and shared page styling; terminal tokens
 do not apply to the website. `docs/build.mjs` owns the common navigation, version label and footer.
-Content comes from README and CHANGELOG, with existing routes retained. Use semantic headings,
+Content comes from `docs/manual.md` and CHANGELOG, with existing routes retained. Use semantic headings,
 a skip link, visible focus, browser-native links and locally scrolling code/tables on small screens.
 There is no client-side state, animation, font download or theme flash.

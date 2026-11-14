@@ -1,6 +1,6 @@
 # Terminal workflow contract
 
-Source: the approved UX roadmap in this task, README configuration and recovery rules,
+Source: the approved UX roadmap in this task, the manual's configuration and recovery rules (`docs/manual.md`),
 and the existing CLI/worktree lifecycle. This is an English developer tool operated
 with a keyboard. No new web, locale, payment or identity workflows are introduced.
 
@@ -10,11 +10,11 @@ with a keyboard. No new web, locale, payment or identity workflows are introduce
 |---|---|---|---|---|
 | Select/Listbox | `src/tui/select.ts` | DESIGN.md | Filtered keyboard list | `test/select.test.ts` |
 | Read-only detail | `src/tui/pager.ts` | This contract | Reports, diffs, checks, settings | `test/runUi.test.ts` |
-| Form | `src/sessionSetup.ts`, `src/planEditor.ts` | README.md | Session and plan drafts | `test/sessionSetup.test.ts`, `test/features.test.ts` |
-| Run navigation | `src/runViews.ts` | README.md | Browser and result review | `test/features.test.ts`, PTY smoke |
+| Form | `src/sessionSetup.ts`, `src/planEditor.ts` | docs/manual.md | Session and plan drafts | `test/sessionSetup.test.ts`, `test/features.test.ts` |
+| Run navigation | `src/runViews.ts` | docs/manual.md | Browser and result review | `test/features.test.ts`, PTY smoke |
 | Feedback | Shared menus, pager and run log | DESIGN.md | Textual errors and recovery | `test/select.test.ts`, `test/runUi.test.ts` |
-| Live controls | `src/tui/tui.ts`, `src/runner/dispatch.ts` | README.md | Selected-card controls | `test/runUi.test.ts`, `test/features.test.ts` |
-| Persistence | `src/board/store.ts`, `src/runSettings.ts`, `src/board/lock.ts` | README.md | Atomic snapshots and exclusive execution | `test/features.test.ts` |
+| Live controls | `src/tui/tui.ts`, `src/runner/dispatch.ts` | docs/manual.md | Selected-card controls | `test/runUi.test.ts`, `test/features.test.ts` |
+| Persistence | `src/board/store.ts`, `src/runSettings.ts`, `src/board/lock.ts` | docs/manual.md | Atomic snapshots and exclusive execution | `test/features.test.ts` |
 
 
 ## Flows

@@ -27,6 +27,8 @@ export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
   } else {
     const allowed = [...READONLY_ALLOWED];
     for (const cmd of opts.allowedCommands ?? []) allowed.push(`Bash(${cmd})`, `Bash(${cmd} *)`);
+    // A `*` in a rule is a wildcard, so a command containing one cannot be allowed exactly; it is left out.
+    for (const cmd of opts.exactCommands ?? []) if (!cmd.includes('*')) allowed.push(`Bash(${cmd})`);
     args.push('--permission-mode', 'dontAsk', '--tools', READONLY_TOOLS.join(','), '--allowedTools', allowed.join(','));
   }
   return args;

@@ -107,6 +107,16 @@ test('arg builders encode access mode', () => {
   assert.ok(!cxr.includes('-C') && !cxr.includes('--sandbox'));
 });
 
+test('configured reviewer commands are prefixes; the card\'s verify commands are allowed only exactly as written', () => {
+  const base = { prompt: 'p', systemPrompt: 's', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal, access: 'readonly' } as const;
+  const args = buildClaudeArgs({ ...base, allowedCommands: ['npm test'], exactCommands: ['node scripts/check.js', 'pytest tests/*.py'] });
+  const rules = args[args.indexOf('--allowedTools') + 1]!.split(',');
+  assert.ok(rules.includes('Bash(npm test)') && rules.includes('Bash(npm test *)'), 'a configured command keeps its arguments');
+  assert.ok(rules.includes('Bash(node scripts/check.js)'));
+  assert.ok(!rules.some((r) => r.startsWith('Bash(node scripts/check.js ')), 'a verify command gets no wildcard variant');
+  assert.ok(!rules.some((r) => r.includes('pytest')), 'a verify command with a `*` would be a wildcard rule, so it is left out');
+});
+
 test('tool-free CLI requests disable Claude tools and reject unsupported Codex calls', () => {
   const opts = { prompt: 'digest', systemPrompt: '[role:reporter]', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal, access: 'none', mcp: true, allowedCommands: ['npm test'] } as const;
   const claude = buildClaudeArgs({ ...opts, allowedCommands: [...opts.allowedCommands] });

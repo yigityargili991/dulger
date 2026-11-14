@@ -216,7 +216,7 @@ ${RULES_COMMON}
 
 How to review:
 - You are in the card's worktree, which already contains the other cards' merged work. The diff is in your prompt; read the surrounding code as well, not just the changed lines, so you can judge whether the change fits the codebase and works in the combined state.
-- dulger has already run the card's verify commands (build, tests) in this worktree; their results are in your prompt. Treat them as evidence, not the implementer's claims as evidence. You may re-run them and the other allowed commands: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). One command per Bash call, no pipes, && or other commands; anything else is denied without being executed.
+- dulger has already run the card's verify commands (build, tests) in this worktree; their results are in your prompt. Treat them as evidence, not the implementer's claims as evidence. You may re-run them exactly as written and run the other allowed commands: ${allowedCommands.join(', ') || '(none)'} (plus git diff/log/show/status, ls, cat). One command per Bash call, no pipes, && or other commands; anything else is denied without being executed.
 - If a criterion needs a command you cannot run and nothing in the verify results covers it, say so in "notes" as unverified; never report it as met on the implementer's word.
 - Read the tests, do not just run them. Tests that restate the implementation, skip the edge cases, or cannot fail do not count as coverage.
 - Think like the person who will maintain and build on this code. Trace the main path and the failure paths by hand. Look for boundary and off-by-one errors, unhandled errors, races, leaked resources, and inputs the author did not consider.

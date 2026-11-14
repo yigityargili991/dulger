@@ -88,13 +88,44 @@ test('happy path: parallel cards, retry after checker rejection, dependency, doc
   assert.match(full, /note: Fake note: consider a helper/);
   assert.match(full, /the reviewer note above is worth a follow-up run/);
   assert.match(learnings[0]!.text, /Fake learning/);
-  assert.ok(learnings[0]!.seen >= 4, `seen ${learnings[0]!.seen}`);
-  assert.ok(learnings[0]!.files.includes('out/c1-t1.txt'));
+  assert.equal(learnings[0]!.seen, 5, 'one sighting per task of each landed card, the fix task included');
+  assert.ok(learnings[0]!.files.includes('out/c1-t1.txt') && learnings[0]!.files.includes('out/c1-fix1.txt'));
   assert.ok(!existsSync(join(repo, '.dulger', 'memory.jsonl')), 'memory is not stored in the repo');
   assert.ok(events.some((e) => /c1 rejected/.test(e)));
   // c3 must not start before c1 and c2 are done.
   const idx = (re: RegExp) => events.findIndex((e) => re.test(e));
   assert.ok(idx(/card c3 started/) > idx(/card c1 done/) && idx(/card c3 started/) > idx(/card c2 done/));
+});
+
+test('learnings are stored when their card lands, never for a card that does not', async () => {
+  const repo = tempRepo();
+  const memory = openMemory(repo, config.memory);
+  const learned = { c1: 'Widgets need frobnication before rendering anything visible', c2: 'Farewell helpers return plain strings without trailing punctuation' } as Record<string, string>;
+  const atReview: string[][] = [];
+  const script: FakeScript = {
+    ...DEFAULT_FAKE_SCRIPT,
+    delayMs: 1,
+    worker: (o, i) => ({ ...DEFAULT_FAKE_SCRIPT.worker!(o, i), learnings: [learned[o.prompt.match(/Card id: (\S+)/)![1]!] ?? 'unused'] }),
+    checker: (o) => {
+      atReview.push(memory.load().map((l) => l.cardId));
+      return /Card under review: c1 /.test(o.prompt) ? { pass: false, feedback: ['never good enough'], summary: '' } : { pass: true, feedback: [], summary: 'ok' };
+    },
+  };
+  registerAdapter('fake', createFakeAdapter(script));
+  const board = createBoard(repo, 'demo', 'run-learn');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false, maxReplans: 0, concurrency: 1 }, {});
+  await orch.plan();
+  await orch.execute();
+
+  assert.deepEqual(board.cards.map((c) => c.status), ['failed', 'done', 'blocked']);
+  assert.equal(board.cards[0]!.tasks.filter((t) => t.status === 'done').length, 2, 'c1 finished tasks that reported learnings');
+  assert.ok(atReview.every((ids) => !ids.includes('c1')), 'nothing is learned from a card while it is under review');
+  const learnings = memory.load();
+  assert.deepEqual(learnings.map((l) => [l.cardId, l.text, l.seen]), [['c2', learned.c2, 2]], 'only the landed card taught the memory');
+  assert.deepEqual(learnings[0]!.files.sort(), ['out/c2-t1.txt', 'out/c2-t2.txt']);
+  const log = readFileSync(join(repo, '.dulger', 'runs', 'run-learn', 'events.jsonl'), 'utf8').split('\n').filter((l) => l.includes('"type":"learnings"'));
+  assert.equal(log.length, 1);
+  assert.match(log[0]!, /"cardId":"c2"/);
 });
 
 test('a task whose agent fails is tried again in a fresh session before the card gives up', async () => {

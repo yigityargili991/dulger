@@ -2,6 +2,7 @@
 // memory, prompt context, cost accounting, and one way to run an agent for a role.
 import { runVerification } from './verify.ts';
 import { mkdirSync } from 'node:fs';
+import { childEnv } from '../childEnv.ts';
 import { getAdapter } from '../adapters/index.ts';
 import type { AdapterResult, AdapterRunOptions } from '../adapters/types.ts';
 import { type Config, roleConfig } from '../config.ts';
@@ -25,7 +26,7 @@ export interface RunHooks {
 export const USAGE_LIMIT = /hit your \w+ limit|usage limit|rate.?limit|too many requests|\b429\b/i;
 
 /** What a step passes to run an agent; model, budget, logging and cancellation are filled in per role. */
-export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd'> & { signal?: AbortSignal };
+export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd' | 'commandEnv'> & { signal?: AbortSignal };
 
 export type AgentResult<T> = Omit<AdapterResult, 'output'> & { output?: T };
 
@@ -76,7 +77,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       registry, adapter, role, harness: rc.harness,
       cardId: ids.cardId, taskId: ids.taskId, logDir, logName: ids.logName,
       stallTimeoutSec: config.stallTimeoutSec, parentSignal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
-      run: { ...run, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp },
+      run: { ...run, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp, commandEnv: childEnv(config) },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
     if (role !== 'reporter' && !r.ok && r.error && USAGE_LIMIT.test(r.error) && !signal.aborted) hooks.halt?.(r.error);
@@ -118,7 +119,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
     },
     async setupWorktree(cwd, setupSignal = signal) {
       if (!config.worktreeSetup) return;
-      const result = (await runVerification(cwd, [config.worktreeSetup], { timeoutSec: 600, signal: setupSignal }))[0];
+      const result = (await runVerification(cwd, [config.worktreeSetup], { timeoutSec: 600, signal: setupSignal, env: childEnv(config) }))[0];
       if (!result?.ok) throw new Error(`worktree setup failed: ${result?.output || 'cancelled'}`);
     },
     context: (opts = {}) => buildCommonContext(repoRoot, board, memory, opts),

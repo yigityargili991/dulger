@@ -3,9 +3,12 @@
 import { lstat, realpath, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, relative, dirname, sep } from 'node:path';
 import { spawn } from 'node:child_process';
+import { childEnv } from '../childEnv.ts';
 import type { AdapterRunOptions } from './types.ts';
 
 const LIMIT = 24_000;
+// Approved commands are matched exactly, configured prefixes included: the command goes to a shell, so a prefix match would let anything follow it.
+const approved = (opts: AdapterRunOptions) => [...new Set([...opts.allowedCommands ?? [], ...opts.exactCommands ?? []])];
 const str = { type: 'string' };
 const tool = (name: string, description: string, properties: object, required: string[]) => ({
   type: 'function', function: { name, description, parameters: { type: 'object', properties, required, additionalProperties: false } },
@@ -19,9 +22,9 @@ export function apiTools(opts: AdapterRunOptions) {
     tool('git_diff', 'Inspect changes. With base: diff base...HEAD (use the result branch from the review prompt); otherwise diff the worktree against HEAD. Optional path and 1-based line offset for large diffs.', { base: str, path: str, line: { type: 'integer', minimum: 1 } }, []),
   ];
   if (opts.access === 'write') tools.push(tool('write_file', 'Create or replace a UTF-8 file in the worktree. Read existing files first.', { path: str, content: str }, ['path', 'content']));
-  if (opts.access === 'write' || opts.allowedCommands?.length) tools.push(tool('run_command', opts.access === 'write'
+  if (opts.access === 'write' || approved(opts).length) tools.push(tool('run_command', opts.access === 'write'
     ? 'Run a finite shell command in the worktree (tests, build, search). Do not modify git or .dulger.'
-    : `Run exactly one of these approved commands: ${JSON.stringify(opts.allowedCommands)}`, { command: str }, ['command']));
+    : `Run exactly one of these approved commands: ${JSON.stringify(approved(opts))}`, { command: str }, ['command']));
   return tools;
 }
 
@@ -82,7 +85,7 @@ export async function executeApiTool(name: string, args: Record<string, unknown>
     }
     case 'run_command': {
       const cmd = requiredString(args, 'command').trim();
-      if (opts.access === 'readonly' && !opts.allowedCommands?.includes(cmd)) throw new ToolDenied(`command not approved: ${cmd}`);
+      if (opts.access === 'readonly' && !approved(opts).includes(cmd)) throw new ToolDenied(`command not approved: ${cmd}`);
       return command('/bin/sh', ['-c', cmd], opts, timeoutSec);
     }
     default: throw new ToolDenied(`unknown tool: ${name}`);
@@ -92,7 +95,7 @@ export async function executeApiTool(name: string, args: Record<string, unknown>
 function command(bin: string, args: string[], opts: AdapterRunOptions, timeoutSec: number, limit = LIMIT): Promise<string> {
   return new Promise((resolve, reject) => {
     opts.signal.throwIfAborted();
-    const child = spawn(bin, args, { cwd: opts.cwd, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    const child = spawn(bin, args, { cwd: opts.cwd, env: opts.commandEnv ?? childEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let output = '';
     let stopped = false;
     const stop = () => {

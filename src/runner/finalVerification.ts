@@ -1,5 +1,6 @@
 import * as git from '../git/worktree.ts';
 import * as store from '../board/store.ts';
+import { childEnv } from '../childEnv.ts';
 import { runVerification, verificationSummary } from './verify.ts';
 import type { Runtime } from './runtime.ts';
 
@@ -16,7 +17,7 @@ export async function verifyFinalResult(rt: Runtime): Promise<void> {
     git.createWorktree(rt.repoRoot, cwd, branch, ref);
     try {
       await rt.setupWorktree(cwd);
-      results = await runVerification(cwd, commands, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal });
+      results = await runVerification(cwd, commands, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal, env: childEnv(rt.config) });
     } finally { git.removeWorktree(rt.repoRoot, cwd, branch); }
   }
   if (rt.signal.aborted) return;

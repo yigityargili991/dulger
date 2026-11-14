@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Learnings reach the memory only when their card lands. A card that fails, is stopped or is
+  replaced no longer adds what its workers reported to the memory that later planners, workers and
+  reviewers read. When a card lands, every task's learnings are kept, fix tasks included.
+- A card's verify commands, which the planner writes, are allowed to the reviewer only exactly as
+  written; `checker.allowedCommands` on Claude Code still accept added arguments. A verify command
+  containing `*` is not offered to a Claude Code reviewer, because its permission rules read `*` as a
+  wildcard. An API reviewer's `run_command` lists the verify commands and runs them as exact commands.
+- Verify commands, final verification, `worktreeSetup`, and the API tools' shell commands and
+  `git diff` no longer receive the credentials dulger runs agents with: every configured provider's
+  `apiKeyEnv`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
+  `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Other variables, such as a project's
+  `NPM_TOKEN`, still pass through. Claude Code and Codex themselves keep their environment.
+
 ## 0.6.0 — 2026-09-19
 
 - Added readiness checks, repository-local named profiles, execution limits in setup, a searchable

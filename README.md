@@ -383,9 +383,9 @@ do not load MCP servers.
 
 - **You write** `<repo>/.dulger/context/*.md`: conventions, architecture, how to run tests. Included
   verbatim in every prompt. Commit it.
-- **Agents learn.** Workers report facts about the codebase; dulger stores them outside the repo, folds
-  duplicates and paraphrases, and gives each agent the ones relevant to its card. `dulger memory`
-  lists, adds, removes and compacts them.
+- **Agents learn.** Workers report facts about the codebase; dulger keeps those of cards that land (a
+  card that fails teaches nothing), stores them outside the repo, folds duplicates and paraphrases, and
+  gives each agent the ones relevant to its card. `dulger memory` lists, adds, removes and compacts them.
 
 ## Where things live
 
@@ -401,12 +401,23 @@ when a card lands.
 
 ## Safety
 
-- Workers write only inside their worktree (`bypassPermissions` / `workspace-write`). Planner and
-  reviewer are read-only, with an allow-list of commands. A refused command is logged and noted on
-  the card, so a review that had to take something on trust says so. The progress reporter gets the
-  activity digest in its prompt and no commands at all; it has nothing to refuse.
+- Workers start in their card's worktree, but only Codex keeps them there: its `workspace-write`
+  sandbox limits their writes to the worktree and temporary directories (unless `codex.bypassSandbox`
+  is on). Claude Code's `bypassPermissions` skips permission prompts and confines nothing, so Claude
+  Code workers can read and write whatever your user can. API workers' file tools stay inside the
+  worktree; their shell commands do not. Planner and reviewer are read-only. On Claude Code and API
+  backends they run only allowed commands: for the reviewer, `checker.allowedCommands` and the card's
+  verify commands, the latter exactly as written; Codex runs theirs in its read-only sandbox. A
+  refused command is logged and noted on the card, so a review that had to take something on trust
+  says so. The progress reporter gets the activity digest in its prompt and no commands at all; it has
+  nothing to refuse.
 - The verify commands come from the planner and run with your shell's privileges in the card's
   worktree, the same access the workers already have there. Read them on the board before dispatching.
+  They, `worktreeSetup` and the API tools' shell commands get your environment without the credentials
+  dulger runs agents with: every provider's `apiKeyEnv`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY` and `DEEPSEEK_API_KEY`. Your project's
+  own variables pass through. Claude Code and Codex, and the commands they run, still get your whole
+  environment.
 - Agents never run git; dulger commits, merges, cleans up.
 - Ctrl-C stops the agents and saves the board. `dulger resume` picks it up, and also retries cards
   that failed on dulger's side (a reviewer that would not start, an agent that hung) rather than on

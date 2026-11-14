@@ -4,6 +4,7 @@ import { transitionCard } from '../board/lifecycle.ts';
 // card fails after maxAttempts rejections or when a task is out of tries.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { childEnv } from '../childEnv.ts';
 import { roleConfig } from '../config.ts';
 import { cardFiles } from '../context/common.ts';
 import { extractPaths } from '../context/memory.ts';
@@ -136,6 +137,13 @@ async function reviewAndLand(rt: Runtime, card: Card, cwd: string): Promise<Outc
 function landed(rt: Runtime, card: Card, cwd: string, verdict: CheckResult): void {
   recordReview(card, verdict);
   card.summary = card.tasks.map((t) => t.result?.summary).filter(Boolean).join(' ');
+  // Every later prompt, planner and reviewer included, reads the memory: only work that landed may teach it.
+  // Recorded before finishCard removes the worktree that extractPaths looks in.
+  const harness = roleConfig(rt.config, 'worker').harness;
+  const added = rt.memory.add(card.tasks.flatMap(({ result }) => (result?.learnings ?? []).map((text) => ({
+    text, runId: rt.board.runId, cardId: card.id, harness, files: [...(result?.filesChanged ?? []), ...extractPaths(text, cwd)],
+  }))));
+  if (added.length) rt.save('learnings', { cardId: card.id, data: added.map((l) => l.id) });
   finishCard(rt, card, cwd, 'done');
 }
 
@@ -195,13 +203,6 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
   task.result = last;
   task.status = last?.done ? 'done' : 'failed';
   save(task.status === 'done' ? 'task_done' : 'task_failed', { cardId: card.id, taskId: task.id, message: last?.summary });
-  if (task.status === 'done' && last) {
-    const added = rt.memory.add(last.learnings.map((text) => ({
-      text, runId: board.runId, cardId: card.id, harness: roleConfig(config, 'worker').harness,
-      files: [...last.filesChanged, ...extractPaths(text, cwd)],
-    })));
-    if (added.length) save('learnings', { cardId: card.id, taskId: task.id, data: added.map((l) => l.id) });
-  }
   return task.status === 'done' ? { result: last } : {};
 }
 
@@ -212,7 +213,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
 async function verify(rt: Runtime, card: Card, cwd: string): Promise<boolean> {
   if (!card.verify.length) { card.verification = undefined; return true; }
   rt.log(`card ${card.id} verifying: ${card.verify.join(', ')}`);
-  card.verification = await runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal });
+  card.verification = await runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal, env: childEnv(rt.config) });
   const failed = card.verification.filter((r) => !r.ok);
   if (!failed.length) return true;
   rt.log(`card ${card.id} verification failed: ${verificationSummary(failed)}`);
@@ -225,11 +226,13 @@ async function check(rt: Runtime, card: Card, cwd: string): Promise<{ verdict: C
   const { board, config } = rt;
   const diff = git.reviewDiff(cwd, board.runBranch);
   if (!diff.text) rt.log(`card ${card.id}: diff is ${Math.round(diff.chars / 1024)} KB over ${diff.files.length} files; the reviewer reads it file by file`);
-  const allowedCommands = [...new Set([...config.checker.allowedCommands, ...card.verify])];
+  const allowedCommands = config.checker.allowedCommands;
+  // The planner wrote the verify commands, so the reviewer may re-run them as they are but never extend them.
+  const exactCommands = card.verify.filter((c) => !allowedCommands.includes(c));
   const r = await rt.agent<CheckResult>('checker', {
     prompt: P.checkerPrompt(board, card, diff, rt.context({ files: cardFiles(card, cwd), root: cwd })),
     systemPrompt: P.checkerSystem(allowedCommands), cwd, schema: CHECK_SCHEMA, access: 'readonly',
-    allowedCommands,
+    allowedCommands, exactCommands,
   }, { cardId: card.id, logName: `${card.id}.check.${card.attempts + 1}` });
   rt.addCost(card, r.costUsd, r.usage);
   // A reviewer that could not run something worked from trust instead of evidence; that belongs on the board.

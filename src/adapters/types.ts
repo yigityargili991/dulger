@@ -17,6 +17,13 @@ export interface AdapterRunOptions {
   signal: AbortSignal;
   /** Bash command prefixes a readonly agent may run (checker running tests). */
   allowedCommands?: string[];
+  /** Commands a readonly agent may run only exactly as written: the card's verify commands, which a planner wrote. */
+  exactCommands?: string[];
+  /**
+   * Environment for the commands an adapter spawns itself for the agent (the API tools' shell and git):
+   * childEnv(config), without the agent credentials. Never used for a CLI harness process.
+   */
+  commandEnv?: NodeJS.ProcessEnv;
   /**
    * Give write agents the user's MCP servers (config.claude.mcp, on by default); read-only agents never get
    * them. Only the Claude adapter acts on it: Claude Code inlines every MCP tool schema when ToolSearch is

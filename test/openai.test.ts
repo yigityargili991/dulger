@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, writeFileSync, symlinkSync, existsSync, rmSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createOpenAIAdapter, retryDelayMs } from '../src/adapters/openai.ts';
-import { executeApiTool } from '../src/adapters/apiTools.ts';
+import { apiTools, executeApiTool } from '../src/adapters/apiTools.ts';
+import { childEnv } from '../src/childEnv.ts';
 import { DEFAULT_CONFIG } from '../src/config.ts';
 import { getAdapter } from '../src/adapters/index.ts';
 import type { AdapterRunOptions } from '../src/adapters/types.ts';
@@ -15,6 +16,12 @@ function setup(t: { after(fn: () => void): void }) {
   const opts: AdapterRunOptions = { cwd, prompt: 'do work', systemPrompt: 'test', access: 'write', model: 'test-model', logFile: join(cwd, 'log.jsonl'), signal: new AbortController().signal, onEvent: () => {}, schema: { type: 'object', properties: { done: { type: 'boolean' } }, required: ['done'], additionalProperties: false } };
   const config = { ...DEFAULT_CONFIG.providers.ollama!, maxTurns: 4 };
   return { cwd, opts, config };
+}
+/** Set environment variables for one test and put the old values back after it. */
+function withEnv(t: { after(fn: () => void): void }, vars: Record<string, string>) {
+  const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+  t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
+  Object.assign(process.env, vars);
 }
 const final = (content = '{"done":true}') => ({ choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 100, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 30 } } });
 const call = (name: string, args: object) => ({ choices: [{ message: { role: 'assistant', content: null, reasoning_content: 'reasoning kept for DeepSeek', tool_calls: [{ id: 'tool-1', type: 'function', function: { name, arguments: JSON.stringify(args) } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 50, completion_tokens: 20 } });
@@ -50,6 +57,20 @@ test('read-only tool denial is enforced, reported and recoverable', async (t) =>
   assert.equal(existsSync(join(cwd, 'bad.txt')), false);
   await assert.rejects(executeApiTool('run_command', { command: 'echo allowed; echo injected' }, { ...opts, access: 'readonly', allowedCommands: ['echo allowed'] }), /not approved/);
   assert.match(await executeApiTool('run_command', { command: 'echo allowed' }, { ...opts, access: 'readonly', allowedCommands: ['echo allowed'] }), /exit 0\nallowed/);
+});
+
+test('run_command does not see agent credentials; a reviewer runs its exact commands and nothing longer', async (t) => {
+  const { opts } = setup(t);
+  withEnv(t, { OPENAI_API_KEY: 'a', DULGER_TEST_PROVIDER_KEY: 'p', NPM_TOKEN: 'npm' });
+  const probe = 'echo "[$OPENAI_API_KEY][$DULGER_TEST_PROVIDER_KEY][$NPM_TOKEN]"';
+  const commandEnv = childEnv({ providers: { custom: { ...DEFAULT_CONFIG.providers.openai!, apiKeyEnv: 'DULGER_TEST_PROVIDER_KEY' } } });
+  assert.equal(await executeApiTool('run_command', { command: probe }, { ...opts, commandEnv }), 'exit 0\n[][][npm]\n');
+  assert.equal(await executeApiTool('run_command', { command: probe }, opts), 'exit 0\n[][p][npm]\n', 'without one, the fixed names are still dropped');
+  const reviewer = { ...opts, access: 'readonly' as const, exactCommands: [probe], commandEnv };
+  const runCommand = apiTools(reviewer).find((x) => x.function.name === 'run_command');
+  assert.ok(runCommand?.function.description.includes(JSON.stringify(probe)), 'the tool lists the exact commands');
+  assert.equal(await executeApiTool('run_command', { command: probe }, reviewer), 'exit 0\n[][][npm]\n');
+  await assert.rejects(executeApiTool('run_command', { command: `${probe} extra` }, reviewer), /not approved/);
 });
 
 test('file tools reject traversal, symlinks and git metadata', async (t) => {
@@ -136,6 +157,50 @@ test('API backend plans, routes tasks, edits a worktree, reviews and lands a com
   assert.equal(git.git(cwd, ['show', 'dulger/api-run:hello.txt']), 'hello');
   assert.deepEqual(models, [['planner', 'strong'], ['worker', 'small'], ['worker', 'small'], ['checker', 'strong']]);
   assert.equal([...orch.registry.statuses.values()].find((s) => s.role === 'worker')?.model, 'small');
+});
+
+test('in a run, worktree setup, verify commands and the API tools\' shell never see the agent credentials', async (t) => {
+  const { cwd, config: provider } = setup(t);
+  const git = await import('../src/git/worktree.ts');
+  const { createBoard } = await import('../src/board/create.ts');
+  const { createOrchestrator } = await import('../src/runner/orchestrator.ts');
+  withEnv(t, { ANTHROPIC_API_KEY: 'leak-a', DULGER_TEST_PROVIDER_KEY: 'leak-p', NPM_TOKEN: 'npm-ok', DULGER_DATA_DIR: join(cwd, 'data') });
+  git.git(cwd, ['init', '-q', '-b', 'main']);
+  git.git(cwd, ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-qm', 'initial']);
+  const probe = 'echo "[$ANTHROPIC_API_KEY][$DULGER_TEST_PROVIDER_KEY][$NPM_TOKEN]"';
+  const clean = '[][][npm-ok]';
+  const setupLog = join(mkdtempSync(join(tmpdir(), 'dulger-api-setup-')), 'setup.log');
+  let reviewerTool = '';
+  let reviewerSaw = '';
+  t.mock.method(globalThis, 'fetch', async (_url: URL, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    const role = body.messages[0].content.match(/\[role:(\w+)\]/)[1];
+    const result = body.messages.find((m: { role: string }) => m.role === 'tool');
+    if (role === 'planner') return Response.json(final(JSON.stringify({ assumptions: [], omitted: [], cards: [{
+      id: 'c1', title: 'Probe', description: '', acceptanceCriteria: [], dependsOn: [], verify: [probe],
+      tasks: [{ id: 't1', title: 'Probe', instructions: 'Write the probe', complexity: 'low' }],
+    }] })));
+    if (role === 'worker') return Response.json(result ? final(JSON.stringify({ summary: 'probed', filesChanged: ['probe.txt'], done: true, remaining: [], learnings: [] })) : call('run_command', { command: `${probe} > probe.txt` }));
+    if (!result) {
+      reviewerTool = body.tools.find((x: { function: { name: string } }) => x.function.name === 'run_command').function.description;
+      return Response.json(call('run_command', { command: probe }));
+    }
+    reviewerSaw = result.content;
+    return Response.json(final(JSON.stringify({ pass: true, feedback: [], notes: [], summary: 'ok' })));
+  });
+  const config = { ...DEFAULT_CONFIG, harness: 'ollama' as const, docs: false, worktreeSetup: `${probe} > ${setupLog}`, providers: { ollama: { ...provider, model: 'm', apiKeyEnv: 'DULGER_TEST_PROVIDER_KEY' } } };
+  const board = createBoard(cwd, 'Probe', 'api-env');
+  const orch = createOrchestrator(cwd, board, config);
+  await orch.plan();
+  await orch.execute();
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'done', c1.reason);
+  assert.equal(git.git(cwd, ['show', 'dulger/api-env:probe.txt']), clean, 'the worker\'s shell');
+  assert.equal(readFileSync(setupLog, 'utf8').trim(), clean, 'worktree setup');
+  assert.equal(c1.verification![0]!.output, clean, 'the verification gate');
+  assert.equal(board.finalVerification!.results[0]!.output, clean, 'final verification');
+  assert.ok(reviewerTool.includes(JSON.stringify(probe)), 'the reviewer may run the verify command');
+  assert.equal(reviewerSaw, `exit 0\n${clean}\n`, 'and it ran without the credentials');
 });
 
 test('transient HTTP errors are retried with backoff before the agent fails', async (t) => {

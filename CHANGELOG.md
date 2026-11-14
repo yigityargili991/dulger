@@ -2,9 +2,11 @@
 
 ## 0.7.1 — 2026-11-14
 
-- The documentation site is built for and deployed to GitLab Pages instead of its former host, and
-  its links are relative, so it works at a domain root or under a path. Until the Pages address
-  exists, the package homepage points at the GitLab repository.
+- The project moved from GitLab to GitHub: the repository and issues are at
+  https://github.com/yigityargili991/dulger, and CI runs on GitHub Actions. The documentation site
+  moved from Railway to GitHub Pages at https://yigityargili991.github.io/dulger/; its links are
+  relative, so it works at a domain root or under a path. The package's repository and bugs links
+  point at the GitHub repository and its homepage at the site.
 
 ## 0.7.0 — 2026-11-14
 

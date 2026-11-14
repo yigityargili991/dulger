@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { setTimeout } from 'node:timers/promises';
 
 // Manual check after building the deployed commit: npm run --prefix docs verify-deployment -- <site URL>
-if (!process.argv[2]) throw new Error('Pass the site URL: npm run --prefix docs verify-deployment -- <site URL> (Deploy > Pages shows it)');
+if (!process.argv[2]) throw new Error('Pass the site URL: npm run --prefix docs verify-deployment -- <site URL> (Settings > Pages shows it)');
 const url = new URL('version.json', process.argv[2].replace(/\/?$/, '/'));
 const expected = JSON.parse(readFileSync(new URL('dist/public/version.json', import.meta.url), 'utf8'));
 let last = 'not available';

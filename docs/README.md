@@ -20,29 +20,29 @@ by Git.
 
 ## CI and deployment
 
-GitLab runs the application tests, builds the docs, and checks generated links on merge requests,
-the default branch and stable `vX.Y.Z` tags. Deployment runs after successful checks on release tags,
-or when docs/build inputs change on the default branch. Release tags must match `package.json` and
-the version must have a changelog entry. Keep release tags protected (`v*`).
+GitHub Actions (`.github/workflows/ci.yml`) runs the application tests (`test`) and builds the docs
+and checks generated links (`docs`) on pull requests, pushes to `master` and stable `vX.Y.Z` tags.
+Release tags must match `package.json` and the version must have a changelog entry.
 
-The site is hosted on GitLab Pages. The `docs:pages` job publishes the tested `docs/dist/public`
-artifact with `pages.publish`, never the application checkout or local config. It needs no token
-or CI variable. GitLab deploys the files after the job (`pages:deploy` in the pipeline), and the
-site can take a few minutes to update after the pipeline completes. On GitLab.com the site is
-public. A missing page gets the generated `404.html`, whose links are right for a miss directly
-under the site root.
+The site is hosted on GitHub Pages at https://yigityargili991.github.io/dulger/. Every push to
+`master` deploys it once both jobs pass: the `docs` job uploads the tested `docs/dist/public` as the
+Pages artifact, never the application checkout or local config, and the `deploy` job publishes it.
+Pull requests and tags deploy nothing; a release pushes `master` with its tag. Deployments run one
+at a time. No secret or variable is needed: only the `deploy` job's own token may write to Pages.
+The site can take a few minutes to update after the run completes. A missing page gets the
+generated `404.html`, whose links are right for a miss directly under the site root.
 
-GitLab assigns the address on the first deployment; **Deploy > Pages** shows it. With
-**Use unique domain** turned on, the default for new projects, the site is at the root of its own
-`gitlab.io` domain; with it turned off, the site is under `zamazingo99.gitlab.io/dulger/`.
-Until the address is linked from the README, the package `homepage` is the GitLab project.
+Pages must use the **GitHub Actions** source (**Settings > Pages > Build and deployment**); it was
+set through the API when the repository was created. **Settings > Pages** links to the run that
+last deployed the site.
 
 To check a deployment, open `version.json` on the site: `revision` is the commit it was built from.
-`npm run --prefix docs verify-deployment -- <site URL>` waits for the live `version.json` to match a
-local build of the same commit (the source hash, and the revision when the build has one).
+`npm run --prefix docs verify-deployment -- https://yigityargili991.github.io/dulger/` waits for
+the live `version.json` to match a local build of the same commit (the source hash, and the
+revision when the build has one).
 
-To roll back, revert the responsible documentation commit on the default branch; its pipeline
-deploys the result. Re-running the Pages job of an older default-branch pipeline is no rollback:
-GitLab refuses to replace a deployment from a newer pipeline with it.
+To roll back, revert the responsible documentation commit on `master` and push; its run deploys
+the result. Re-running an older run's `deploy` job is no documented rollback, and the Pages artifact
+it would deploy is kept for one day only.
 
 The site keeps the plain reading layout and the routes of the original site.

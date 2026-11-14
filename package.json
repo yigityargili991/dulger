@@ -6,10 +6,10 @@
   "author": "Yigit Yargili",
   "repository": {
     "type": "git",
-    "url": "git+https://gitlab.com/zamazingo99/dulger.git"
+    "url": "git+https://github.com/yigityargili991/dulger.git"
   },
-  "homepage": "https://gitlab.com/zamazingo99/dulger",
-  "bugs": "https://gitlab.com/zamazingo99/dulger/-/issues",
+  "homepage": "https://yigityargili991.github.io/dulger/",
+  "bugs": "https://github.com/yigityargili991/dulger/issues",
   "keywords": [
     "agents",
     "claude-code",

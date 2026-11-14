@@ -59,9 +59,11 @@ test('new sections cannot disappear silently; fenced headings stay in their exam
   cpSync(docs, join(fixture, 'docs'), { recursive: true, filter: (path) => !/\/(node_modules|dist)(\/|$)/.test(path) });
   symlinkSync(join(docs, 'node_modules'), join(fixture, 'docs/node_modules'), 'dir');
   const readme = readFileSync(join(fixture, 'README.md'), 'utf8');
-  const run = (tag = '') => spawnSync(process.execPath, ['docs/build.mjs'], { cwd: fixture, encoding: 'utf8', env: { ...process.env, CI_COMMIT_TAG: tag } });
+  const { version } = JSON.parse(readFileSync(join(fixture, 'package.json'), 'utf8'));
+  const run = (tag = '') => spawnSync(process.execPath, ['docs/build.mjs'], { cwd: fixture, encoding: 'utf8', env: { ...process.env, GITHUB_REF_TYPE: tag && 'tag', GITHUB_REF_NAME: tag } });
   writeFileSync(join(fixture, 'README.md'), `${readme}\n\n\`\`\`md\n## Example heading\n\`\`\`\n`);
   assert.equal(run().status, 0);
+  assert.equal(run(`v${version}`).status, 0);
   writeFileSync(join(fixture, 'README.md'), `${readme}\n\n## New feature\nMust not be lost.\n`);
   assert.match(run().stderr, /README section needs one docs route: New feature/);
   assert.match(run('v999.0.0').stderr, /Release tag must match/);

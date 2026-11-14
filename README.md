@@ -6,6 +6,9 @@ Agents use headless [Claude Code](https://claude.com/claude-code) or
 [Codex](https://github.com/openai/codex), or connect directly to Ollama, DeepSeek and OpenAI-compatible APIs.
 CLI backends use your existing login; API backends use environment variables. No build step.
 
+Website: [yigityargili991.github.io/dulger](https://yigityargili991.github.io/dulger/) — the
+docs as pages, generated from this README and CHANGELOG on releases and documentation updates.
+
 ```sh
 cd your-repo
 dulger                       # choose harness and models, then type a goal
@@ -21,7 +24,7 @@ npx @zamazingobjk/dulger                    # run without installing
 npm install -g @zamazingobjk/dulger         # or install the `dulger` command
 ```
 
-From a checkout of https://gitlab.com/zamazingo99/dulger: `npm install && npm link`.
+From a checkout of https://github.com/yigityargili991/dulger: `npm install && npm link`.
 
 ## Session setup
 

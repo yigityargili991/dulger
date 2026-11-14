@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.1 — 2026-11-14
+## 0.7.2 — 2026-11-14
 
 - The project moved from GitLab to GitHub: the repository and issues are at
   https://github.com/yigityargili991/dulger, and CI runs on GitHub Actions. The documentation site

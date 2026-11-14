@@ -30,7 +30,7 @@ const routes = [
   { path: '/', title: 'dulger', sections: ['Introduction'] },
   { path: '/install/', title: 'Install', sections: ['Install'] },
   { path: '/session-setup/', title: 'Session setup', sections: ['Session setup', 'Profiles, recovery and run controls'] },
-  { path: '/how-a-run-works/', title: 'How a run works', sections: ['How a run works', 'The screen', 'Context and memory', 'Where things live', 'Safety', 'Sandbox', 'Known limitations'] },
+  { path: '/how-a-run-works/', title: 'How a run works', sections: ['How a run works', 'The screen', 'Context and memory', 'Where things live', 'Safety', 'Sandbox', 'Running dulger in a container or VM', 'Known limitations'] },
   { path: '/commands/', title: 'Commands', sections: ['Commands', 'Command prediction'] },
   { path: '/configuration/', title: 'Configuration', sections: ['Configuration'] },
   { path: '/models/', title: 'Models', sections: ['Model routing', 'Choose models in the REPL', 'Direct API backends'] },

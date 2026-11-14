@@ -514,7 +514,8 @@ What it does not do:
   Anthropic's API. Grant as few as you can, and never one where anybody can publish (a code host, a
   paste site).
 - No CPU, memory or process limits: a command can still load the machine until its timeout.
-- The kernel is shared. This is not a virtual machine; a kernel exploit gets out.
+- The kernel is shared. This is not a virtual machine; a kernel exploit gets out. For a harder
+  boundary, see [Running dulger in a container or VM](#running-dulger-in-a-container-or-vm).
 - The environment is unchanged: commands still get it without the agent credentials, Claude Code with
   them, and your other variables (a project's `NPM_TOKEN`) still pass.
 
@@ -588,6 +589,84 @@ Limitations:
   fail at once.
 - Whether the runtime works is checked once per dulger process: after installing what was missing,
   start dulger again.
+
+## Running dulger in a container or VM
+
+The sandbox shares your kernel and leaves reads mostly open. For a harder boundary, a separate kernel
+or a machine with none of your credentials on it, put the whole of dulger in a box you bring: a
+container, a dev container or a VM; dulger does not manage boxes. Use one for unattended runs, for a
+repository you do not fully trust, and on a machine with credentials you would not hand to an agent.
+
+**What goes in:** dulger, the agent CLI, the project's toolchain, git with a user name and email
+(dulger commits) and a clone of the repository. dulger's other state, worktrees included, lives under
+`$DULGER_DATA_DIR` (default `~/.local/share/dulger`), so nothing is mounted from your home. Keep it
+next to the clone, not in the box's throwaway home: a resumed card whose worktree has gone starts
+again from the result branch, without its finished tasks' work. A box gone mid-run leaves the run
+locked by an owner dulger cannot check: with no box on it, remove `.dulger/runs/<runId>/execution.lock`.
+
+**Work on a clone, fetch the result.** A writable mount of your checkout is a way out of the box:
+anything inside can change files your host later runs, `.git/hooks` and `.git/config` included. Give
+the box its own clone in a directory that holds nothing else, made with `git clone --no-local` (a
+plain local clone hardlinks your object files into it), and take only the result branch out with
+`git fetch`: it copies commits, checks nothing out, runs none of that repository's hooks and ignores
+its `uploadpack.packObjectsHook`. Run nothing else there: `git status` runs the box's `core.fsmonitor`
+and `git checkout` its hooks, and so can a shell prompt or an editor that runs git in that folder. To
+read nothing of it, fetch from a bundle the box writes (`git bundle create <file> dulger/<runId>`).
+
+**Credentials:** the box's own, not a mounted `~/.claude` or `~/.codex`. For Claude Code, an API key in
+`ANTHROPIC_API_KEY` or a [`claude setup-token`](https://code.claude.com/docs/en/authentication) token
+(valid a year, model requests only, needs a Pro, Max, Ultra, Team or Enterprise plan) in
+`CLAUDE_CODE_OAUTH_TOKEN`; for an API provider, its `apiKeyEnv`. dulger keeps them from verify commands,
+`worktreeSetup` and the API tools' shell; the agent CLI has them and can read all the box holds.
+
+**Network:** a box with open egress can still send out whatever is in it. The `init-firewall.sh` of the
+[Claude Code dev container](https://code.claude.com/docs/en/devcontainer) is a starting point: it
+drops outbound traffic except to npm, Anthropic's API, GitHub's ranges and a few VS Code and telemetry
+hosts, lets DNS, SSH and the host's /24 through, and needs the `NET_ADMIN` and `NET_RAW` capabilities.
+Anybody can push to GitHub or over SSH, so trim it. Or use the runtime's `--network`; `none` cuts all.
+
+**Not as root:** on Linux and macOS, Claude Code refuses `bypassPermissions`, which dulger's workers
+use, as root or under `sudo` ([permission modes](https://code.claude.com/docs/en/permission-modes)).
+It refused in a podman container too. Give the image a non-root user; the Node images have `node`.
+
+**The process sandbox inside:** bubblewrap cannot start in an unprivileged container. In rootless
+podman, `dulger doctor --sandbox auto` reported the tools missing, and with them installed said
+`bwrap: Can't mount proc on /newroot/proc: Operation not permitted`. `auto` then runs without the
+sandbox and says so, and `required` starts no run. Leave `sandbox.mode` `off` there: the box is the
+boundary. In a VM the [Linux requirements](#sandbox) apply (not tried).
+
+**Options:** a podman or docker container, as below. The Claude Code dev container brings Claude
+Code, that firewall and a non-root user, and mounts your checkout: run dulger on a separate clone
+(not tried). [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/) gives each sandbox a microVM
+with its own kernel, egress through a host proxy (deny by default, plus a default allow list), and a
+`--clone` mode the host fetches from as a `sandbox-<name>` remote; dulger, not a listed agent, would
+go in its Shell sandbox (not tried). Any VM or cloud machine, fetching the result over ssh (not tried).
+Claude Code's [sandbox environments](https://code.claude.com/docs/en/sandbox-environments) compares them.
+
+```dockerfile
+FROM docker.io/library/node:24-slim
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
+ && npm install -g @zamazingobjk/dulger @anthropic-ai/claude-code
+USER node
+RUN git config --global user.name dulger && git config --global user.email dulger@localhost
+```
+
+Add the project's toolchain before `USER node`. Then, from your repository (`--userns=keep-id` lets
+the image's `node` user write `~/boxes/myapp` as you under rootless podman):
+
+```sh
+podman build -t dulger-box ~/boxes/image                 # holds the Containerfile above
+git clone --no-local . ~/boxes/myapp/repo
+podman run --rm --userns=keep-id -v ~/boxes/myapp:/work -w /work/repo \
+  -e DULGER_DATA_DIR=/work/dulger-data -e CLAUDE_CODE_OAUTH_TOKEN \
+  dulger-box dulger run "Add CSV export" --yes --quiet
+git ls-remote ~/boxes/myapp/repo 'dulger/*'              # the run's branch
+git fetch ~/boxes/myapp/repo dulger/<runId>:dulger/<runId>
+git diff main...dulger/<runId>                           # review, then git merge dulger/<runId>
+```
+
+Tried as written, with `--network=none --harness fake --no-progress` in place of
+`-e CLAUDE_CODE_OAUTH_TOKEN` (the box's token, from your shell); a run with Claude Code was not.
 
 ## Known limitations
 

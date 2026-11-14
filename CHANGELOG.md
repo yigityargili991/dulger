@@ -43,6 +43,10 @@
   as it was; running cards carry on meanwhile. `--yes` accepts them and logs which; it now reaches
   `dulger order`, `resume` and `retry` too, and `/yes on` does the same. Without a terminal or
   `--yes` the replan is dropped. The replanning planner is told to reuse the board's commands.
+- The README documents running the whole of dulger in a container or VM of your own, for a boundary
+  the process sandbox does not give: the box works on a clone of its own and the host takes out only
+  the result branch with `git fetch`, which runs none of that clone's hooks. It also covers the box's
+  own credentials, egress, a non-root user, and the process sandbox inside a container.
 
 ## 0.6.0 — 2026-09-19
 

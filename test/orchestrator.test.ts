@@ -341,6 +341,29 @@ test('plan(feedback) revises in the same planner session and records assumptions
   assert.equal(store.loadBoard(repo, 'run-order').plan?.revisions, 1, 'the revision is persisted');
 });
 
+test('a session that cannot be resumed (the sandbox kept its transcript from being saved) costs a fresh session, not the work', async () => {
+  const card = { id: 'c1', title: 'One', description: '', acceptanceCriteria: [], dependsOn: [], verify: [], tasks: [{ id: 't1', title: 'Write', instructions: 'Write' }] };
+  const fake = createFakeAdapter({
+    ...DEFAULT_FAKE_SCRIPT, delayMs: 1, planner: { cards: [card] }, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }),
+    worker: (o, i) => ({ ...DEFAULT_FAKE_SCRIPT.worker!(o, i), done: i > 0, remaining: i > 0 ? [] : ['the rest'] }),
+  });
+  const seen: Array<{ role?: string; resume?: string; prompt: string }> = [];
+  registerAdapter('fake', { ...fake, async run(o) { seen.push({ role: o.systemPrompt.match(/\[role:(\w+)\]/)?.[1], resume: o.resumeSessionId, prompt: o.prompt }); return { ...(await fake.run(o)), sessionId: undefined }; } });
+  const repo = tempRepo();
+  const board = createBoard(repo, 'write one file', 'run-no-session');
+  const orch = createOrchestrator(repo, board, { ...config, docs: false }, {});
+  await orch.plan();
+  await orch.plan('keep it to one card');
+  const planners = seen.filter((s) => s.role === 'planner');
+  assert.equal(planners[1]?.resume, undefined, 'no session to continue: the revision plans afresh');
+  assert.match(planners[1]!.prompt, /write one file\n\nThe person ordering the work added: keep it to one card/);
+  await orch.execute();
+  const c1 = board.cards[0]!;
+  assert.equal(c1.status, 'done', c1.reason);
+  assert.deepEqual(seen.filter((s) => s.role === 'worker').map((s) => s.resume), [undefined, undefined], 'the unfinished task ran again in a new session');
+  assert.equal(c1.tasks[0]!.attempts, 2);
+});
+
 test('resuming a finished run does not start the documentation agent again', async () => {
   registerAdapter('fake', createFakeAdapter({ ...DEFAULT_FAKE_SCRIPT, delayMs: 1, checker: () => ({ pass: true, feedback: [], notes: [], summary: 'ok' }) }));
   const repo = tempRepo();

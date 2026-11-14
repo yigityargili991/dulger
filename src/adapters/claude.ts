@@ -1,5 +1,9 @@
 import { CLAUDE_CAPABILITIES } from './capabilities.ts';
 // Adapter for Claude Code: `claude -p ... --output-format stream-json`.
+import { existsSync, mkdirSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { sandboxNote } from '../roles/prompts.ts';
 import type { AgentEvent, RateLimits, Usage } from '../types.ts';
 import type { Adapter, AdapterResult, AdapterRunOptions } from './types.ts';
 import { spawnLines, tryParseJson, extractJson } from './process.ts';
@@ -7,19 +11,25 @@ import { spawnLines, tryParseJson, extractJson } from './process.ts';
 const READONLY_TOOLS = ['Read', 'Grep', 'Glob', 'Bash'];
 const PROBES = ['cargo --version', 'rustc --version', 'node --version', 'npm --version', 'python --version', 'python3 --version', 'go version', 'git --version'];
 const READONLY_ALLOWED = ['Read', 'Grep', 'Glob', 'Bash(git diff *)', 'Bash(git log *)', 'Bash(git show *)', 'Bash(git status *)', 'Bash(git status)', 'Bash(ls *)', 'Bash(cat *)', ...PROBES.map((p) => `Bash(${p})`)];
+/** Claude Code's own Bash sandbox is bubblewrap too, and bubblewrap cannot start inside dulger's. */
+const INNER_SANDBOX_OFF = '{"sandbox":{"enabled":false}}';
 
-// The prompt goes on stdin; argv strings are capped at 128 KiB.
-export function buildClaudeArgs(opts: AdapterRunOptions): string[] {
+/**
+ * The prompt goes on stdin; argv strings are capped at 128 KiB. `sandboxed`: the call runs in dulger's
+ * sandbox, `writable` when its cwd is a worktree it may write.
+ */
+export function buildClaudeArgs(opts: AdapterRunOptions, sandboxed?: { writable: boolean }): string[] {
   const args = ['-p', '--output-format', 'stream-json', '--verbose'];
   // Read-only agents get a restricted tool set without ToolSearch, so every MCP tool schema would be inlined
   // (~70k tokens per agent) for tools their permission mode would deny anyway. Write agents defer MCP tools
   // behind ToolSearch, which costs about a thousand tokens, so they get the user's servers unless configured off.
   if (!opts.mcp || opts.access !== 'write') args.push('--strict-mcp-config');
   if (opts.resumeSessionId) args.push('--resume', opts.resumeSessionId);
-  else args.push('--append-system-prompt', opts.systemPrompt);
+  else args.push('--append-system-prompt', sandboxed ? `${opts.systemPrompt}\n\n${sandboxNote(sandboxed.writable)}` : opts.systemPrompt);
   if (opts.schema) args.push('--json-schema', JSON.stringify(opts.schema));
   if (opts.model) args.push('--model', opts.model);
   if (opts.maxBudgetUsd) args.push('--max-budget-usd', String(opts.maxBudgetUsd));
+  if (sandboxed) args.push('--settings', INNER_SANDBOX_OFF);
   if (opts.access === 'write') {
     args.push('--permission-mode', 'bypassPermissions');
   } else if (opts.access === 'none') {
@@ -151,6 +161,47 @@ function contentBlocks(o: Record<string, unknown>): Array<Record<string, unknown
   return Array.isArray(content) ? content.filter((b): b is Record<string, unknown> => Boolean(b) && typeof b === 'object') : [];
 }
 
+/**
+ * The name Claude Code (2.1) gives a working directory under ~/.claude/projects, where it keeps the
+ * session transcripts --resume reads: every character but an ASCII letter or digit becomes '-', and a
+ * name longer than 200 characters is cut there and followed by a hash of the whole path.
+ */
+export function claudeProjectSlug(cwd: string): string {
+  const slug = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (slug.length <= 200) return slug;
+  let hash = 0;
+  for (let i = 0; i < cwd.length; i++) hash = ((hash << 5) - hash + cwd.charCodeAt(i)) | 0;
+  return `${slug.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
+
+/** Where a session started in `cwd` keeps its transcript; Claude Code names it after the path with symlinks resolved. */
+export function claudeProjectDir(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  let real = cwd;
+  try { real = realpathSync(cwd); } catch { /* named as given */ }
+  return join(env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude'), 'projects', claudeProjectSlug(real));
+}
+
+/**
+ * How to spawn one call: through the sandbox when it is active, for every role but the tool-free reporter.
+ * Inside, ~/.claude is read-only (Claude Code logs the writes it cannot make and carries on) except the
+ * call's own transcript directory, without which there is no --resume and no structured output.
+ */
+function claudeCommand(opts: AdapterRunOptions): { bin: string; args: string[]; env?: NodeJS.ProcessEnv; transcripts?: string } {
+  const bin = process.env.DULGER_CLAUDE_BIN ?? 'claude';
+  const sandbox = opts.access !== 'none' && opts.sandbox?.status.active ? opts.sandbox : undefined;
+  if (!sandbox) return { bin, args: buildClaudeArgs(opts) };
+  const writable = sandbox.writable(opts.cwd);
+  const transcripts = claudeProjectDir(opts.cwd);
+  // Outside a worktree (the planner, in your checkout) the directory is the one your own sessions there use,
+  // and their auto-memory in memory/ is read by every later session: never writable. srt creates a missing
+  // write-denied path on the host, and a write grant on a missing path grants nothing, so both exist first.
+  const memory = join(transcripts, 'memory');
+  mkdirSync(writable ? transcripts : memory, { recursive: true });
+  const wrapped = sandbox.wrap('agent', opts.cwd, [bin, ...buildClaudeArgs(opts, { writable })], process.env, { allowWrite: [transcripts], denyWrite: writable ? [] : [memory] });
+  if (!wrapped) throw new Error('the sandbox is active but did not wrap the agent');
+  return { ...wrapped, transcripts };
+}
+
 export const claudeAdapter: Adapter = {
   name: 'claude',
   capabilities: CLAUDE_CAPABILITIES,
@@ -161,10 +212,13 @@ export const claudeAdapter: Adapter = {
     const warnings: string[] = [];
     const denied: string[] = [];
     const parse = createClaudeParser();
+    const command = claudeCommand(opts);
 
     const { exitCode, stderr } = await spawnLines({
-      bin: process.env.DULGER_CLAUDE_BIN ?? 'claude',
-      args: buildClaudeArgs(opts),
+      bin: command.bin,
+      args: command.args,
+      env: command.env,
+      sandboxed: command.transcripts !== undefined,
       stdin: opts.prompt,
       cwd: opts.cwd,
       logFile: opts.logFile,
@@ -181,9 +235,16 @@ export const claudeAdapter: Adapter = {
       },
     });
 
+    // A session the sandbox kept from being saved cannot be resumed: a follow-up then starts a new one.
+    if (command.transcripts && sessionId && !existsSync(join(command.transcripts, `${sessionId}.jsonl`))) {
+      warnings.push(`session ${sessionId} was not saved in ${command.transcripts}, so it cannot be resumed`);
+      sessionId = undefined;
+    }
     const text = final?.text ?? '';
     const output = final?.output ?? (opts.schema ? extractJson(text) : undefined);
-    const ok = exitCode === 0 && !final?.isError && (!opts.schema || output !== undefined);
+    // Stopped, srt exits 0 after passing the SIGTERM on: the exit code says nothing then.
+    const stopped = opts.signal.aborted;
+    const ok = !stopped && exitCode === 0 && !final?.isError && (!opts.schema || output !== undefined);
     return {
       ok,
       output,
@@ -195,7 +256,7 @@ export const claudeAdapter: Adapter = {
       warnings: warnings.length ? warnings : undefined,
       denied: denied.length ? denied : undefined,
       exitCode,
-      error: ok ? undefined : final?.error || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
+      error: ok ? undefined : stopped ? 'aborted' : final?.error || stderr.trim().split('\n').slice(-5).join('\n') || `claude exited with ${exitCode}`,
     };
   },
 };

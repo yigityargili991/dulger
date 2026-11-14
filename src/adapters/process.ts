@@ -11,6 +11,14 @@ export interface SpawnLinesOptions {
   logFile: string;
   signal: AbortSignal;
   onLine: (line: string) => void;
+  /** The child's environment; process.env when not given. */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * The child is srt running the harness. It gets a process group of its own and is stopped with SIGTERM
+   * to that group, which srt passes on and cleans up after, then SIGKILL after a grace period: srt killed
+   * outright leaves its proxy bridge, socket and placeholder files behind. Stopped, srt exits 0.
+   */
+  sandboxed?: boolean;
 }
 
 export interface SpawnLinesResult {
@@ -18,21 +26,32 @@ export interface SpawnLinesResult {
   stderr: string;
 }
 
+/** How long a sandboxed harness gets to stop after SIGTERM, as a sandboxed command does; Claude Code 2.1 took milliseconds. */
+export const STOP_GRACE_MS = 1000;
+
 export function spawnLines(opts: SpawnLinesOptions): Promise<SpawnLinesResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(opts.bin, opts.args, {
       cwd: opts.cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
-      env: process.env,
+      env: opts.env ?? process.env,
+      detached: opts.sandboxed,
     });
     const log = createWriteStream(opts.logFile, { flags: 'a' });
     let stderr = '';
 
-    const onAbort = () => child.kill('SIGTERM');
+    let escalation: NodeJS.Timeout | undefined;
+    const group = (signal: NodeJS.Signals) => { try { process.kill(-child.pid!, signal); } catch { /* already gone */ } };
+    const onAbort = () => {
+      if (!opts.sandboxed) { child.kill('SIGTERM'); return; }
+      group('SIGTERM');
+      escalation = setTimeout(() => group('SIGKILL'), STOP_GRACE_MS);
+    };
     if (opts.signal.aborted) onAbort();
     else opts.signal.addEventListener('abort', onAbort, { once: true });
 
     child.on('error', (err) => {
+      clearTimeout(escalation);
       log.end();
       reject(err);
     });
@@ -49,6 +68,9 @@ export function spawnLines(opts: SpawnLinesOptions): Promise<SpawnLinesResult> {
 
     child.on('close', (code) => {
       opts.signal.removeEventListener('abort', onAbort);
+      clearTimeout(escalation);
+      // srt has cleaned up and gone; whatever of its group is left goes with it.
+      if (opts.sandboxed) group('SIGKILL');
       log.end();
       resolve({ exitCode: code ?? -1, stderr });
     });

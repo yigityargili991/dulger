@@ -410,18 +410,19 @@ when a card lands.
 
 ## Safety
 
-- Workers start in their card's worktree, but only Codex keeps them there: its `workspace-write`
-  sandbox limits their writes to the worktree and temporary directories (unless `codex.bypassSandbox`
-  is on). Claude Code's `bypassPermissions` skips permission prompts and confines nothing, so Claude
-  Code workers can read and write whatever your user can. API workers' file tools stay inside the
-  worktree; their shell commands do not, unless the [sandbox](#sandbox) is on. Planner and reviewer are read-only. On Claude Code and API
+- Workers start in their card's worktree. Codex keeps them there: its `workspace-write` sandbox limits
+  their writes to the worktree and temporary directories (unless `codex.bypassSandbox` is on). Claude
+  Code's `bypassPermissions` skips permission prompts and confines nothing, so without the
+  [sandbox](#sandbox) Claude Code workers can read and write whatever your user can; with it they
+  write only their worktree and reach only Anthropic's API and the hosts you grant. API workers' file
+  tools stay inside the worktree; their shell commands do not, unless the sandbox is on. Planner and reviewer are read-only. On Claude Code and API
   backends they run only allowed commands: for the reviewer, `checker.allowedCommands` and the card's
   verify commands, the latter exactly as written; Codex runs theirs in its read-only sandbox. A
   refused command is logged and noted on the card, so a review that had to take something on trust
   says so. The progress reporter gets the activity digest in its prompt and no commands at all; it has
   nothing to refuse.
 - The verify commands come from the planner and run in the card's worktree with your shell's
-  privileges, the same access Claude Code workers already have there, or confined by the
+  privileges, the same access unsandboxed Claude Code workers have there, or confined by the
   [sandbox](#sandbox) when it is on. Read them before dispatching: `dulger board`
   and the plan prompt outside the full-screen view list them under each card, and `/edit` shows them.
   Dispatching approves them; `--yes` approves them unread, and off a terminal nothing is dispatched
@@ -446,13 +447,15 @@ New in this version, and built on Anthropic's sandbox runtime
 ([`@anthropic-ai/sandbox-runtime`](https://github.com/anthropics/sandbox-runtime), pinned
 at 0.0.83), which its authors label a beta research preview. It is off unless you turn it on.
 
-With it on, the commands dulger itself runs on code an agent wrote run in a process sandbox: verify
-commands (the gate and final verification), `worktreeSetup`, and the API tools' `run_command` and
-`git_diff`. Each command gets its own `srt` process with its own policy: bubblewrap on Linux,
-Seatbelt on macOS. The agents themselves are not sandboxed in this version: Claude Code, Codex and the
-commands they run keep your privileges, and Claude Code agents are next.
+With it on, Claude Code agents and the commands dulger itself runs on code an agent wrote run in a
+process sandbox: verify commands (the gate and final verification), `worktreeSetup`, and the API
+tools' `run_command` and `git_diff`. Each agent call and each command gets its own `srt` process with
+its own policy: bubblewrap on Linux, Seatbelt on macOS. Codex is not wrapped: it keeps its own
+sandbox (`workspace-write` for workers, `read-only` otherwise, none with `codex.bypassSandbox`), and
+bubblewrap cannot start inside bubblewrap. Agents on an [API backend](#direct-api-backends) run inside
+dulger's own process: their file tools stay in the worktree, and their shell and git run in the sandbox.
 
-A sandboxed command
+A sandboxed command or Claude Code agent
 
 - **writes** only its own worktree (a card's, the documentation's or final verification's, never
   your own checkout), a private temp dir (`$TMPDIR`, kept under `~/.local/share/dulger/<project>/sandbox/`
@@ -463,24 +466,61 @@ A sandboxed command
 - **reads** everything your user can except `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
   `~/.config/gcloud`, `~/.config/gh`, `~/.config/dulger`, `~/.netrc`, `~/.npmrc`, `~/.docker`,
   `~/.kube`, `~/.git-credentials`, the agents' own credentials (`~/.claude`, `~/.claude.json`,
-  `~/.codex`), the other cards' worktrees and temp dirs, and what you add with `denyRead`;
+  `~/.codex`; hidden from commands, not from Claude Code, which needs them), the other cards'
+  worktrees and temp dirs, and what you add with `denyRead`;
 - **connects** only to the hosts you grant for its kind. With none, every connection is refused,
   your machine's own localhost and unix sockets (Docker's included) too.
+
+**Claude Code agents.** The worker, the reviewer and the documentation agent run in their worktree;
+the reviewer's permission mode still keeps it from editing files, but the tests it re-runs can write
+their build output. The planner runs in your checkout, which stays read-only. The progress reporter
+has no tools and is not wrapped. On top of what a command gets, an agent
+
+- reaches `api.anthropic.com`, `claude.ai` and `platform.claude.com` (the last two to refresh a
+  login), the host of `ANTHROPIC_BASE_URL` when you use a gateway, and the hosts in `domains.agent`;
+- reads its own state, `~/.claude/.credentials.json` included: a sandboxed agent can still read the
+  login it runs with. That state is read-only except the session's transcript directory,
+  `~/.claude/projects/<working directory>/` (under `$CLAUDE_CONFIG_DIR` when that is set), which
+  dulger creates before the call so that resuming a session and structured answers work. Claude Code
+  logs the other writes it cannot make (`~/.claude.json`, plugin caches, locks) and carries on. The
+  planner's directory is the one your own Claude Code sessions in this repository use, so the
+  planner could write there, but not to its `memory/`: Claude Code's auto-memory, which later
+  sessions read, stays read-only;
+- runs with Claude Code's own Bash sandbox switched off, since that cannot start inside this one.
+  dulger passes `--settings '{"sandbox":{"enabled":false}}'`, which overrides your user and project
+  settings but not managed ones;
+- is told in its system prompt what it can write, and that the placeholder files described under
+  Limitations are not its own;
+- runs your MCP servers, plugins and hooks inside the sandbox with it. A server or hook that needs
+  the network needs its host in `domains.agent`, and one that writes outside the worktree needs
+  `allowWrite` (a server started with `uv run` needs `~/.cache/uv`). The claude.ai connectors go
+  through `mcp-proxy.anthropic.com`: granting it hands the agents your connected accounts.
+  SessionStart hooks do not run at all, because Claude Code cannot create its `~/.claude/session-env/`
+  inside; other hooks do.
+
+Bedrock and Vertex endpoints are not added for you: list their hosts in `domains.agent`. Their
+credential files (`~/.aws`, `~/.config/gcloud`) are hidden, and `allowRead` would open them to every
+sandboxed command; dulger has not been tried with either in the sandbox.
+
+If Claude Code ever names its transcript directory differently from dulger, the session is not saved
+and the run log says so. A worker that reported unfinished work then gets a new session instead of a
+continuation, which costs a task attempt, and a plan revision plans afresh with your reply.
 
 What it does not do:
 
 - Reads are open apart from that list. A secret anywhere else your user can read (another project's
   `.env`, a browser profile) is readable; hide it with `denyRead`.
-- Every allowed host is a way out for what a command could read. Grant as few as you can, and never
-  one where anybody can publish (a code host, a paste site).
+- Every allowed host is a way out for what a command could read, and an agent always reaches
+  Anthropic's API. Grant as few as you can, and never one where anybody can publish (a code host, a
+  paste site).
 - No CPU, memory or process limits: a command can still load the machine until its timeout.
 - The kernel is shared. This is not a virtual machine; a kernel exploit gets out.
-- The environment is unchanged: the agent credentials are still removed and your other variables
-  (a project's `NPM_TOKEN`) still pass.
+- The environment is unchanged: commands still get it without the agent credentials, Claude Code with
+  them, and your other variables (a project's `NPM_TOKEN`) still pass.
 
 **Modes.** `off` (the default) wraps nothing, and every run says so in its first lines. `auto` wraps
-the commands where the runtime works and, where it does not, runs them as before and says why at the
-start of the run, with the fix. `required` starts no run where the runtime does not work: the check
+agents and commands where the runtime works and, where it does not, runs them as before and says why
+at the start of the run, with the fix. `required` starts no run where the runtime does not work: the check
 before the run fails before any planning. `dulger doctor` shows the mode, whether the runtime works
 here (it runs one real sandboxed command to find out), and what to install when it does not.
 
@@ -501,7 +541,7 @@ command or session; `/config save` does not save it.
     "domains": {
       "setup": ["registry.npmjs.org"],        // worktreeSetup
       "verify": [],                           // verify commands, final verification, the API tools' shell and git
-      "agent": []                             // for Claude Code, once it runs in the sandbox
+      "agent": []                             // Claude Code agents and their MCP servers, on top of Anthropic's API
     }
   }
 }
@@ -532,15 +572,20 @@ Requirements:
 
 Limitations:
 
-- While a sandboxed command runs in a worktree, the runtime mounts empty read-only placeholders over
-  the protected names that do not exist there (`.bashrc` and the other shell rc files, `.gitconfig`,
-  `.gitmodules`, `.mcp.json`, `.ripgreprc`, `.vscode`, `.idea`, `.claude/`). So a sandboxed command
-  cannot create `.vscode`, `.gitmodules`, `.mcp.json`, a shell rc file or `.claude/commands|agents`,
-  and a verify command that checks `git status` is clean sees them as untracked. They go when the
-  command ends; when one could not clean up, dulger removes untracked empty leftovers before it commits.
+- While a sandboxed command or agent runs in a worktree, the runtime mounts empty read-only
+  placeholders over the protected names that do not exist there (`.bashrc` and the other shell rc
+  files, `.gitconfig`, `.gitmodules`, `.mcp.json`, `.ripgreprc`, `.vscode`, `.idea`, `.claude/`). So
+  neither can create `.vscode`, `.gitmodules`, `.mcp.json`, a shell rc file or
+  `.claude/commands|agents`, nor change an existing `.claude/`, `.husky/` or `.githooks/`: a task
+  that has to edit them fails in the sandbox. A verify command that checks `git status` is clean sees
+  the placeholders as untracked, and so does an agent. They go when the command or agent ends; when
+  one could not clean up, dulger removes untracked empty leftovers before it commits. Nothing appears
+  in your checkout, where the planner runs: nothing is writable there.
 - Inside, `git status`, `diff` and `log` work; `git add`, `commit` and `stash` do not (the repository's
   `.git` stays read-only). dulger does the committing.
-- Each command costs about 0.2 s and 90 MB more.
+- Each command or agent call costs about 0.2 s and 90 MB more. A Claude Code call measured no slower
+  (13 s sandboxed against 15 s without, in one comparison), since the MCP servers it cannot reach
+  fail at once.
 - Whether the runtime works is checked once per dulger process: after installing what was missing,
   start dulger again.
 

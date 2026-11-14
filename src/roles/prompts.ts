@@ -8,6 +8,16 @@ Other agents may work in parallel on other cards in separate git worktrees.
 Never touch the .dulger/ directory. Do not run git commit, git push, git checkout or git branch; dulger manages git.
 When you finish, answer with a single JSON object matching the required schema (no prose around it).`;
 
+/**
+ * Appended to a Claude Code agent's system prompt when it runs in the process sandbox. `writable`: its
+ * working directory is a worktree it may write, as for every role but the planner.
+ */
+export function sandboxNote(writable: boolean): string {
+  if (!writable) return 'You run in a sandbox: nothing outside $TMPDIR is writable, and the network reaches only the hosts dulger granted.';
+  return `You run in a sandbox: only this worktree and $TMPDIR are writable, the network reaches only the hosts dulger granted, and git cannot add, commit or stash (dulger commits).
+Empty read-only files and directories such as .bashrc, .gitconfig, .mcp.json and .vscode in the worktree root belong to the sandbox: ignore them, do not try to create, change or delete them, and do not report them as changes.`;
+}
+
 const SIZE_RULES = `- Keep cards small: one card changes at most about 1000 lines over a handful of files and rarely needs more than 3 tasks. One reviewer reads the whole diff in one session; a card too big to read is a card that fails, and a big plan is many small cards, not a few large ones.
 - A card that other cards depend on holds the minimum they need to build against (types, traits, signatures, stubs, the scaffold), never the full implementation. Nothing else runs while it is in progress, so put the implementation in the parallel cards behind it.`;
 

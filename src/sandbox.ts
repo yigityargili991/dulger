@@ -1,9 +1,9 @@
-// The process sandbox around the commands dulger itself runs on code an agent wrote: verify commands,
-// worktreeSetup, final verification, and the API tools' shell and git. Each command runs in an `srt`
-// process of its own (@anthropic-ai/sandbox-runtime: bubblewrap on Linux, Seatbelt on macOS) with a
-// settings file of its own. The library is never loaded in-process: its network policy is process-wide
-// and its built-in protections follow the host process's cwd, so only one srt per command keeps
-// parallel cards apart.
+// The process sandbox around Claude Code agents and the commands dulger itself runs on code an agent
+// wrote: verify commands, worktreeSetup, final verification, and the API tools' shell and git. Each
+// runs in an `srt` process of its own (@anthropic-ai/sandbox-runtime: bubblewrap on Linux, Seatbelt on
+// macOS) with a settings file of its own. The library is never loaded in-process: its network policy is
+// process-wide and its built-in protections follow the host process's cwd, so only one srt per command
+// keeps parallel cards apart.
 //
 // The policy belongs to whoever owns the machine: it comes from the user's own config file, --sandbox
 // and the session, never from the repository being worked on or from a run's saved settings, since the
@@ -21,7 +21,7 @@ import { projectDataDir, worktreesDir } from './paths.ts';
 export type SandboxMode = 'off' | 'auto' | 'required';
 export const SANDBOX_MODES: SandboxMode[] = ['off', 'auto', 'required'];
 
-/** setup: worktreeSetup. verify: the verify gate and final verification. command: the API tools' shell and git. agent: the Claude Code process (not wrapped yet). */
+/** setup: worktreeSetup. verify: the verify gate and final verification. command: the API tools' shell and git. agent: a Claude Code process. */
 export type SandboxKind = 'setup' | 'verify' | 'command' | 'agent';
 
 export interface SandboxConfig {
@@ -41,7 +41,8 @@ export const SANDBOX_DEFAULTS: SandboxConfig = { mode: 'off', allowWrite: [], al
 /** The runtime release dulger is built and tested against; package.json pins exactly this one. */
 export const SANDBOX_RUNTIME_VERSION = '0.0.83';
 
-const COVERS = "verify commands, worktree setup, final verification and the API tools' shell";
+const COMMANDS = "verify commands, worktree setup, final verification and the API tools' shell";
+const COVERS = `Claude Code agents, ${COMMANDS}`;
 
 // ---- the policy: the user's own config file -----------------------------------------------------
 
@@ -180,18 +181,18 @@ export function sandboxStatus(mode: SandboxMode, o: { probe?: () => SandboxProbe
 
 /** What a run starts with: one line, and the fix on a second when the runtime does not work. Short, since log panes cut lines. */
 export function sandboxNotice(s: SandboxStatus): string[] {
-  if (s.active) return [`sandbox ${s.mode}: verify, setup and API tool commands are confined to their worktree and granted hosts; agents are not`];
+  if (s.active) return [`sandbox ${s.mode}: Claude Code agents and verify, setup and API tool commands are confined to their worktree and granted hosts`];
   if (s.mode === 'off') return ['sandbox off: agents and verify commands run with your privileges (dulger doctor explains the sandbox)'];
-  return [`sandbox unavailable (${s.reason}): verify, setup and API tool commands run with your privileges`, `sandbox fix: ${s.fix}`];
+  return [`sandbox unavailable (${s.reason}): agents and verify, setup and API tool commands run with your privileges`, `sandbox fix: ${s.fix}`];
 }
 
 /** The doctor's Sandbox line. `required` without a working runtime is an error: no run starts then. */
 export function sandboxCheck(s: SandboxStatus): { status: 'pass' | 'warning' | 'error'; detail: string } {
-  if (s.active) return { status: 'pass', detail: `${s.mode}: ${COVERS} run in the sandbox (srt ${SANDBOX_RUNTIME_VERSION}): writes go to their worktree and a temp dir, network to the hosts in ${userConfigFile()} only. Agents are not sandboxed yet.` };
+  if (s.active) return { status: 'pass', detail: `${s.mode}: ${COVERS} run in the sandbox (srt ${SANDBOX_RUNTIME_VERSION}): writes go to their worktree and a temp dir, network to the hosts in ${userConfigFile()} only, and Claude Code also to Anthropic's API. Codex agents are not wrapped: they keep Codex's own sandbox.` };
   const broken = `the runtime does not work here: ${s.reason}. Fix: ${s.fix}.`;
   if (s.mode === 'off') {
     const here = s.available === undefined ? '' : s.available ? ' The runtime works here.' : ` When enabled, ${broken}`;
-    return { status: 'warning', detail: `off: agents, ${COVERS} run with your privileges.${here} Set "sandbox": { "mode": "auto" } in ${userConfigFile()}, or pass --sandbox auto, to confine those commands; the README's Sandbox section says what it does and does not confine.` };
+    return { status: 'warning', detail: `off: agents, ${COMMANDS} run with your privileges.${here} Set "sandbox": { "mode": "auto" } in ${userConfigFile()}, or pass --sandbox auto, to confine Claude Code agents and those commands; the README's Sandbox section says what it does and does not confine.` };
   }
   if (s.mode === 'auto') return { status: 'warning', detail: `auto, but ${broken} Until then ${COVERS} run with your privileges.` };
   return { status: 'error', detail: `required, but ${broken} No run starts until it works or the mode changes.` };
@@ -224,6 +225,14 @@ export interface SrtSettings {
   filesystem: { denyRead: string[]; allowRead: string[]; allowWrite: string[]; denyWrite: string[] };
 }
 
+/** What one command gets on top of its kind's policy: a Claude Code agent's transcript directory. */
+export interface SandboxExtra {
+  /** Writable; must exist, since srt on Linux grants nothing on a missing path. */
+  allowWrite?: string[];
+  /** Read-only although below a writable path; must exist, or srt creates it on the host. */
+  denyWrite?: string[];
+}
+
 const within = (root: string, path: string) => { const rel = relative(root, path); return rel !== '' && rel !== '..' && !rel.startsWith('..' + sep) && !isAbsolute(rel); };
 const unique = (list: string[]) => [...new Set(list)];
 
@@ -234,7 +243,7 @@ const unique = (list: string[]) => [...new Set(list)];
  * root is writable, never the user's own checkout. srt resolves relative paths against its cwd, so every
  * path here is absolute.
  */
-export function sandboxSettings(kind: SandboxKind, cwd: string, paths: SandboxPaths, config: SandboxConfig, env: NodeJS.ProcessEnv = process.env): { settings: SrtSettings; env: Record<string, string> } {
+export function sandboxSettings(kind: SandboxKind, cwd: string, paths: SandboxPaths, config: SandboxConfig, env: NodeJS.ProcessEnv = process.env, extra: SandboxExtra = {}): { settings: SrtSettings; env: Record<string, string> } {
   const home = (p: string) => join(paths.home, p);
   const writable = within(paths.worktrees, cwd);
   const baseUrl = (() => { try { return env.ANTHROPIC_BASE_URL ? [new URL(env.ANTHROPIC_BASE_URL).hostname] : []; } catch { return []; } })();
@@ -245,10 +254,10 @@ export function sandboxSettings(kind: SandboxKind, cwd: string, paths: SandboxPa
       filesystem: {
         denyRead: unique([...HIDDEN.map(home), ...(kind === 'verify' || kind === 'command' ? AGENT_CREDENTIALS.map(home) : []), paths.configDir, paths.worktrees, paths.area, ...config.denyRead]),
         allowRead: unique([cwd, paths.temp, ...config.allowRead]),
-        allowWrite: unique([...(writable ? [cwd] : []), paths.temp, ...config.allowWrite.filter((p) => existsSync(p))]),
+        allowWrite: unique([...(writable ? [cwd] : []), paths.temp, ...(extra.allowWrite ?? []), ...config.allowWrite.filter((p) => existsSync(p))]),
         // A write deny on a missing path makes srt create it on the host, so only the ones that exist (and
         // only where they could be written at all).
-        denyWrite: writable ? HOOK_DIRS.map((d) => join(cwd, d)).filter((p) => existsSync(p)) : [],
+        denyWrite: unique([...(writable ? HOOK_DIRS.map((d) => join(cwd, d)).filter((p) => existsSync(p)) : []), ...(extra.denyWrite ?? [])]),
       },
     },
     // srt points TMPDIR inside at this; without it there is no writable temp dir at all.
@@ -267,7 +276,9 @@ export interface Sandbox {
    * sandbox is active, undefined when commands run as they always did. A wrapped command must be stopped
    * with SIGTERM first: srt killed outright leaves its proxy bridge, socket and placeholder files behind.
    */
-  wrap(kind: SandboxKind, cwd: string, command: string | string[], env: NodeJS.ProcessEnv): WrappedCommand | undefined;
+  wrap(kind: SandboxKind, cwd: string, command: string | string[], env: NodeJS.ProcessEnv, extra?: SandboxExtra): WrappedCommand | undefined;
+  /** Whether a command wrapped in `cwd` may write there: a card's worktree, never your checkout. */
+  writable(cwd: string): boolean;
   /** Remove placeholders an interrupted srt left in `cwd`, before dulger commits it; returns what went. */
   scrub(cwd: string): string[];
   /** Remove this run's settings files and temp dirs. */
@@ -286,7 +297,7 @@ export function createSandbox(repoRoot: string, runId: string, config: SandboxCo
   let cli: string | undefined;
   return {
     status,
-    wrap(kind, cwd, command, env) {
+    wrap(kind, cwd, command, env, extra) {
       if (!status.active) return undefined;
       if (cli === undefined) {
         const found = runtimeCli();
@@ -305,7 +316,7 @@ export function createSandbox(repoRoot: string, runId: string, config: SandboxCo
       if (within(worktrees, cwd) && lstatSync(claude, { throwIfNoEntry: false })?.isDirectory()) {
         for (const d of ['commands', 'agents']) mkdirSync(join(claude, d), { recursive: true });
       }
-      const policy = sandboxSettings(kind, cwd, { home: homedir(), configDir: dirname(userConfigFile()), worktrees, area, temp }, config, env);
+      const policy = sandboxSettings(kind, cwd, { home: homedir(), configDir: dirname(userConfigFile()), worktrees, area, temp }, config, env, extra);
       // Named after its content: commands with the same policy share a file, a different policy never overwrites it.
       const json = JSON.stringify(policy.settings, null, 2) + '\n';
       const file = join(runDir, `settings-${createHash('sha256').update(json).digest('hex').slice(0, 16)}.json`);
@@ -316,6 +327,7 @@ export function createSandbox(repoRoot: string, runId: string, config: SandboxCo
       // `--` always: srt reads its own options anywhere in the line otherwise (a `-c` meant for the command included).
       return { bin: process.execPath, args: [cli, '--settings', file, '--', ...argv], env: { ...env, ...policy.env } };
     },
+    writable: (cwd) => within(worktreesDir(repoRoot), cwd),
     scrub: (cwd) => (status.active ? scrubPlaceholders(cwd) : []),
     dispose() {
       try { rmSync(runDir, { recursive: true, force: true }); } catch { /* left for dulger clean */ }

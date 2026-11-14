@@ -2,13 +2,19 @@
 
 ## Unreleased
 
-- A process sandbox, new and built on Anthropic's sandbox runtime (a beta research preview), for the
-  commands dulger runs on agents' code: verify commands, final verification, `worktreeSetup`, and the
-  API tools' shell and `git diff`. Each runs in its own `srt` process that writes only its worktree
-  and a temp dir, cannot read your credentials or other cards' worktrees, and reaches only the hosts
-  you grant. `sandbox.mode` is `off` (the default, and every run says so), `auto` or `required` (no
-  run starts where the runtime does not work); `dulger doctor` says whether it works here. Agent
-  processes are not sandboxed yet.
+- A process sandbox, new and built on Anthropic's sandbox runtime (a beta research preview), for
+  Claude Code agents and the commands dulger runs on agents' code: verify commands, final
+  verification, `worktreeSetup`, and the API tools' shell and `git diff`. Each agent call and each
+  command runs in its own `srt` process that writes only its worktree and a temp dir, cannot read
+  your credentials or other cards' worktrees, and reaches only the hosts you grant. Claude Code
+  agents (planner, workers, reviewer, documentation; not the tool-free progress reporter) also reach
+  Anthropic's API and a gateway set in `ANTHROPIC_BASE_URL`, plus `sandbox.domains.agent`, and can
+  still read their own login. The planner writes nothing in your checkout. Of `~/.claude` only the
+  session's transcript directory is writable, never the planner's auto-memory. Claude Code's own Bash
+  sandbox is switched off inside, your MCP servers and hooks run inside with the agent (SessionStart
+  hooks cannot run), and the agents are told what the sandbox allows. Codex keeps its own sandbox and
+  is not wrapped. `sandbox.mode` is `off` (the default, and every run says so), `auto` or `required`
+  (no run starts where the runtime does not work); `dulger doctor` says whether it works here.
 - The sandbox policy is read only from your own `~/.config/dulger/config.json`, `--sandbox` and
   `/sandbox`: a `sandbox` key in a repository's `.dulger/config.json` or a profile is ignored and
   reported, runs never save it, and resume always uses the machine's current policy.

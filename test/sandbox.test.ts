@@ -13,6 +13,8 @@ import { createOrchestrator } from '../src/runner/orchestrator.ts';
 import { createFakeAdapter, DEFAULT_FAKE_SCRIPT } from '../src/adapters/fake.ts';
 import { registerAdapter } from '../src/adapters/index.ts';
 import { executeApiTool } from '../src/adapters/apiTools.ts';
+import { buildClaudeArgs, claudeAdapter, claudeProjectDir } from '../src/adapters/claude.ts';
+import { STOP_GRACE_MS } from '../src/adapters/process.ts';
 import type { AdapterRunOptions } from '../src/adapters/types.ts';
 import { childEnv } from '../src/childEnv.ts';
 import { DEFAULT_CONFIG, loadConfig, type Config } from '../src/config.ts';
@@ -92,6 +94,14 @@ test('the settings for each kind of command, exactly', (t) => {
   mkdirSync(checkout);
   assert.deepEqual(sandboxSettings('command', checkout, paths, config, {}).settings.filesystem, filesystem(checkout, credentials), 'the user\'s own checkout is never writable');
   assert.deepEqual(sandboxSettings('verify', cwd, paths, policy(), {}).settings.network.allowedDomains, [], 'no network unless granted');
+
+  // A Claude Code call adds its transcript directory; in the checkout (the planner) that directory's memory/ stays read-only.
+  const transcripts = home('.claude/projects/-run1-c1');
+  const worker = sandboxSettings('agent', cwd, paths, config, {}, { allowWrite: [transcripts] }).settings.filesystem;
+  assert.deepEqual(worker, { ...filesystem(cwd, []), allowWrite: [cwd, paths.temp, transcripts, join(root, 'cache')] });
+  const own = home('.claude/projects/-checkout');
+  const planner = sandboxSettings('agent', checkout, paths, config, {}, { allowWrite: [own], denyWrite: [join(own, 'memory')] }).settings.filesystem;
+  assert.deepEqual(planner, { ...filesystem(checkout, []), allowWrite: [paths.temp, own, join(root, 'cache')], denyWrite: [join(own, 'memory')] });
 });
 
 test('a wrapped command always passes -- before itself, and its settings file is private and outside the worktree', (t) => {
@@ -117,6 +127,15 @@ test('a wrapped command always passes -- before itself, and its settings file is
   assert.deepEqual(argv.args.slice(3), ['--', 'git', '--no-pager', 'diff', '-c', '--', '.']);
   assert.equal(argv.args[2], file, 'verify and command share a policy, so they share its file');
   assert.notEqual(sandbox.wrap('setup', cwd, 'true', {})!.args[2], file, 'another policy, another file');
+  assert.deepEqual([sandbox.writable(cwd), sandbox.writable(root), sandbox.writable(worktreesDir(root))], [true, false, false]);
+
+  // Claude Code: its argv after `--`, untouched, and its transcript directory in the policy file.
+  const opts = { prompt: 'p', systemPrompt: '[role:worker] s', cwd, logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal, access: 'write' } as const;
+  const claudeArgs = ['claude', ...buildClaudeArgs(opts, { writable: true })];
+  const agent = sandbox.wrap('agent', cwd, claudeArgs, { PATH: '/usr/bin' }, { allowWrite: [join(root, 'transcripts')] })!;
+  assert.deepEqual(agent.args.slice(3), ['--', ...claudeArgs]);
+  assert.ok(claudeArgs.includes('{"sandbox":{"enabled":false}}'));
+  assert.deepEqual(JSON.parse(readFileSync(agent.args[2]!, 'utf8')).filesystem.allowWrite, [cwd, temp, join(root, 'transcripts')]);
   sandbox.dispose();
   assert.ok(!existsSync(join(sandboxDir(root), 'run1')));
 
@@ -142,7 +161,8 @@ test('mode semantics: off, auto and required, where the runtime works and where 
     const on = sandboxStatus(mode, { probe: works });
     assert.equal(on.active, true, mode);
     assert.equal(sandboxCheck(on).status, 'pass');
-    assert.deepEqual(sandboxNotice(on), [`sandbox ${mode}: verify, setup and API tool commands are confined to their worktree and granted hosts; agents are not`]);
+    assert.deepEqual(sandboxNotice(on), [`sandbox ${mode}: Claude Code agents and verify, setup and API tool commands are confined to their worktree and granted hosts`]);
+    assert.match(sandboxCheck(on).detail, /^\w+: Claude Code agents, verify commands, .* Codex agents are not wrapped: they keep Codex's own sandbox\.$/);
     assert.ok(createSandbox(root, 'r', policy({ mode }), on).wrap('verify', root, 'true', {}));
     const down = sandboxStatus(mode, { probe: broken });
     assert.equal(down.active, false, mode);
@@ -150,7 +170,7 @@ test('mode semantics: off, auto and required, where the runtime works and where 
   }
   const auto = sandboxStatus('auto', { probe: broken });
   assert.equal(sandboxCheck(auto).status, 'warning', 'auto: announced, and the run goes on unwrapped');
-  assert.deepEqual(sandboxNotice(auto), ['sandbox unavailable (Sandbox dependencies not available: socat not installed): verify, setup and API tool commands run with your privileges', 'sandbox fix: install socat: sudo pacman -S socat']);
+  assert.deepEqual(sandboxNotice(auto), ['sandbox unavailable (Sandbox dependencies not available: socat not installed): agents and verify, setup and API tool commands run with your privileges', 'sandbox fix: install socat: sudo pacman -S socat']);
   assert.equal(createSandbox(root, 'r', policy({ mode: 'auto' }), auto).wrap('verify', root, 'true', {}), undefined);
   const required = sandboxStatus('required', { probe: broken });
   assert.equal(sandboxCheck(required).status, 'error', 'required: no run starts');
@@ -438,4 +458,95 @@ test('a run with the sandbox required sets up, verifies and lands in it, commits
   const files = git.git(root, ['ls-tree', '-r', '--name-only', 'dulger/sandboxed']).split('\n');
   assert.deepEqual(files.filter((f) => f.startsWith('.')), [], `no placeholder was committed: ${files.join(', ')}`);
   assert.ok(!existsSync(join(sandboxDir(root), 'sandboxed')), 'the finished run removed its settings and temp dirs');
+});
+
+// ---- real: Claude Code in the sandbox, played by test/fixtures/fake-claude.mjs ------------------
+
+/** A copy of the stand-in under a path of its own (so pgrep finds only this test's), and a Claude config dir. */
+function fakeClaude(t: TestContext): { dir: string; config: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-sandbox-claude-'));
+  writeFileSync(join(dir, 'fake-claude.mjs'), readFileSync(new URL('./fixtures/fake-claude.mjs', import.meta.url)));
+  writeFileSync(join(dir, 'claude'), `#!/bin/sh\nexec "${process.execPath}" "${join(dir, 'fake-claude.mjs')}" "$@"\n`, { mode: 0o755 });
+  const saved = { bin: process.env.DULGER_CLAUDE_BIN, config: process.env.CLAUDE_CONFIG_DIR };
+  process.env.DULGER_CLAUDE_BIN = join(dir, 'claude');
+  process.env.CLAUDE_CONFIG_DIR = join(dir, 'config');
+  t.after(() => {
+    for (const [key, value] of [['DULGER_CLAUDE_BIN', saved.bin], ['CLAUDE_CONFIG_DIR', saved.config]] as const) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, config: join(dir, 'config') };
+}
+
+type FakeReport = { stdin: string; cwd: string; argv: string[]; tmpdir: string; transcript: string; memory: string; temp: string; writes: Record<string, string>; reads: Record<string, string>; network?: string };
+const claudeCall = (cwd: string, sandbox: AdapterRunOptions['sandbox'], extra: Partial<AdapterRunOptions> = {}) => claudeAdapter.run({
+  prompt: '{}', systemPrompt: '[role:worker] w', cwd, access: 'write', schema: { type: 'object' }, logFile: join(cwd, '..', 'claude.jsonl'), onEvent: () => {}, signal: new AbortController().signal, sandbox, ...extra,
+});
+
+test('in the sandbox a Claude Code agent gets its prompt and worktree, writes there, to its temp dir and its transcript, and nothing it must not', real, async (t) => {
+  const { root, runId, cwd, sibling, secrets, sandbox } = sandboxed(t);
+  fakeClaude(t);
+  const home = probeName();
+  t.after(() => rmSync(home, { force: true }));
+  let connections = 0;
+  const server = createServer((s) => { connections++; s.on('error', () => {}); s.end('hello'); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => server.close());
+  const prompt = JSON.stringify({
+    write: ['in-tree.txt', home, join(sibling, 'sibling.txt'), join(root, 'checkout.txt'), '.bashrc'],
+    read: [join(secrets, 'secret.txt'), join(sibling, 'sibling.txt'), join(configHome, 'dulger', 'keys.json')],
+    connect: (server.address() as AddressInfo).port,
+  });
+  const r = await claudeCall(cwd, sandbox, { prompt });
+  assert.equal(r.ok, true, r.error);
+  const report = r.output as FakeReport;
+  assert.deepEqual([report.stdin, report.cwd], [prompt, cwd], 'the prompt on stdin, the worktree as cwd');
+  assert.ok(report.argv.includes('{"sandbox":{"enabled":false}}'), 'Claude Code\'s own sandbox is off inside');
+  assert.ok(report.tmpdir.startsWith(join(sandboxDir(root), runId, 'tmp', 'c1')) && report.temp === 'ok', report.tmpdir);
+  assert.equal(report.writes['in-tree.txt'], 'ok');
+  for (const p of [home, join(sibling, 'sibling.txt'), join(root, 'checkout.txt'), '.bashrc']) assert.notEqual(report.writes[p], 'ok', p);
+  assert.ok(!existsSync(home) && !existsSync(join(root, 'checkout.txt')));
+  assert.equal(readFileSync(join(sibling, 'sibling.txt'), 'utf8'), 'sibling secret');
+  for (const [p, got] of Object.entries(report.reads)) assert.doesNotMatch(got, /top secret|sibling secret|key secret/, p);
+  assert.notEqual(report.network, 'connected');
+  assert.equal(connections, 0, 'no unlisted host, localhost included');
+  assert.equal(report.transcript, 'ok');
+  assert.ok(existsSync(join(claudeProjectDir(cwd), `${r.sessionId}.jsonl`)), 'the transcript is where dulger made room for it');
+  assert.deepEqual(untracked(cwd), ['?? in-tree.txt'], 'no placeholder is left after a clean exit');
+
+  const resumed = await claudeCall(cwd, sandbox, { resumeSessionId: r.sessionId });
+  assert.deepEqual([resumed.ok, resumed.sessionId], [true, r.sessionId], 'the saved session can be resumed');
+  assert.ok((resumed.output as FakeReport).argv.includes('--resume'));
+});
+
+test('in the sandbox the planner reads your checkout, writes nothing there nor in its auto-memory, and leaves no placeholder in it', real, async (t) => {
+  const { root, sandbox } = sandboxed(t);
+  fakeClaude(t);
+  const call = claudeCall(root, sandbox, { prompt: JSON.stringify({ write: ['planner.txt'], read: ['README.md'], sleepMs: 1500 }), systemPrompt: '[role:planner] p', access: 'readonly' });
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  assert.deepEqual(untracked(root), [], 'nothing appears in the checkout while it runs');
+  const r = await call;
+  assert.equal(r.ok, true, r.error);
+  const report = r.output as FakeReport;
+  assert.deepEqual([report.reads['README.md'], report.writes['planner.txt'], report.transcript], ['hello\n', 'EROFS', 'ok']);
+  assert.notEqual(report.memory, 'ok', 'the auto-memory your own sessions here read stays read-only');
+  assert.deepEqual(readdirSync(join(claudeProjectDir(root), 'memory')), []);
+  assert.deepEqual(untracked(root), []);
+});
+
+test('a sandboxed Claude Code agent that is stopped gets SIGTERM, fails, and leaves no process, socket or placeholder', real, async (t) => {
+  const { cwd, sandbox } = sandboxed(t);
+  const { dir } = fakeClaude(t);
+  const before = { sockets: sockets(), bridges: bridges() };
+  const ctrl = new AbortController();
+  let placeholders: string[] = [];
+  let abortedAt = 0;
+  setTimeout(() => { placeholders = untracked(cwd); abortedAt = Date.now(); ctrl.abort(); }, 1500);
+  const r = await claudeCall(cwd, sandbox, { prompt: JSON.stringify({ sleepMs: 60_000 }), signal: ctrl.signal });
+  assert.deepEqual([r.ok, r.error], [false, 'aborted']);
+  assert.ok(placeholders.includes('?? .bashrc'), `it was running in the sandbox: ${placeholders.join(', ')}`);
+  assert.ok(Date.now() - abortedAt < STOP_GRACE_MS, `srt passed the SIGTERM on and ended before the SIGKILL (${Date.now() - abortedAt}ms)`);
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(running(dir), '', 'no process survived');
+  assert.deepEqual(leftovers(before), { sockets: [], bridges: [] });
+  assert.deepEqual(untracked(cwd), [], 'srt removed its placeholders');
 });

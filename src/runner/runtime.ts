@@ -43,7 +43,7 @@ export interface Runtime {
   config: Config;
   registry: AgentRegistry;
   memory: MemoryStore;
-  /** What verify commands, worktree setup and the API tools' shell run through; inactive when off or unavailable. */
+  /** What Claude Code agents, verify commands, worktree setup and the API tools' shell run through; inactive when off or unavailable. */
   sandbox: Sandbox;
   /** Aborted when the run is stopped; every agent is cancelled through it. */
   signal: AbortSignal;

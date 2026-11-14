@@ -1,9 +1,15 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { createClaudeParser, buildClaudeArgs } from '../src/adapters/claude.ts';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createClaudeParser, buildClaudeArgs, claudeAdapter, claudeProjectDir, claudeProjectSlug } from '../src/adapters/claude.ts';
 import { createCodexParser, buildCodexArgs } from '../src/adapters/codex.ts';
-import { extractJson } from '../src/adapters/process.ts';
+import { extractJson, spawnLines, STOP_GRACE_MS } from '../src/adapters/process.ts';
+import type { AdapterRunOptions } from '../src/adapters/types.ts';
+import { sandboxNote } from '../src/roles/prompts.ts';
+import type { Sandbox, SandboxExtra, SandboxKind } from '../src/sandbox.ts';
 import type { AgentEvent } from '../src/types.ts';
 
 const fixture = (name: string) => readFileSync(new URL(`./fixtures/${name}`, import.meta.url), 'utf8').trim().split('\n');
@@ -115,6 +121,147 @@ test('configured reviewer commands are prefixes; the card\'s verify commands are
   assert.ok(rules.includes('Bash(node scripts/check.js)'));
   assert.ok(!rules.some((r) => r.startsWith('Bash(node scripts/check.js ')), 'a verify command gets no wildcard variant');
   assert.ok(!rules.some((r) => r.includes('pytest')), 'a verify command with a `*` would be a wildcard rule, so it is left out');
+});
+
+test('a sandboxed Claude call switches Claude Code\'s own sandbox off and tells the agent; an unsandboxed one is as it was', () => {
+  const base = { prompt: 'p', systemPrompt: '[role:worker] s', cwd: '/x', logFile: '/dev/null', onEvent() {}, signal: new AbortController().signal, access: 'write', model: 'haiku', mcp: true } as const;
+  assert.deepEqual(buildClaudeArgs(base), ['-p', '--output-format', 'stream-json', '--verbose', '--append-system-prompt', '[role:worker] s', '--model', 'haiku', '--permission-mode', 'bypassPermissions']);
+  const wrapped = buildClaudeArgs(base, { writable: true });
+  assert.deepEqual(wrapped, ['-p', '--output-format', 'stream-json', '--verbose', '--append-system-prompt', `[role:worker] s\n\n${sandboxNote(true)}`, '--model', 'haiku', '--settings', '{"sandbox":{"enabled":false}}', '--permission-mode', 'bypassPermissions']);
+  assert.match(sandboxNote(true), /only this worktree and \$TMPDIR are writable[\s\S]*\.bashrc, \.gitconfig, \.mcp\.json and \.vscode[\s\S]*do not report them as changes/);
+  const planner = buildClaudeArgs({ ...base, systemPrompt: '[role:planner] s', access: 'readonly' }, { writable: false });
+  assert.equal(planner[planner.indexOf('--append-system-prompt') + 1], `[role:planner] s\n\n${sandboxNote(false)}`, 'in the checkout nothing but $TMPDIR is writable, and it is told so');
+  assert.doesNotMatch(sandboxNote(false), /worktree/);
+  const resumed = buildClaudeArgs({ ...base, resumeSessionId: 'abc' }, { writable: true });
+  assert.ok(!resumed.includes('--append-system-prompt') && resumed.includes('{"sandbox":{"enabled":false}}'), 'a resumed session keeps its first system prompt; the inner sandbox stays off');
+  for (const access of ['write', 'readonly', 'none'] as const) {
+    assert.ok(!buildClaudeArgs({ ...base, access }).join('\n').includes('sandbox'), `${access}: no sandbox note or setting when not sandboxed`);
+  }
+});
+
+test('the transcript directory is named the way Claude Code 2.1 names it', (t) => {
+  assert.equal(claudeProjectSlug('/home/u/.local/share/dulger/gitlab.com-me-app/worktrees/20261114-2007-506c/c1'), '-home-u--local-share-dulger-gitlab-com-me-app-worktrees-20261114-2007-506c-c1');
+  // Both checked against Claude Code 2.1.325, which made exactly these directories for these working directories.
+  assert.equal(claudeProjectSlug(`/mnt/dulger-slug-probe/${'a'.repeat(120)}/Wörk tree.v2/c1`), `-mnt-dulger-slug-probe-${'a'.repeat(120)}-W-rk-tree-v2-c1`);
+  const long = claudeProjectSlug(`/mnt/dulger-slug-probe/${'a'.repeat(200)}/Wörk tree.v2/c1`);
+  assert.equal(long, `-mnt-dulger-slug-probe-${'a'.repeat(177)}-f0ijge`, 'over 200 characters: cut, then a hash of the whole path');
+  const root = mkdtempSync(join(tmpdir(), 'dulger-slug-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'real'));
+  symlinkSync(join(root, 'real'), join(root, 'link'));
+  const env = { CLAUDE_CONFIG_DIR: join(root, 'config') };
+  assert.equal(claudeProjectDir(join(root, 'link'), env), join(root, 'config', 'projects', claudeProjectSlug(join(root, 'real'))), 'symlinks resolved, as Claude Code sees its cwd');
+  assert.equal(claudeProjectDir('/no/such/dir', {}).split('/').slice(-3).join('/'), '.claude/projects/-no-such-dir');
+});
+
+/** A sandbox that runs what it is given without srt, so the adapter's sandboxed path runs anywhere. */
+function stubSandbox(writable: boolean): Sandbox & { calls: Array<{ kind: SandboxKind; cwd: string; command: string[]; extra?: SandboxExtra; existed: boolean[] }> } {
+  const calls: Array<{ kind: SandboxKind; cwd: string; command: string[]; extra?: SandboxExtra; existed: boolean[] }> = [];
+  return {
+    calls,
+    status: { mode: 'required', active: true, available: true },
+    // srt exits 0 after passing a SIGTERM on, and so does this shell.
+    wrap(kind, cwd, command, env, extra) {
+      calls.push({ kind, cwd, command: command as string[], extra, existed: [...(extra?.allowWrite ?? []), ...(extra?.denyWrite ?? [])].map((p) => existsSync(p)) });
+      // Not the last command, so the shell cannot exec it and lose the trap.
+      return { bin: '/bin/sh', args: ['-c', 'trap "exit 0" TERM; "$@"; exit $?', 'sh', ...(command as string[])], env };
+    },
+    writable: () => writable,
+    scrub: () => [],
+    dispose() {},
+  };
+}
+
+function fakeClaude(t: TestContext): { dir: string; config: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-fake-claude-'));
+  const bin = join(dir, 'claude');
+  writeFileSync(bin, `#!/bin/sh\nexec "${process.execPath}" "${new URL('./fixtures/fake-claude.mjs', import.meta.url).pathname}" "$@"\n`);
+  chmodSync(bin, 0o755);
+  const saved = { bin: process.env.DULGER_CLAUDE_BIN, config: process.env.CLAUDE_CONFIG_DIR };
+  process.env.DULGER_CLAUDE_BIN = bin;
+  process.env.CLAUDE_CONFIG_DIR = join(dir, 'config');
+  t.after(() => {
+    for (const [key, value] of [['DULGER_CLAUDE_BIN', saved.bin], ['CLAUDE_CONFIG_DIR', saved.config]] as const) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, config: join(dir, 'config') };
+}
+
+test('the Claude adapter spawns through the sandbox when it is active, with its transcript directory made writable first', async (t) => {
+  const { dir } = fakeClaude(t);
+  const cwd = mkdtempSync(join(dir, 'wt-'));
+  const opts: AdapterRunOptions = { prompt: '{}', systemPrompt: '[role:worker] s', cwd, logFile: join(dir, 'log.jsonl'), onEvent() {}, signal: new AbortController().signal, access: 'write', schema: { type: 'object' } };
+  const sandbox = stubSandbox(true);
+  const r = await claudeAdapter.run({ ...opts, sandbox });
+  assert.equal(r.ok, true, r.error);
+  const transcripts = claudeProjectDir(cwd);
+  assert.deepEqual(sandbox.calls.map((c) => [c.kind, c.cwd, c.command[0], c.extra]), [['agent', cwd, process.env.DULGER_CLAUDE_BIN, { allowWrite: [transcripts], denyWrite: [] }]]);
+  assert.deepEqual(sandbox.calls[0]!.existed, [true], 'created before srt starts: a grant on a missing path grants nothing');
+  assert.deepEqual(sandbox.calls[0]!.command.slice(1), buildClaudeArgs(opts, { writable: true }));
+  const report = r.output as { argv: string[]; stdin: string };
+  assert.deepEqual(report.argv, buildClaudeArgs(opts, { writable: true }), 'what the sandbox was handed is what ran');
+  assert.equal(report.stdin, '{}');
+  assert.deepEqual(readdirSync(transcripts).filter((f) => f.endsWith('.jsonl')), [`${r.sessionId}.jsonl`], 'the session was saved where it was looked for');
+
+  const checkout = mkdtempSync(join(dir, 'checkout-'));
+  const planner = stubSandbox(false);
+  const p = await claudeAdapter.run({ ...opts, cwd: checkout, systemPrompt: '[role:planner] s', access: 'readonly', sandbox: planner });
+  assert.equal(p.ok, true, p.error);
+  const own = claudeProjectDir(checkout);
+  assert.deepEqual(planner.calls[0]!.extra, { allowWrite: [own], denyWrite: [join(own, 'memory')] }, 'outside a worktree the auto-memory stays read-only');
+  assert.deepEqual(planner.calls[0]!.existed, [true, true], 'memory/ exists before srt starts, or srt would create it');
+
+  const reporter = stubSandbox(true);
+  assert.equal((await claudeAdapter.run({ ...opts, access: 'none', sandbox: reporter })).ok, true);
+  assert.deepEqual(reporter.calls, [], 'the tool-free reporter is not wrapped');
+  const off = { ...stubSandbox(true), status: { mode: 'off' as const, active: false } };
+  const plain = await claudeAdapter.run({ ...opts, sandbox: off });
+  assert.deepEqual([off.calls, (plain.output as { argv: string[] }).argv], [[], buildClaudeArgs(opts)], 'inactive: spawned as it always was');
+});
+
+test('a sandboxed Claude call that was stopped is not a success although srt exits 0, and an unsaved session is not offered for resuming', async (t) => {
+  const { dir } = fakeClaude(t);
+  const cwd = mkdtempSync(join(dir, 'wt-'));
+  const opts: AdapterRunOptions = { prompt: JSON.stringify({ sleepMs: 30_000 }), systemPrompt: '[role:worker] s', cwd, logFile: join(dir, 'log.jsonl'), onEvent() {}, signal: new AbortController().signal, access: 'write', sandbox: stubSandbox(true) };
+  const ctrl = new AbortController();
+  setTimeout(() => ctrl.abort(), 300);
+  const stopped = await claudeAdapter.run({ ...opts, signal: ctrl.signal });
+  assert.deepEqual([stopped.ok, stopped.exitCode, stopped.error], [false, 0, 'aborted'], 'exit 0: it went on the SIGTERM, not a SIGKILL');
+
+  const unsaved = await claudeAdapter.run({ ...opts, prompt: JSON.stringify({ transcript: false }) });
+  assert.equal(unsaved.ok, true, unsaved.error);
+  assert.equal(unsaved.sessionId, undefined, 'a follow-up starts a new session instead of failing on --resume');
+  assert.match(unsaved.warnings?.join('\n') ?? '', /^session [0-9a-f-]{36} was not saved in .*\/projects\/.*, so it cannot be resumed$/);
+  const plain = await claudeAdapter.run({ ...opts, prompt: JSON.stringify({ transcript: false }), sandbox: undefined });
+  assert.ok(plain.sessionId && !plain.warnings, 'unsandboxed, the session is taken as reported');
+});
+
+test('a sandboxed harness gets a process group of its own, SIGTERM first and SIGKILL after the grace period, and nothing of it outlives it', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'dulger-spawn-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const marker = `dulger-spawn-${process.pid}-${Date.now()}`;
+  const run = (script: string, o: { sandboxed?: boolean; signal?: AbortSignal; env?: NodeJS.ProcessEnv } = {}) => {
+    const lines: string[] = [];
+    return spawnLines({ bin: '/bin/sh', args: ['-c', script, marker], cwd: dir, logFile: join(dir, 'log'), signal: o.signal ?? new AbortController().signal, onLine: (l) => lines.push(l), sandboxed: o.sandboxed, env: o.env }).then((r) => ({ ...r, lines }));
+  };
+  const ownGroup = (await run('ps -o pgid= -p $$')).lines[0]!.trim();
+  assert.equal(ownGroup, (await run('ps -o pgid= -p $PPID')).lines[0]!.trim(), 'unsandboxed: the harness stays in dulger\'s group, as before');
+  const own = await run('echo $$; ps -o pgid= -p $$', { sandboxed: true });
+  assert.equal(own.lines[1]!.trim(), own.lines[0], 'sandboxed: a group of its own');
+  assert.deepEqual((await run('echo "$DULGER_SPAWN_TEST"', { env: { DULGER_SPAWN_TEST: 'given' } })).lines, ['given']);
+
+  // A child that left something running in the background (srt's bridges, say) does not leave it behind.
+  await run(`sleep 67 >/dev/null 2>&1 & echo started`, { sandboxed: true });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(spawnSync('pgrep', ['-f', `^sleep 67$`]).stdout.toString().trim(), '', 'the group went with it');
+
+  const ctrl = new AbortController();
+  const started = Date.now();
+  setTimeout(() => ctrl.abort(), 200);
+  const stubborn = await run('trap "" TERM; sleep 68; echo late', { sandboxed: true, signal: ctrl.signal });
+  const took = Date.now() - started;
+  assert.ok(took >= STOP_GRACE_MS && took < STOP_GRACE_MS + 3000, `a child that ignores SIGTERM is killed after the grace period (${took}ms)`);
+  assert.deepEqual(stubborn.lines, []);
 });
 
 test('tool-free CLI requests disable Claude tools and reject unsupported Codex calls', () => {

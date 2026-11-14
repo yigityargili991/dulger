@@ -53,9 +53,10 @@ Options:
   --allow-dirty                   run even with uncommitted changes
   --budget <usd>                  stop the run (resumable) once it has spent this much
   --card-budget <usd>             fail a card once it has spent this much
-  --sandbox <mode>                off | auto | required: run verify commands, worktree setup and the API
-                                  tools' shell in the process sandbox (default: ~/.config/dulger/config.json,
-                                  else off; dulger doctor says whether it works here)
+  --sandbox <mode>                off | auto | required: run Claude Code agents, verify commands, worktree
+                                  setup and the API tools' shell in the process sandbox (default:
+                                  ~/.config/dulger/config.json, else off; dulger doctor says whether it
+                                  works here)
   --repo <path>                   repository to work in (default: cwd)
   --quiet                         no full-screen view or live table, log lines only
   --version                       print dulger's version

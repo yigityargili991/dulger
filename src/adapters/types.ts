@@ -25,8 +25,9 @@ export interface AdapterRunOptions {
    */
   commandEnv?: NodeJS.ProcessEnv;
   /**
-   * The run's process sandbox. The API tools wrap their shell and git in it (as `command`) when it is
-   * active; the CLI harness processes do not use it yet.
+   * The run's process sandbox. When it is active the Claude adapter runs Claude Code in it (as `agent`;
+   * not the tool-free reporter) and the API tools wrap their shell and git (as `command`). Codex is not
+   * wrapped: it has a sandbox of its own, and bubblewrap cannot start inside bubblewrap.
    */
   sandbox?: import('../sandbox.ts').Sandbox;
   /**

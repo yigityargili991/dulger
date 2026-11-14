@@ -105,7 +105,7 @@ export const SETTINGS: SettingSpec[] = [
   { key: 'routing', description: 'route each task to a model tier', values: () => ON_OFF },
   { key: 'budget', description: 'stop the run at a spend: /budget <usd>|off', values: () => OFF_ONLY },
   { key: 'card-budget', description: 'fail a card at a spend: /card-budget <usd>|off', values: () => OFF_ONLY },
-  { key: 'sandbox', description: 'confine verify commands, setup and API shells: off, auto or required (this session)', values: () => SANDBOX_CHOICES },
+  { key: 'sandbox', description: 'confine Claude Code agents, verify commands, setup and API shells: off, auto or required (this session)', values: () => SANDBOX_CHOICES },
 ];
 
 export const SETTING_KEYS: string[] = SETTINGS.map((s) => s.key);

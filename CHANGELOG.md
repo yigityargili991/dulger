@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1 — 2026-11-14
 
 - The documentation site is built for and deployed to GitLab Pages instead of its former host, and
   its links are relative, so it works at a domain root or under a path. Until the Pages address

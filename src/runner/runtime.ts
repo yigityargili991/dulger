@@ -5,7 +5,8 @@ import { mkdirSync } from 'node:fs';
 import { childEnv } from '../childEnv.ts';
 import { getAdapter } from '../adapters/index.ts';
 import type { AdapterResult, AdapterRunOptions } from '../adapters/types.ts';
-import { type Config, roleConfig } from '../config.ts';
+import { type Config, repoSetsSandbox, roleConfig } from '../config.ts';
+import { createSandbox, sandboxNotice, userConfigFile, type Sandbox } from '../sandbox.ts';
 import { buildCommonContext, type ContextOptions } from '../context/common.ts';
 import { openMemory, type MemoryStore } from '../context/memory.ts';
 import * as store from '../board/store.ts';
@@ -32,7 +33,7 @@ export interface RunHooks {
 export const USAGE_LIMIT = /hit your \w+ limit|usage limit|rate.?limit|too many requests|\b429\b/i;
 
 /** What a step passes to run an agent; model, budget, logging and cancellation are filled in per role. */
-export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd' | 'commandEnv'> & { signal?: AbortSignal };
+export type AgentRequest = Omit<AdapterRunOptions, 'onEvent' | 'signal' | 'logFile' | 'model' | 'maxBudgetUsd' | 'commandEnv' | 'sandbox'> & { signal?: AbortSignal };
 
 export type AgentResult<T> = Omit<AdapterResult, 'output'> & { output?: T };
 
@@ -42,6 +43,8 @@ export interface Runtime {
   config: Config;
   registry: AgentRegistry;
   memory: MemoryStore;
+  /** What verify commands, worktree setup and the API tools' shell run through; inactive when off or unavailable. */
+  sandbox: Sandbox;
   /** Aborted when the run is stopped; every agent is cancelled through it. */
   signal: AbortSignal;
   log(msg: string): void;
@@ -70,6 +73,11 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
   const logDir = store.logDir(repoRoot, board.runId);
   mkdirSync(logDir, { recursive: true });
   const memory = openMemory(repoRoot, config.memory);
+  const sandbox = createSandbox(repoRoot, board.runId, config.sandbox);
+  // Once per run, whatever the state: off and unavailable mean the commands run with the user's privileges.
+  const unavailable = sandbox.status.mode !== 'off' && !sandbox.status.active;
+  for (const line of sandboxNotice(sandbox.status)) hooks.log?.(unavailable ? yellow(line) : line);
+  if (repoSetsSandbox(repoRoot)) hooks.log?.(yellow(`.dulger/config.json sets "sandbox", which dulger ignores: the sandbox policy is yours, in ${userConfigFile()}`));
 
   async function agent<T>(role: AgentRole, request: AgentRequest, ids: { cardId?: string; taskId?: string; logName: string }): Promise<AgentResult<T>> {
     const { signal: requestSignal, ...run } = request;
@@ -83,7 +91,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
       registry, adapter, role, harness: rc.harness,
       cardId: ids.cardId, taskId: ids.taskId, logDir, logName: ids.logName,
       stallTimeoutSec: config.stallTimeoutSec, parentSignal: requestSignal ? AbortSignal.any([signal, requestSignal]) : signal,
-      run: { ...run, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp, commandEnv: childEnv(config) },
+      run: { ...run, model: rc.model, maxBudgetUsd: rc.maxBudgetUsd, mcp: config.claude.mcp, commandEnv: childEnv(config), sandbox },
     });
     for (const w of r.warnings ?? []) hooks.log?.(yellow(`${rc.harness} ${role}: ${w}`));
     if (role !== 'reporter' && !r.ok && r.error && USAGE_LIMIT.test(r.error) && !signal.aborted) hooks.halt?.(r.error);
@@ -101,7 +109,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
   }
 
   return {
-    repoRoot, board, config, registry, memory, signal, agent, integrate, integrating: () => holders > 0,
+    repoRoot, board, config, registry, memory, sandbox, signal, agent, integrate, integrating: () => holders > 0,
     log: (msg) => hooks.log?.(msg),
     save(type, extra = {}) {
       store.saveBoard(repoRoot, board);
@@ -125,7 +133,7 @@ export function createRuntime(repoRoot: string, board: Board, config: Config, ho
     },
     async setupWorktree(cwd, setupSignal = signal) {
       if (!config.worktreeSetup) return;
-      const result = (await runVerification(cwd, [config.worktreeSetup], { timeoutSec: 600, signal: setupSignal, env: childEnv(config) }))[0];
+      const result = (await runVerification(cwd, [config.worktreeSetup], { timeoutSec: 600, signal: setupSignal, env: childEnv(config), sandbox, kind: 'setup' }))[0];
       if (!result?.ok) throw new Error(`worktree setup failed: ${result?.output || 'cancelled'}`);
     },
     context: (opts = {}) => buildCommonContext(repoRoot, board, memory, opts),

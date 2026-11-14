@@ -160,6 +160,7 @@ dulger clean                  remove leftover worktrees and wip branches
 --repo <path>                 --quiet               --max-replans <n>     --version
 --no-progress                 --progress-interval <sec>
 --current-settings            --budget <usd>         --card-budget <usd>
+--sandbox off|auto|required
 ```
 
 `--harness fake` runs the whole pipeline without an LLM, for trying things out.
@@ -208,6 +209,8 @@ are all left alone.
   "tui": { "enabled": true, "icons": "auto" }   // full-screen run view; icons nerd | unicode | ascii | auto
 }
 ```
+
+The [sandbox](#sandbox) is not configured here: a repository does not get to set its own confinement.
 
 ## Model routing
 
@@ -398,7 +401,8 @@ do not load MCP servers.
 <repo>/.dulger/context/*.md             your notes (committed)
 <repo>/.dulger/config.json              configuration (committed)
 <repo>/.dulger/runs/<runId>/            board.json, events.jsonl, logs/   (git-ignored)
-~/.local/share/dulger/<project>/        memory.jsonl, worktrees/          (per origin URL; $XDG_DATA_HOME or $DULGER_DATA_DIR)
+~/.local/share/dulger/<project>/        memory.jsonl, worktrees/, sandbox/ (per origin URL; $XDG_DATA_HOME or $DULGER_DATA_DIR)
+~/.config/dulger/config.json            your sandbox policy, never a repository's ($XDG_CONFIG_HOME)
 ```
 
 Branches: `dulger/<runId>` is the result, `dulger-wip/<runId>/<card>` are work branches that disappear
@@ -410,14 +414,15 @@ when a card lands.
   sandbox limits their writes to the worktree and temporary directories (unless `codex.bypassSandbox`
   is on). Claude Code's `bypassPermissions` skips permission prompts and confines nothing, so Claude
   Code workers can read and write whatever your user can. API workers' file tools stay inside the
-  worktree; their shell commands do not. Planner and reviewer are read-only. On Claude Code and API
+  worktree; their shell commands do not, unless the [sandbox](#sandbox) is on. Planner and reviewer are read-only. On Claude Code and API
   backends they run only allowed commands: for the reviewer, `checker.allowedCommands` and the card's
   verify commands, the latter exactly as written; Codex runs theirs in its read-only sandbox. A
   refused command is logged and noted on the card, so a review that had to take something on trust
   says so. The progress reporter gets the activity digest in its prompt and no commands at all; it has
   nothing to refuse.
-- The verify commands come from the planner and run with your shell's privileges in the card's
-  worktree, the same access the workers already have there. Read them before dispatching: `dulger board`
+- The verify commands come from the planner and run in the card's worktree with your shell's
+  privileges, the same access Claude Code workers already have there, or confined by the
+  [sandbox](#sandbox) when it is on. Read them before dispatching: `dulger board`
   and the plan prompt outside the full-screen view list them under each card, and `/edit` shows them.
   Dispatching approves them; `--yes` approves them unread, and off a terminal nothing is dispatched
   without it. A replan's verify commands that are not already on the board or in
@@ -434,6 +439,110 @@ when a card lands.
   reset window is not spent on cards that cannot run.
 - Before you dispatch, the log warns about cards too big for one reviewer and foundation cards that
   do more than the cards waiting for them need. Those are the plans that fail late and expensively.
+
+## Sandbox
+
+New in this version, and built on Anthropic's sandbox runtime
+([`@anthropic-ai/sandbox-runtime`](https://github.com/anthropics/sandbox-runtime), pinned
+at 0.0.83), which its authors label a beta research preview. It is off unless you turn it on.
+
+With it on, the commands dulger itself runs on code an agent wrote run in a process sandbox: verify
+commands (the gate and final verification), `worktreeSetup`, and the API tools' `run_command` and
+`git_diff`. Each command gets its own `srt` process with its own policy: bubblewrap on Linux,
+Seatbelt on macOS. The agents themselves are not sandboxed in this version: Claude Code, Codex and the
+commands they run keep your privileges, and Claude Code agents are next.
+
+A sandboxed command
+
+- **writes** only its own worktree (a card's, the documentation's or final verification's, never
+  your own checkout), a private temp dir (`$TMPDIR`, kept under `~/.local/share/dulger/<project>/sandbox/`
+  and removed when the run finishes), and what you grant with `allowWrite`. `$HOME`, `/tmp` and your
+  checkout are read-only. `.claude/`, `.husky/` and `.githooks/` in the worktree are read-only when they
+  exist; the runtime itself protects shell rc files, `.gitconfig`, `.gitmodules`, `.mcp.json`,
+  `.vscode/`, `.idea/`, `.claude/commands` and `.claude/agents`, and git's hooks and config;
+- **reads** everything your user can except `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
+  `~/.config/gcloud`, `~/.config/gh`, `~/.config/dulger`, `~/.netrc`, `~/.npmrc`, `~/.docker`,
+  `~/.kube`, `~/.git-credentials`, the agents' own credentials (`~/.claude`, `~/.claude.json`,
+  `~/.codex`), the other cards' worktrees and temp dirs, and what you add with `denyRead`;
+- **connects** only to the hosts you grant for its kind. With none, every connection is refused,
+  your machine's own localhost and unix sockets (Docker's included) too.
+
+What it does not do:
+
+- Reads are open apart from that list. A secret anywhere else your user can read (another project's
+  `.env`, a browser profile) is readable; hide it with `denyRead`.
+- Every allowed host is a way out for what a command could read. Grant as few as you can, and never
+  one where anybody can publish (a code host, a paste site).
+- No CPU, memory or process limits: a command can still load the machine until its timeout.
+- The kernel is shared. This is not a virtual machine; a kernel exploit gets out.
+- The environment is unchanged: the agent credentials are still removed and your other variables
+  (a project's `NPM_TOKEN`) still pass.
+
+**Modes.** `off` (the default) wraps nothing, and every run says so in its first lines. `auto` wraps
+the commands where the runtime works and, where it does not, runs them as before and says why at the
+start of the run, with the fix. `required` starts no run where the runtime does not work: the check
+before the run fails before any planning. `dulger doctor` shows the mode, whether the runtime works
+here (it runs one real sandboxed command to find out), and what to install when it does not.
+
+**The policy is yours, not the repository's.** It is read from `~/.config/dulger/config.json`
+(`$XDG_CONFIG_HOME/dulger/config.json`), under `sandbox`; nothing else in that file is read yet. A
+`sandbox` key in `<repo>/.dulger/config.json` or in a profile is ignored, and `dulger doctor` and the
+run say so. A run never saves the sandbox with its settings, so a resume uses this machine's policy as
+it is now. `--sandbox off|auto|required`, `/sandbox` and `/set sandbox` change the mode for one
+command or session; `/config save` does not save it.
+
+```jsonc
+{
+  "sandbox": {
+    "mode": "auto",                           // off | auto | required
+    "allowWrite": ["~/.cargo/registry"],      // writable on top of the worktree and its temp dir; literal paths, missing ones skipped
+    "allowRead": ["~/.npmrc"],                // readable although the built-in list hides it (a file by its exact path)
+    "denyRead": ["~/work/other-client"],      // hidden on top of the built-in list
+    "domains": {
+      "setup": ["registry.npmjs.org"],        // worktreeSetup
+      "verify": [],                           // verify commands, final verification, the API tools' shell and git
+      "agent": []                             // for Claude Code, once it runs in the sandbox
+    }
+  }
+}
+```
+
+Paths are absolute or start with `~/`; hosts are `example.com`, `*.example.com` or `host:port`.
+Anything else in `sandbox`, or a setting misspelled, is an error rather than a policy that silently
+grants less or more.
+
+Recipes:
+
+- **npm.** `npm ci` (in `worktreeSetup`) installs offline when every package is in your `~/.npm` cache,
+  which only needs reading. For a cache miss grant `"setup": ["registry.npmjs.org"]` and
+  `"allowWrite": ["~/.npm"]`; a registry token in `~/.npmrc` also needs `"allowRead": ["~/.npmrc"]`.
+  `npm test` with `node --test` runs as it is.
+- **cargo.** `cargo build` and `cargo test` without dependencies run as they are. With crates.io
+  dependencies grant `"index.crates.io"` and `"static.crates.io"` to the kind that downloads them
+  (`setup` with `"worktreeSetup": "cargo fetch"`, otherwise `verify`) and `"allowWrite": ["~/.cargo/registry"]`.
+
+Requirements:
+
+- **Linux:** `bubblewrap`, `socat` and `ripgrep` on `PATH`: `sudo pacman -S bubblewrap socat ripgrep`,
+  `sudo apt install bubblewrap socat ripgrep` or `sudo dnf install bubblewrap socat ripgrep`.
+  Ubuntu 24.04 and later restrict the unprivileged user namespaces bubblewrap needs; the runtime's
+  README explains the `kernel.apparmor_restrict_unprivileged_userns` setting.
+- **macOS:** nothing to install (Seatbelt is part of the system). Not yet tried with dulger.
+- **Windows:** not supported natively; run dulger in WSL2, where the Linux requirements apply.
+
+Limitations:
+
+- While a sandboxed command runs in a worktree, the runtime mounts empty read-only placeholders over
+  the protected names that do not exist there (`.bashrc` and the other shell rc files, `.gitconfig`,
+  `.gitmodules`, `.mcp.json`, `.ripgreprc`, `.vscode`, `.idea`, `.claude/`). So a sandboxed command
+  cannot create `.vscode`, `.gitmodules`, `.mcp.json`, a shell rc file or `.claude/commands|agents`,
+  and a verify command that checks `git status` is clean sees them as untracked. They go when the
+  command ends; when one could not clean up, dulger removes untracked empty leftovers before it commits.
+- Inside, `git status`, `diff` and `log` work; `git add`, `commit` and `stash` do not (the repository's
+  `.git` stays read-only). dulger does the committing.
+- Each command costs about 0.2 s and 90 MB more.
+- Whether the runtime works is checked once per dulger process: after installing what was missing,
+  start dulger again.
 
 ## Known limitations
 

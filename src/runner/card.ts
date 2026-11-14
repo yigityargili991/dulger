@@ -115,6 +115,7 @@ async function runPendingTasks(rt: Runtime, card: Card, cwd: string): Promise<Ta
 async function reviewAndLand(rt: Runtime, card: Card, cwd: string): Promise<Outcome> {
   const { board, signal } = rt;
   transitionCard(card, 'review');
+  rt.sandbox.scrub(cwd);
   git.commitAll(cwd, `dulger: ${card.id} ${card.title}`);
   rt.save('card_review', { cardId: card.id });
   if (rt.integrating()) rt.log(`card ${card.id} waiting for the merge queue`);
@@ -213,7 +214,7 @@ async function runTask(rt: Runtime, card: Card, task: Task, cwd: string): Promis
 async function verify(rt: Runtime, card: Card, cwd: string): Promise<boolean> {
   if (!card.verify.length) { card.verification = undefined; return true; }
   rt.log(`card ${card.id} verifying: ${card.verify.join(', ')}`);
-  card.verification = await runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal, env: childEnv(rt.config) });
+  card.verification = await runVerification(cwd, card.verify, { timeoutSec: rt.config.verifyTimeoutSec, signal: rt.signal, env: childEnv(rt.config), sandbox: rt.sandbox });
   const failed = card.verification.filter((r) => !r.ok);
   if (!failed.length) return true;
   rt.log(`card ${card.id} verification failed: ${verificationSummary(failed)}`);

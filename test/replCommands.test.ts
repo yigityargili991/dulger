@@ -30,7 +30,7 @@ test('goals and unknown commands are not predicted at all', () => {
 
 test('the command names complete as they are typed, and describe themselves', () => {
   const all = suggestCommand('/', ctx);
-  assert.equal(all.candidates.length, 34);
+  assert.equal(all.candidates.length, 35);
   assert.equal(all.partial, '/', 'the slash is part of the word being completed');
   assert.equal(all.ghost, '', 'nothing beyond the slash is shared by every command');
   assert.equal(why(all, '/memory'), 'what agents learned: list, add, rm, compact, path');

@@ -17,6 +17,7 @@ import { createOrchestrator, verifyCommands, type Orchestrator, type Orchestrato
 import { createBoard } from './board/create.ts';
 import { extractPaths, openMemory, type Learning } from './context/memory.ts';
 import { worktreesDir } from './paths.ts';
+import { sandboxDir } from './sandbox.ts';
 import { createLiveView, renderBoard, type LiveView } from './ui/table.ts';
 import { buildReport } from './ui/report.ts';
 import { ask } from './ui/prompt.ts';
@@ -259,7 +260,8 @@ export async function runBoard(repoRoot: string, board: Board, config: Config, o
   try {
     // Reload under the lock: a different process may have completed work since the menu opened.
     if (!o.fresh) Object.assign(board, store.loadBoard(repoRoot, board.runId));
-    config = snapshotSettings(config).config;
+    // The snapshot leaves the sandbox out: it is this machine's policy, whatever the run was saved with.
+    config = { ...snapshotSettings(config).config, sandbox: config.sandbox };
     if (!o.fresh) {
       const original = originalSettings(board, config);
       const changes = settingsChanges(original, config);
@@ -409,7 +411,7 @@ export function clean(repoRoot: string): void {
       git.removeWorktree(repoRoot, w.path);
       console.log(`removed worktree ${w.path} (${w.branch})`);
     }
-    for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees')]) {
+    for (const dir of [worktreesDir(repoRoot), join(repoRoot, STATE_DIR, 'worktrees'), sandboxDir(repoRoot)]) {
       if (existsSync(dir)) { rmSync(dir, { recursive: true, force: true }); console.log(`removed ${dir}`); }
     }
     const wip = git.git(repoRoot, ['branch', '--list', 'dulger-wip/*', '--format=%(refname:short)'], { allowFail: true }).split('\n').filter(Boolean);

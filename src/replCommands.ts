@@ -67,6 +67,12 @@ const MEMORY_SUBS: Candidate[] = [
   { text: 'path', description: 'where the memory file lives' },
 ];
 
+const SANDBOX_CHOICES: Candidate[] = [
+  { text: 'off', description: 'run every command with your privileges' },
+  { text: 'auto', description: 'sandbox the commands where the runtime works, warn where not' },
+  { text: 'required', description: 'start no run without the sandbox' },
+];
+
 const REPORT_FLAGS: Candidate[] = [{ text: 'full', description: 'every summary, review and note' }];
 const CONFIG_SUBS: Candidate[] = [{ text: 'save', description: 'persist the settings to .dulger/config.json' }];
 const MODEL_CHOICES: Candidate[] = [
@@ -99,6 +105,7 @@ export const SETTINGS: SettingSpec[] = [
   { key: 'routing', description: 'route each task to a model tier', values: () => ON_OFF },
   { key: 'budget', description: 'stop the run at a spend: /budget <usd>|off', values: () => OFF_ONLY },
   { key: 'card-budget', description: 'fail a card at a spend: /card-budget <usd>|off', values: () => OFF_ONLY },
+  { key: 'sandbox', description: 'confine verify commands, setup and API shells: off, auto or required (this session)', values: () => SANDBOX_CHOICES },
 ];
 
 export const SETTING_KEYS: string[] = SETTINGS.map((s) => s.key);

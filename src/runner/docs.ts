@@ -34,6 +34,7 @@ export async function runDocs(rt: Runtime): Promise<void> {
   rt.addCost(undefined, r.costUsd, r.usage);
   let status: 'done' | 'failed' = 'failed';
   if (r.ok && r.output) {
+    rt.sandbox.scrub(cwd);
     git.commitAll(cwd, 'dulger: update documentation');
     const merged = git.mergeFrom(cwd, board.runBranch);
     if (merged.ok && git.land(cwd, board.runBranch)) status = 'done';

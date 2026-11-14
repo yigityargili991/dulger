@@ -8,6 +8,7 @@ import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
 import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
 import { repl } from './repl.ts';
+import { SANDBOX_MODES, type SandboxMode } from './sandbox.ts';
 import { red, cursor } from './ui/ansi.ts';
 import type { HarnessName } from './types.ts';
 
@@ -52,12 +53,17 @@ Options:
   --allow-dirty                   run even with uncommitted changes
   --budget <usd>                  stop the run (resumable) once it has spent this much
   --card-budget <usd>             fail a card once it has spent this much
+  --sandbox <mode>                off | auto | required: run verify commands, worktree setup and the API
+                                  tools' shell in the process sandbox (default: ~/.config/dulger/config.json,
+                                  else off; dulger doctor says whether it works here)
   --repo <path>                   repository to work in (default: cwd)
   --quiet                         no full-screen view or live table, log lines only
   --version                       print dulger's version
 
 Per-role overrides live in <repo>/.dulger/config.json, e.g.
-  { "roles": { "planner": { "harness": "claude", "model": "opus" }, "worker": { "harness": "codex" } } }`;
+  { "roles": { "planner": { "harness": "claude", "model": "opus" }, "worker": { "harness": "codex" } } }
+The sandbox policy lives only in your own ~/.config/dulger/config.json ($XDG_CONFIG_HOME), e.g.
+  { "sandbox": { "mode": "auto", "domains": { "setup": ["registry.npmjs.org"] } } }`;
 
 function packageVersion(): string {
   return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -74,8 +80,8 @@ function findRepoRoot(dir: string): string {
   }
 }
 
-function readConfig(repoRoot: string, overrides: Partial<Config>): Config {
-  try { return loadConfig(repoRoot, overrides); } catch (err) { throw new CliError(`config: ${(err as Error).message}`); }
+function readConfig(repoRoot: string, overrides: Partial<Config>, sandbox?: SandboxMode): Config {
+  try { return loadConfig(repoRoot, overrides, sandbox); } catch (err) { throw new CliError(`config: ${(err as Error).message}`); }
 }
 
 async function main(argv: string[]): Promise<void> {
@@ -87,7 +93,7 @@ async function main(argv: string[]): Promise<void> {
       'no-routing': { type: 'boolean' }, 'base-url': { type: 'string' }, 'api-key-env': { type: 'string' },
       budget: { type: 'string' }, 'card-budget': { type: 'string' }, full: { type: 'boolean' },
       'progress-interval': { type: 'string' }, 'no-progress': { type: 'boolean' },
-      'current-settings': { type: 'boolean' },
+      'current-settings': { type: 'boolean' }, sandbox: { type: 'string' },
       yes: { type: 'boolean', short: 'y' }, 'no-docs': { type: 'boolean' }, merge: { type: 'boolean' }, 'allow-dirty': { type: 'boolean' },
       repo: { type: 'string' }, quiet: { type: 'boolean' }, help: { type: 'boolean', short: 'h' }, version: { type: 'boolean', short: 'V' },
     },
@@ -98,6 +104,8 @@ async function main(argv: string[]): Promise<void> {
   if (!cmd && !(process.stdin.isTTY && process.stdout.isTTY)) { console.log(USAGE); return; }
 
   if (cmd === 'init') { initRepo(arg ?? v.repo ?? process.cwd()); return; }
+  if (v.sandbox !== undefined && !SANDBOX_MODES.includes(v.sandbox as SandboxMode)) throw new CliError(`--sandbox is ${SANDBOX_MODES.join(', ')}`);
+  const sandbox = v.sandbox as SandboxMode | undefined;
 
   const repoRoot = findRepoRoot(v.repo ?? process.cwd());
   // Runs branch off HEAD, so a repository without a single commit has nothing to work on yet.
@@ -126,13 +134,13 @@ async function main(argv: string[]): Promise<void> {
     const baseUrl = v['base-url'] ?? provider!.baseUrl;
     overrides.providers = { [name]: { ...PROVIDER_DEFAULTS, ...provider, baseUrl, ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
   }
-  const config = readConfig(repoRoot, overrides);
+  const config = readConfig(repoRoot, overrides, sandbox);
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs', 'reporter'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
   const runOpts = { currentSettings: Boolean(v['current-settings']), quiet: Boolean(v.quiet), merge: Boolean(v.merge), assumeYes: Boolean(v.yes) };
 
   switch (cmd) {
     case undefined:
-      await repl(repoRoot, { overrides, model: v.model, yes: Boolean(v.yes), quiet: Boolean(v.quiet), allowDirty: Boolean(v['allow-dirty']) }, packageVersion());
+      await repl(repoRoot, { overrides, model: v.model, yes: Boolean(v.yes), quiet: Boolean(v.quiet), allowDirty: Boolean(v['allow-dirty']), sandbox }, packageVersion());
       break;
     case 'run': {
       if (!arg) throw new CliError('dulger run needs a goal, e.g. dulger run "add a /health endpoint"');

@@ -25,7 +25,7 @@ export const MODEL_ALIASES: Array<{ name: string; harness: HarnessName; model: s
   Object.entries(ALIASES).map(([name, alias]) => ({ name, ...alias }));
 
 export function sessionConfig(repoRoot: string, session: Session): Config {
-  const config = loadConfig(repoRoot, session.overrides);
+  const config = loadConfig(repoRoot, session.overrides, session.sandbox);
   if (session.model) {
     for (const role of MODEL_ROLES) config.roles[role] = { ...config.roles[role], model: session.model };
   }
@@ -183,7 +183,9 @@ export function saveSessionConfig(repoRoot: string, session: Session): string {
   const existing = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown> : {};
   if (!isObject(existing)) throw new CliError('config.json must contain a JSON object');
   const effective = sessionConfig(repoRoot, session);
-  const patch: Partial<Config> = { ...session.overrides, roles: { ...session.overrides.roles } };
+  // The sandbox is never written into a repository; one that came in with a profile goes no further.
+  const { sandbox: _never, ...overrides } = session.overrides;
+  const patch: Partial<Config> = { ...overrides, roles: { ...session.overrides.roles } };
   for (const role of MODEL_ROLES) {
     if (session.model || session.modelRoles?.[role] !== undefined) patch.roles![role] = effective.roles[role] ?? {};
   }

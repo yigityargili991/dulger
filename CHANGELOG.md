@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- A process sandbox, new and built on Anthropic's sandbox runtime (a beta research preview), for the
+  commands dulger runs on agents' code: verify commands, final verification, `worktreeSetup`, and the
+  API tools' shell and `git diff`. Each runs in its own `srt` process that writes only its worktree
+  and a temp dir, cannot read your credentials or other cards' worktrees, and reaches only the hosts
+  you grant. `sandbox.mode` is `off` (the default, and every run says so), `auto` or `required` (no
+  run starts where the runtime does not work); `dulger doctor` says whether it works here. Agent
+  processes are not sandboxed yet.
+- The sandbox policy is read only from your own `~/.config/dulger/config.json`, `--sandbox` and
+  `/sandbox`: a `sandbox` key in a repository's `.dulger/config.json` or a profile is ignored and
+  reported, runs never save it, and resume always uses the machine's current policy.
 - Learnings reach the memory only when their card lands. A card that fails, is stopped or is
   replaced no longer adds what its workers reported to the memory that later planners, workers and
   reviewers read. When a card lands, every task's learnings are kept, fix tasks included.

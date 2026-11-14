@@ -19,6 +19,7 @@ import { KNOWN_PROVIDERS, ensureKeys, providerCommand } from './replProviders.ts
 import { SETTING_KEYS, suggestCommand, type PredictContext } from './replCommands.ts';
 import { openMemory } from './context/memory.ts';
 import { setupSession } from './sessionSetup.ts';
+import { SANDBOX_MODES, type SandboxMode } from './sandbox.ts';
 import type { AgentRole, HarnessName } from './types.ts';
 
 export interface Session {
@@ -29,6 +30,8 @@ export interface Session {
   yes: boolean;
   quiet: boolean;
   allowDirty: boolean;
+  /** --sandbox or /sandbox, over the user's own config file; session-only, never saved to the repository. */
+  sandbox?: SandboxMode;
 }
 
 const HELP = `Type a goal to plan and run it. Commands:
@@ -63,7 +66,7 @@ Settings (each shows its current value when given no argument):
   /docs on|off                      /yes on|off                   /quiet on|off
   /progress on|off|<sec>            /dirty on|off                 /routing on|off
   /tui on|off                       /icons nerd|unicode|ascii|auto /budget <usd>|off
-  /card-budget <usd>|off
+  /card-budget <usd>|off            /sandbox off|auto|required (this session; never saved to the repository)
   /set <key> <value>  the same settings in one command
   /help               this text
   /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)
@@ -140,7 +143,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
       return false;
     case 'config':
       if (rest !== 'save') throw new CliError('use /config save to persist the current session settings');
-      console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet and dirty remain session-only)`));
+      console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet, dirty and sandbox remain session-only)`));
       return false;
     case 'board': showBoard(repoRoot, args[0]); return false;
     case 'report': {
@@ -278,6 +281,7 @@ function currentValue(s: Session, c: Config, key: string): string {
     case 'card-budget': return c.cardBudgetUsd === undefined ? 'off' : `$${c.cardBudgetUsd}`;
     case 'tui': return onOff(c.tui.enabled);
     case 'icons': return c.tui.icons;
+    case 'sandbox': return c.sandbox.mode;
     default: return '?';
   }
 }
@@ -313,11 +317,16 @@ function set(session: Session, key = '', value = ''): void {
       if (!['nerd', 'unicode', 'ascii', 'auto'].includes(value)) throw new CliError('icons is nerd, unicode, ascii or auto');
       session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), icons: value as Config['tui']['icons'] };
       return;
+    case 'sandbox':
+      // Kept apart from overrides, which /config save writes into the repository's file.
+      if (!SANDBOX_MODES.includes(value as SandboxMode)) throw new CliError('sandbox is off, auto or required');
+      session.sandbox = value as SandboxMode;
+      return;
     default: throw new CliError(`unknown setting "${key}" (see /help)`);
   }
 }
 
 function settingsLine(s: Session, c: Config): string {
   const flags = [s.yes && 'yes', s.quiet && 'quiet', s.allowDirty && 'dirty', !c.docs && 'no-docs', !c.tui.enabled && 'no-tui', !(c.progressIntervalSec > 0) && 'no-progress'].filter(Boolean).join(' ');
-  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · global model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')}${flags ? yellow(` · ${flags}`) : ''}`;
+  return `harness ${c.harness} · concurrency ${c.concurrency} · attempts ${c.maxAttempts} · replans ${c.maxReplans} · global model ${s.model ?? (c.routing.enabled ? 'auto tiers' : 'default')} · sandbox ${c.sandbox.mode}${flags ? yellow(` · ${flags}`) : ''}`;
 }

@@ -69,7 +69,7 @@ async function session(keys: string[], suggest?: (line: string) => Suggestion, c
 
 test('the rest of the word is drawn dim after the cursor, and Tab takes it', async () => {
   const s = await session(['/', 'm', 'o', 'd', '\t', '\r'], commands);
-  assert.equal(plain(s.steps[0]!), '/\n  34 matches · keep typing to narrow them\x1b[1A\x1b[11G', 'too many to list, so they are counted');
+  assert.equal(plain(s.steps[0]!), '/\n  35 matches · keep typing to narrow them\x1b[1A\x1b[11G', 'too many to list, so they are counted');
   assert.ok(plain(s.steps[1]!).includes('\n  /memory  what agents learned: list, add, rm, compact, path'), 'each match says what it does');
   assert.equal(plain(s.steps[2]!), '\x1b[Jodel\x1b[3D', 'clear the old prediction before echoing the key');
   assert.equal(plain(s.steps[3]!), '\x1b[Jdel\x1b[2D');

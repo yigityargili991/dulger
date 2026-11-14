@@ -1,8 +1,9 @@
 import { CliError } from './errors.ts';
 import { spawnSync } from 'node:child_process';
 import { accessSync, constants, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { roleConfig, type Config } from './config.ts';
+import { dirname, join } from 'node:path';
+import { repoSetsSandbox, roleConfig, STATE_DIR, type Config } from './config.ts';
+import { sandboxCheck, sandboxStatus, userConfigFile } from './sandbox.ts';
 import { getAdapter } from './adapters/index.ts';
 import { capabilities } from './adapters/capabilities.ts';
 import { keySource } from './keys.ts';
@@ -12,7 +13,8 @@ import { snapshotSettings } from './runSettings.ts';
 import type { AgentRole } from './types.ts';
 
 export interface PreflightCheck { label: string; status: 'pass' | 'warning' | 'error'; detail: string }
-export function preflight(root: string, config: Config): PreflightCheck[] {
+/** `forRun`: the checks before a run, which asks the sandbox runtime nothing when the sandbox is off. */
+export function preflight(root: string, config: Config, o: { forRun?: boolean } = {}): PreflightCheck[] {
   const checks: PreflightCheck[] = [];
   const add = (label: string, status: PreflightCheck['status'], detail: string) => checks.push({ label, status, detail });
   const check = (label: string, fn: () => string) => { try { add(label, 'pass', fn()); } catch (e) { add(label, 'error', (e as Error).message); } };
@@ -50,13 +52,16 @@ export function preflight(root: string, config: Config): PreflightCheck[] {
     if (!caps.costReporting && (config.budgetUsd !== undefined || config.cardBudgetUsd !== undefined)) add(`${rc.harness} spend`, 'warning', 'Dollar limits cannot account for this harness. Tokens are still recorded.');
   }
   if (config.worktreeSetup) add('Worktree setup', 'warning', `Will run in each new worktree: ${config.worktreeSetup}`);
+  const sandbox = sandboxCheck(sandboxStatus(config.sandbox.mode, { probeOff: !o.forRun }));
+  add('Sandbox', sandbox.status, sandbox.detail);
+  if (repoSetsSandbox(root)) add('Repository sandbox key', 'warning', `${join(root, STATE_DIR, 'config.json')} sets "sandbox"; it is ignored. The sandbox confines code from the repository, so its policy comes only from ${userConfigFile()}, --sandbox and the session.`);
   return checks;
 }
 export function preflightText(checks: PreflightCheck[]): string {
   return checks.map((c) => `${c.status === 'pass' ? 'OK' : c.status === 'warning' ? 'NOTE' : 'FIX'} ${c.label}: ${c.detail}`).join('\n');
 }
 export function requirePreflight(root: string, config: Config): void {
-  const checks = preflight(root, config);
+  const checks = preflight(root, config, { forRun: true });
   const errors = checks.filter((c) => c.status === 'error');
   if (errors.length) throw new CliError(`Preflight needs attention:\n${preflightText(errors)}`);
 }

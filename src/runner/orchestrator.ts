@@ -187,6 +187,8 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     save('checkpoint');
     await verifyFinalResult(rt);
     try { rmdirSync(join(worktreesDir(repoRoot), board.runId)); } catch { /* not empty: failed worktrees are kept */ }
+    // A retry or resume writes them afresh, so a finished run keeps no sandbox settings or temp dirs.
+    if (!ctrl.signal.aborted) rt.sandbox.dispose();
     checkpoint(board, ctrl.signal.aborted ? 'stopped' : 'finished');
     save(ctrl.signal.aborted ? 'aborted' : 'finished');
   }

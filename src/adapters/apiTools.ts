@@ -1,5 +1,6 @@
 // Small coding toolset for Chat Completions providers. File access stays inside the worktree;
-// shell commands have the user's privileges, like the existing CLI workers and verify gate.
+// shell commands have the user's privileges, like the existing CLI workers and verify gate, unless the
+// run's sandbox is active: then they and git run inside it.
 import { lstat, realpath, readdir, readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, relative, dirname, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -95,20 +96,38 @@ export async function executeApiTool(name: string, args: Record<string, unknown>
 function command(bin: string, args: string[], opts: AdapterRunOptions, timeoutSec: number, limit = LIMIT): Promise<string> {
   return new Promise((resolve, reject) => {
     opts.signal.throwIfAborted();
-    const child = spawn(bin, args, { cwd: opts.cwd, env: opts.commandEnv ?? childEnv(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    const env = opts.commandEnv ?? childEnv();
+    const wrapped = opts.sandbox?.wrap('command', opts.cwd, [bin, ...args], env);
+    const child = wrapped
+      ? spawn(wrapped.bin, wrapped.args, { cwd: opts.cwd, env: wrapped.env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' })
+      : spawn(bin, args, { cwd: opts.cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     let output = '';
     let stopped = false;
+    let escalation: ReturnType<typeof setTimeout> | undefined;
+    const kill = (signal: NodeJS.Signals) => {
+      try { if (process.platform !== 'win32') process.kill(-child.pid!, signal); else child.kill(signal); } catch { /* already exited */ }
+    };
     const stop = () => {
+      if (!wrapped) { stopped = true; kill('SIGKILL'); return; }
+      // srt killed outright leaves its proxy bridge, socket and placeholder files behind: SIGTERM first, so it cleans up.
+      if (stopped) return;
       stopped = true;
-      try { if (process.platform !== 'win32') process.kill(-child.pid!, 'SIGKILL'); else child.kill('SIGKILL'); } catch { /* already exited */ }
+      kill('SIGTERM');
+      escalation = setTimeout(() => kill('SIGKILL'), 1000);
     };
     const timer = setTimeout(stop, timeoutSec * 1000);
     opts.signal.addEventListener('abort', stop, { once: true });
     const collect = (chunk: Buffer) => { output = (output + chunk.toString()).slice(-limit); };
     child.stdout.on('data', collect);
     child.stderr.on('data', collect);
-    const cleanup = () => { clearTimeout(timer); opts.signal.removeEventListener('abort', stop); };
+    const cleanup = () => { clearTimeout(timer); clearTimeout(escalation); opts.signal.removeEventListener('abort', stop); };
     child.on('error', (err) => { cleanup(); reject(err); });
-    child.on('close', (code) => { cleanup(); resolve(`exit ${code ?? -1}${stopped ? ' (cancelled or timed out)' : ''}\n${output}`); });
+    child.on('close', (code) => {
+      // srt has cleaned up and gone; whatever of the group is left goes with it.
+      if (wrapped && stopped) kill('SIGKILL');
+      cleanup();
+      // srt exits 0 after passing a SIGTERM on, so a stopped wrapped command's code says nothing.
+      resolve(`exit ${wrapped && stopped ? -1 : code ?? -1}${stopped ? ' (cancelled or timed out)' : ''}\n${output}`);
+    });
   });
 }

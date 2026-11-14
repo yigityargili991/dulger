@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentRole, HarnessName, ModelTier, Card, Task } from './types.ts';
 import type { IconSet } from './tui/theme.ts';
+import { machineSandbox, SANDBOX_DEFAULTS, type SandboxConfig, type SandboxMode } from './sandbox.ts';
 
 export interface RoleConfig {
   harness?: HarnessName;
@@ -64,6 +65,11 @@ export interface Config {
   memory: MemoryConfig;
   /** The full-screen run view on a terminal; icons: nerd | unicode | ascii | auto (nerd on ghostty, kitty, wezterm, alacritty, foot). */
   tui: { enabled: boolean; icons: IconSet | 'auto' };
+  /**
+   * The process sandbox for the commands dulger runs on agents' code (src/sandbox.ts). Only the user's own
+   * config file, --sandbox and the session set it; never <repo>/.dulger/config.json, profiles or a run's saved settings.
+   */
+  sandbox: SandboxConfig;
 }
 
 export const BUILTIN_HARNESSES = ['claude', 'codex', 'fake'];
@@ -99,14 +105,20 @@ export const DEFAULT_CONFIG: Config = {
   codex: { bypassSandbox: false },
   memory: { location: 'user', maxItems: 40, maxChars: 6000 },
   tui: { enabled: true, icons: 'auto' },
+  sandbox: SANDBOX_DEFAULTS,
 };
 
 export const STATE_DIR = '.dulger';
 
-/** Defaults <- <repo>/.dulger/config.json <- CLI overrides. */
-export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): Config {
+/**
+ * Defaults <- <repo>/.dulger/config.json <- CLI overrides. The sandbox is the exception: it confines code
+ * that comes from the repository, so neither the repository's file nor overrides (a profile is one) set
+ * it; it is the user's own file <- `sandboxMode` (--sandbox or the session).
+ */
+export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}, sandboxMode?: SandboxMode): Config {
   const file = join(repoRoot, STATE_DIR, 'config.json');
-  const fromFile: Partial<Config> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const { sandbox: _ignored, ...fromFile }: Partial<Config> = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+  const { sandbox: _notHere, ...rest } = overrides;
   const models = { ...DEFAULT_CONFIG.routing.models };
   const providers = { ...DEFAULT_CONFIG.providers };
   for (const source of [fromFile, overrides]) {
@@ -122,7 +134,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
   const config: Config = {
     ...DEFAULT_CONFIG,
     ...fromFile,
-    ...overrides,
+    ...rest,
     roles: { ...DEFAULT_CONFIG.roles, ...fromFile.roles, ...overrides.roles },
     routing: { ...DEFAULT_CONFIG.routing, ...fromFile.routing, ...overrides.routing, models },
     providers,
@@ -131,6 +143,7 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     codex: { ...DEFAULT_CONFIG.codex, ...fromFile.codex, ...overrides.codex },
     memory: { ...DEFAULT_CONFIG.memory, ...fromFile.memory, ...overrides.memory },
     tui: { ...DEFAULT_CONFIG.tui, ...fromFile.tui, ...overrides.tui },
+    sandbox: machineSandbox(sandboxMode),
   };
   for (const [name, provider] of Object.entries(config.providers)) {
     if (typeof provider?.baseUrl !== 'string' || !provider.baseUrl) throw new Error(`providers.${name}.baseUrl is required`);
@@ -139,6 +152,11 @@ export function loadConfig(repoRoot: string, overrides: Partial<Config> = {}): C
     if (!harnessNames(config).includes(harness!)) throw new Error(`unknown harness: ${harness} (built in: ${BUILTIN_HARNESSES.join(', ')}; configured: ${Object.keys(config.providers).join(', ') || 'none'})`);
   }
   return config;
+}
+
+/** Whether <repo>/.dulger/config.json sets "sandbox", which loadConfig ignores; doctor and the run say so. */
+export function repoSetsSandbox(repoRoot: string): boolean {
+  try { return Object.hasOwn(JSON.parse(readFileSync(join(repoRoot, STATE_DIR, 'config.json'), 'utf8')) ?? {}, 'sandbox'); } catch { return false; }
 }
 
 /** Every backend this config can run: the built-ins plus each configured API provider. */

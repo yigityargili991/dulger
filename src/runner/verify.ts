@@ -4,12 +4,16 @@
 // with the output before any reviewer is paid to look at it.
 import { spawn } from 'node:child_process';
 import { childEnv } from '../childEnv.ts';
+import type { Sandbox } from '../sandbox.ts';
 import type { VerificationResult } from '../types.ts';
 
 const OUTPUT_TAIL = 3000;
 
-/** `env` is the commands' environment; callers pass childEnv(config), and the default still drops the fixed agent credentials. */
-export async function runVerification(cwd: string, commands: string[], opts: { timeoutSec: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv }): Promise<VerificationResult[]> {
+/**
+ * `env` is the commands' environment; callers pass childEnv(config), and the default still drops the fixed
+ * agent credentials. With an active `sandbox` each command runs inside srt as `kind` (verify unless said).
+ */
+export async function runVerification(cwd: string, commands: string[], opts: { timeoutSec: number; signal?: AbortSignal; env?: NodeJS.ProcessEnv; sandbox?: Sandbox; kind?: 'setup' | 'verify' }): Promise<VerificationResult[]> {
   const results: VerificationResult[] = [];
   for (const command of commands) {
     if (opts.signal?.aborted) break;
@@ -19,7 +23,12 @@ export async function runVerification(cwd: string, commands: string[], opts: { t
       let truncated = false;
       let reason: string | undefined;
       let escalation: ReturnType<typeof setTimeout> | undefined;
-      const child = spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: { ...(opts.env ?? childEnv()), CI: '1', NO_COLOR: '1' } });
+      const env = { ...(opts.env ?? childEnv()), CI: '1', NO_COLOR: '1' };
+      // The same process group and the same SIGTERM-then-SIGKILL either way; srt cleans up on the SIGTERM.
+      const wrapped = opts.sandbox?.wrap(opts.kind ?? 'verify', cwd, command, env);
+      const child = wrapped
+        ? spawn(wrapped.bin, wrapped.args, { cwd, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env: wrapped.env })
+        : spawn(command, { cwd, shell: true, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'], env });
       const append = (text: string) => { output += text; if (output.length > OUTPUT_TAIL) { output = output.slice(-OUTPUT_TAIL); truncated = true; } };
       child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
       child.stdout.on('data', append); child.stderr.on('data', append);
@@ -43,7 +52,9 @@ export async function runVerification(cwd: string, commands: string[], opts: { t
         if (reason) kill('SIGKILL');
         clearTimeout(timer); clearTimeout(escalation);
         opts.signal?.removeEventListener('abort', abort);
-        resolve({ command, ok: code === 0 && !reason, exitCode: code ?? -1, durationMs: Date.now() - started, output: `${truncated ? '…' : ''}${output.trim()}${reason ? `\n[dulger: ${reason}]` : ''}`.trim() });
+        // srt exits 0 after passing a SIGTERM on, so a stopped wrapped command's own code says nothing.
+        const exitCode = wrapped && reason ? -1 : code ?? -1;
+        resolve({ command, ok: code === 0 && !reason, exitCode, durationMs: Date.now() - started, output: `${truncated ? '…' : ''}${output.trim()}${reason ? `\n[dulger: ${reason}]` : ''}`.trim() });
       });
     }));
   }

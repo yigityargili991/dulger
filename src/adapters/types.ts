@@ -25,6 +25,11 @@ export interface AdapterRunOptions {
    */
   commandEnv?: NodeJS.ProcessEnv;
   /**
+   * The run's process sandbox. The API tools wrap their shell and git in it (as `command`) when it is
+   * active; the CLI harness processes do not use it yet.
+   */
+  sandbox?: import('../sandbox.ts').Sandbox;
+  /**
    * Give write agents the user's MCP servers (config.claude.mcp, on by default); read-only agents never get
    * them. Only the Claude adapter acts on it: Claude Code inlines every MCP tool schema when ToolSearch is
    * unavailable (~70k tokens per read-only agent) and has --strict-mcp-config to skip them. Codex showed no

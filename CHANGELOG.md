@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-11-14
 
 - A process sandbox, new and built on Anthropic's sandbox runtime (a beta research preview), for
   Claude Code agents and the commands dulger runs on agents' code: verify commands, final

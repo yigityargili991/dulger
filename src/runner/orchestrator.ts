@@ -14,6 +14,7 @@ import { createDispatcher } from './dispatch.ts';
 import { startProgressReporter } from './progress.ts';
 import { yellow } from '../ui/ansi.ts';
 import { runDocs } from './docs.ts';
+import { jevEndpoint, routeTasks } from '../router.ts';
 import { createRuntime, type AgentRequest, type RunHooks } from './runtime.ts';
 import type { Board, Card, PlannerResult } from '../types.ts';
 
@@ -57,7 +58,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
   function halt(reason: string): void {
     if (board.halted) return;
     board.halted = { reason, at: new Date().toISOString() };
-    log(yellow(`stopping the run: ${reason}; dulger resume continues it later`));
+    log(yellow(`stopping the run: ${reason}; resuming it later continues where it stopped`));
     save('halted', { message: reason });
     ctrl.abort();
   }
@@ -75,6 +76,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
     if (!r.ok || !r.output?.cards?.length) throw new Error(`planner failed: ${r.error ?? 'no cards returned'}`);
 
     applyPlan(r.output, r.sessionId, revision);
+    await route(board.cards);
     checkpoint(board, 'ready');
     save('planned', { data: { cards: board.cards.length, revision } });
     log(`${revising ? 'revised' : 'planned'}: ${board.cards.length} cards`);
@@ -101,6 +103,17 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
       throw err;
     }
     board.plan = { sessionId, assumptions: output.assumptions ?? [], omitted: output.omitted ?? [], revisions: revision };
+  }
+
+  /** With Jev as the router, its difficulty tags replace the planner's; when it cannot answer, the planner's stay. */
+  async function route(cards: Card[]): Promise<void> {
+    const endpoint = jevEndpoint(config.routing);
+    if (!endpoint) return;
+    try {
+      await routeTasks(endpoint, board.goal, cards, ctrl.signal);
+    } catch (err) {
+      log(yellow(`jev: ${(err as Error).message}; keeping the planner's difficulty tags`));
+    }
   }
 
   /**
@@ -136,6 +149,7 @@ export function createOrchestrator(repoRoot: string, board: Board, config: Confi
         if (!approved) throw new Error(`refused because its new verify command${unapproved.length === 1 ? ' was' : 's were'} not approved: ${unapproved.map((c) => `\`${c}\``).join(', ')}`);
       }
       const { replaced, added } = store.applyReplan(board, r.output);
+      await route(added);
       save('replanned', { data: { replaced: replaced.map((c) => c.id), added: added.map((c) => c.id) } });
       log(`replanned: ${added.length} new card${added.length === 1 ? '' : 's'}${added.length ? ` (${added.map((c) => c.id).join(', ')})` : ''}, ${replaced.length} replaced`);
     } catch (err) {

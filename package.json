@@ -44,5 +44,8 @@
     "@anthropic-ai/sandbox-runtime": "0.0.83",
     "chalk": "^6.0.0",
     "string-width": "^8.2.2"
+  },
+  "overrides": {
+    "zod": "4.6.7"
   }
 }

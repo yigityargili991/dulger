@@ -17,6 +17,30 @@ export function acquireRunLock(root: string, id: string): () => void {
   return () => releaseLock(path, owner.token);
 }
 
+/**
+ * Who holds the run's execution lock, read without touching it: undefined when nobody does or the
+ * owner file cannot be read (an owner still writing it, a broken lock). Says nothing about liveness.
+ */
+export function lockOwner(root: string, id: string): { pid: number; host: string } | undefined {
+  try {
+    const o = readOwner(join(runDir(root, id), 'execution.lock')) as Partial<Owner> | null;
+    if (!o || typeof o.pid !== 'number' || typeof o.host !== 'string') return undefined;
+    return { pid: o.pid, host: o.host };
+  } catch { return undefined; }
+}
+
+/**
+ * The process id of another live dulger on this machine that holds the run's execution lock, or
+ * undefined when nobody does, the owner is this process, on another host, or gone. A process we may
+ * not signal (EPERM) is alive.
+ */
+export function liveLockHolder(root: string, id: string): number | undefined {
+  const owner = lockOwner(root, id);
+  const pid = owner?.pid;
+  if (!owner || owner.host !== hostname() || pid === undefined || !Number.isInteger(pid) || pid <= 0 || pid === process.pid) return undefined;
+  try { process.kill(pid, 0); return pid; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM' ? pid : undefined; }
+}
+
 function readOwner(path: string): Owner {
   return JSON.parse(readFileSync(join(path, 'owner.json'), 'utf8')) as Owner;
 }

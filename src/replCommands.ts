@@ -1,7 +1,9 @@
 // The vocabulary of the interactive prompt: what each command is for, which values its arguments take,
 // and what a half-typed line predicts next. Pure and free of IO, so the plain prompt, the full-screen
 // view and the tests all read the same table; the values that change per repository (run ids, card
-// ids, configured providers) arrive in a PredictContext.
+// ids, configured providers) arrive in a PredictContext. The settings and their values come from the
+// session settings table (settings.ts), which a settings form reads as well.
+import { SESSION_SETTINGS, type SessionSetting } from './settings.ts';
 import type { AgentRole } from './types.ts';
 
 export interface Candidate {
@@ -52,13 +54,6 @@ const ON_OFF: Candidate[] = [
 
 const OFF_ONLY: Candidate[] = [{ text: 'off', description: 'no limit' }];
 
-const ICON_SETS: Candidate[] = [
-  { text: 'nerd', description: 'glyphs from a Nerd Font' },
-  { text: 'unicode', description: 'plain Unicode glyphs' },
-  { text: 'ascii', description: 'ASCII only' },
-  { text: 'auto', description: 'pick from the terminal' },
-];
-
 const MEMORY_SUBS: Candidate[] = [
   { text: 'list', description: 'what agents learned, oldest first' },
   { text: 'add', description: 'add a note: /memory add "text"' },
@@ -67,17 +62,11 @@ const MEMORY_SUBS: Candidate[] = [
   { text: 'path', description: 'where the memory file lives' },
 ];
 
-const SANDBOX_CHOICES: Candidate[] = [
-  { text: 'off', description: 'run every command with your privileges' },
-  { text: 'auto', description: 'sandbox the commands where the runtime works, warn where not' },
-  { text: 'required', description: 'start no run without the sandbox' },
-];
-
 const REPORT_FLAGS: Candidate[] = [{ text: 'full', description: 'every summary, review and note' }];
-const CONFIG_SUBS: Candidate[] = [{ text: 'save', description: 'persist the settings to .dulger/config.json' }];
+const CONFIG_SUBS: Candidate[] = [{ text: 'save', description: 'persist the settings' }];
 const MODEL_CHOICES: Candidate[] = [
   { text: 'auto', description: "the backend's default model" },
-  { text: 'reset', description: 'restore the repository settings' },
+  { text: 'reset', description: 'restore the saved settings' },
 ];
 
 const ROLE_WORD: Record<AgentRole, string> = { planner: 'planner', worker: 'worker', checker: 'reviewer', docs: 'docs agent', reporter: 'progress reporter' };
@@ -89,24 +78,23 @@ interface SettingSpec {
   values?(ctx: PredictContext): Candidate[];
 }
 
-export const SETTINGS: SettingSpec[] = [
-  { key: 'harness', description: 'the backend every role runs on', values: (ctx) => named(ctx.harnesses, 'run on this backend') },
-  { key: 'concurrency', description: 'how many cards run at once' },
-  { key: 'attempts', description: 'review rounds per card, tries per task' },
-  { key: 'replans', description: 'how many times a failed run replans' },
-  { key: 'model', description: 'the global model pin, or off', values: (ctx) => [...modelNames(ctx), { text: 'off', description: 'drop the global pin' }] },
-  { key: 'docs', description: 'run a documentation agent after the code', values: () => ON_OFF },
-  { key: 'progress', description: 'live progress notes on running cards: on, off, or seconds between', values: () => ON_OFF },
-  { key: 'yes', description: 'skip the board approval pause', values: () => ON_OFF },
-  { key: 'quiet', description: 'log lines instead of the live view', values: () => ON_OFF },
-  { key: 'dirty', description: 'run with uncommitted changes', values: () => ON_OFF },
-  { key: 'tui', description: 'the full-screen view, off for the table', values: () => ON_OFF },
-  { key: 'icons', description: 'which glyph set the view uses', values: () => ICON_SETS },
-  { key: 'routing', description: 'route each task to a model tier', values: () => ON_OFF },
-  { key: 'budget', description: 'stop the run at a spend: /budget <usd>|off', values: () => OFF_ONLY },
-  { key: 'card-budget', description: 'fail a card at a spend: /card-budget <usd>|off', values: () => OFF_ONLY },
-  { key: 'sandbox', description: 'confine Claude Code agents, verify commands, setup and API shells: off, auto or required (this session)', values: () => SANDBOX_CHOICES },
-];
+/** The words a setting takes at the prompt, from its kind in the table. */
+function settingWords(s: SessionSetting): SettingSpec['values'] {
+  switch (s.kind) {
+    case 'toggle': case 'seconds': return () => ON_OFF;
+    case 'dollars': return () => OFF_ONLY;
+    case 'count': return undefined;
+    case 'choice': return (ctx) => s.options(ctx).map((o) => ({ text: o.value, description: o.description }));
+  }
+}
+
+/** /model is no session setting (it has its own API in replModels.ts), but /set takes it after replans. */
+const MODEL_SETTING: SettingSpec = { key: 'model', description: 'the global model pin, or off', values: (ctx) => [...modelNames(ctx), { text: 'off', description: 'drop the global pin' }] };
+
+export const SETTINGS: SettingSpec[] = SESSION_SETTINGS.flatMap((s) => {
+  const spec: SettingSpec = { key: s.key, description: s.description, values: settingWords(s) };
+  return s.key === 'replans' ? [spec, MODEL_SETTING] : [spec];
+});
 
 export const SETTING_KEYS: string[] = SETTINGS.map((s) => s.key);
 
@@ -147,7 +135,7 @@ const COMMANDS: CommandSpec[] = [
           ? [{ text: 'key', description: 'enter or replace its API key' }, { text: 'model', description: "re-pick from the endpoint's models" }]
           : [],
   },
-  { name: 'config', summary: 'write the session settings to .dulger/config.json', args: (_ctx, _t, i) => (i === 1 ? CONFIG_SUBS : []) },
+  { name: 'config', summary: 'save the session settings', args: (_ctx, _t, i) => (i === 1 ? CONFIG_SUBS : []) },
   ...SETTINGS.filter((s) => s.key !== 'model').map((s) => ({ name: s.key, summary: s.description, args: (ctx: PredictContext, _t: string[], i: number) => (i === 1 ? s.values?.(ctx) ?? [] : []) })),
   { name: 'set', summary: 'any setting in one command: /set <key> <value>', args: (ctx, tokens, i) => (i === 1 ? settingNames() : i === 2 ? settingValues(tokens[1]?.toLowerCase(), ctx) : []) },
   { name: 'help', summary: 'this list' },

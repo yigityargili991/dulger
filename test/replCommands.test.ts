@@ -10,7 +10,7 @@ const ctx: PredictContext = {
   providers: ['openai', 'deepseek'],
   roles: ['planner', 'worker', 'checker', 'docs', 'reporter'],
   aliases: [
-    { name: 'fable', harness: 'claude', model: 'claude-fable-5-1' },
+    { name: 'fable', harness: 'claude', model: 'fable' },
     { name: 'sonnet', harness: 'claude', model: 'sonnet' },
   ],
   runIds: ['2026-01-01-a', '2026-01-02-b'],
@@ -30,16 +30,17 @@ test('goals and unknown commands are not predicted at all', () => {
 
 test('the command names complete as they are typed, and describe themselves', () => {
   const all = suggestCommand('/', ctx);
-  assert.equal(all.candidates.length, 35);
+  assert.equal(all.candidates.length, 37);
   assert.equal(all.partial, '/', 'the slash is part of the word being completed');
   assert.equal(all.ghost, '', 'nothing beyond the slash is shared by every command');
   assert.equal(why(all, '/memory'), 'what agents learned: list, add, rm, compact, path');
 
-  assert.deepEqual(words(suggestCommand('/mo', ctx)), ['/model']);
-  assert.equal(suggestCommand('/mo', ctx).ghost, 'del', 'Tab takes the rest of the word only');
-  assert.deepEqual(words(suggestCommand('/m', ctx)), ['/merge', '/memory', '/model']);
-  assert.equal(suggestCommand('/m', ctx).ghost, '', 'three matches share nothing beyond what is typed');
-  assert.deepEqual(words(suggestCommand('/MO', ctx)), ['/model'], 'matching ignores case');
+  assert.deepEqual(words(suggestCommand('/mod', ctx)), ['/model']);
+  assert.equal(suggestCommand('/mod', ctx).ghost, 'el', 'Tab takes the rest of the word only');
+  assert.deepEqual(words(suggestCommand('/mo', ctx)), ['/model', '/mouse']);
+  assert.deepEqual(words(suggestCommand('/m', ctx)), ['/merge', '/memory', '/model', '/mouse']);
+  assert.equal(suggestCommand('/m', ctx).ghost, '', 'four matches share nothing beyond what is typed');
+  assert.deepEqual(words(suggestCommand('/MOD', ctx)), ['/model'], 'matching ignores case');
   assert.equal(suggestCommand('/MODEL ', ctx).ghost, 'planner ', 'the words offered are lower case as they are');
 });
 
@@ -53,7 +54,7 @@ test('a word that is still empty is offered the best value with a space after it
 test('/model predicts roles, aliases, backends and the two choices', () => {
   const roles = suggestCommand('/model ', ctx);
   assert.deepEqual(words(roles), ['planner', 'worker', 'checker', 'docs', 'reporter', 'fable', 'sonnet']);
-  assert.equal(why(roles, 'fable'), 'claude / claude-fable-5-1');
+  assert.equal(why(roles, 'fable'), 'claude / fable');
   assert.equal(why(roles, 'worker'), "the worker's backend and model");
   assert.equal(why(roles, 'reporter'), "the progress reporter's backend and model");
 

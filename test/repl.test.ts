@@ -6,10 +6,14 @@ import { join } from 'node:path';
 import { command, type Session } from '../src/repl.ts';
 import { sessionConfig } from '../src/replModels.ts';
 import { DEFAULT_CONFIG, loadConfig, roleConfig } from '../src/config.ts';
+import { userConfigFile } from '../src/sandbox.ts';
+
+// Saves write roles and providers into the user's config file: keep the real one out of these tests.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'dulger-repl-home-'));
 
 function setup(t: TestContext, stored: object = {}) {
   const repo = mkdtempSync(join(tmpdir(), 'dulger-repl-'));
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  t.after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(userConfigFile(), { force: true }); });
   mkdirSync(join(repo, '.dulger'));
   const file = join(repo, '.dulger/config.json');
   writeFileSync(file, JSON.stringify(stored));
@@ -29,13 +33,13 @@ test('REPL sets mixed role models and shows effective choices without writing co
   await run('/model checker sonnet');
   await run('/model docs haiku');
   assert.equal(resolve('planner').harness, 'claude');
-  assert.equal(resolve('planner').model, 'claude-fable-5-1');
+  assert.equal(resolve('planner').model, 'fable');
   assert.equal(resolve('worker').harness, 'deepseek');
   assert.equal(resolve('worker').model, 'deepseek-flash');
   assert.equal(resolve('checker').model, 'sonnet');
   assert.equal(resolve('docs').model, 'haiku');
   await run('/model');
-  assert.match(output.at(-1)!, /planner.*claude.*claude-fable-5-1.*pinned/);
+  assert.match(output.at(-1)!, /planner.*claude.*fable.*pinned/);
   assert.match(output.at(-1)!, /worker.*deepseek.*deepseek-flash.*provider\/harness default/);
   await run('/model planner astra');
   assert.equal(resolve('planner').harness, 'codex');
@@ -64,10 +68,10 @@ test('auto keeps the backend, removes pins and reports the active routing policy
   await run('/model worker auto');
   assert.equal(resolve('worker').harness, 'codex');
   assert.equal(sessionConfig(repo, session).roles.worker?.model, undefined);
-  assert.equal(resolve('worker').model, 'gpt-5.6-sol');
+  assert.equal(resolve('worker').model, 'gpt-6.1-sol');
   assert.equal(resolve('worker').maxBudgetUsd, 5);
   assert.match(output.at(-1)!, /auto tiers/);
-  assert.match(output.at(-1)!, /low: gpt-5.6-luna.*high: gpt-6-astra/);
+  assert.match(output.at(-1)!, /low: gpt-6-luna.*high: gpt-6-astra/);
   await run('/routing off');
   await run('/model worker');
   assert.equal(resolve('worker').model, undefined);
@@ -91,7 +95,7 @@ test('role choices override global pins in either order; reset restores the repo
   assert.match(output.at(-1)!, /repository reset/);
   await run('/model off');
   assert.equal(resolve('planner').model, 'gpt-6-astra');
-  assert.equal(resolve('checker').model, 'claude-fable-5-1');
+  assert.equal(resolve('checker').model, 'fable');
 });
 
 test('/set model uses the same parser, and bad commands leave the session unchanged', async (t) => {
@@ -120,15 +124,18 @@ test('/config save persists the effective mix, removes old pins for auto, and pr
   await run('/yes on'); await run('/quiet on'); await run('/dirty on');
   await run('/config save');
   const saved = JSON.parse(readFileSync(file, 'utf8'));
+  const user = JSON.parse(readFileSync(userConfigFile(), 'utf8'));
   assert.equal(saved.concurrency, 4);
   assert.deepEqual(saved.custom, stored.custom);
   assert.deepEqual(saved.providers, stored.providers);
   assert.deepEqual(saved.routing, stored.routing);
-  assert.equal(saved.roles.planner.customRoleSetting, 'keep');
-  assert.equal(saved.roles.planner.maxBudgetUsd, 2);
-  assert.equal(saved.roles.planner.model, 'gpt-6-astra');
-  assert.equal(saved.roles.worker.harness, 'codex');
-  assert.equal(Object.hasOwn(saved.roles.worker, 'model'), false);
+  assert.deepEqual(saved.roles, stored.roles, 'roles go to the user file, which wins over the repository\'s');
+  assert.deepEqual(Object.keys(user), ['roles']);
+  assert.equal(user.roles.planner.customRoleSetting, 'keep');
+  assert.equal(user.roles.planner.maxBudgetUsd, 2);
+  assert.equal(user.roles.planner.model, 'gpt-6-astra');
+  assert.equal(user.roles.worker.harness, 'codex');
+  assert.equal(Object.hasOwn(user.roles.worker, 'model'), false, 'auto removes the repository\'s pin');
   assert.equal(Object.hasOwn(saved, 'yes'), false);
   assert.equal(Object.hasOwn(saved, 'quiet'), false);
   assert.equal(Object.hasOwn(saved, 'allowDirty'), false);
@@ -140,13 +147,14 @@ test('/config save persists the effective mix, removes old pins for auto, and pr
   assert.deepEqual(readdirSync(join(repo, '.dulger')), ['config.json']);
 });
 
-test('/config save persists global pins with role exceptions and creates a missing config', async (t) => {
+test('/config save persists global pins with role exceptions and creates a missing user config, but no empty repository one', async (t) => {
   const { repo, file, run, session } = setup(t);
   rmSync(join(repo, '.dulger'), { recursive: true });
   await run('/model global-pin');
   await run('/model worker deepseek');
   await run('/config save');
-  assert.ok(existsSync(file));
+  assert.ok(existsSync(userConfigFile()));
+  assert.ok(!existsSync(file));
   const reloaded = loadConfig(repo);
   assert.equal(roleConfig(reloaded, 'planner').model, 'global-pin');
   assert.equal(roleConfig(reloaded, 'worker').model, 'deepseek-flash');
@@ -205,7 +213,7 @@ test('/provider asks for the key, then picks the model from the endpoint, and ke
   await run('/provider');
   assert.match(output.at(-1)!, /openrouter.*openrouter\.ai.*qwen\/qwen3-coder.*\$OPENROUTER_API_KEY \(keys file\)/);
   await run('/config save');
-  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  const saved = JSON.parse(readFileSync(userConfigFile(), 'utf8'));
   assert.equal(saved.providers.openrouter.apiKeyEnv, 'OPENROUTER_API_KEY');
   assert.equal(JSON.stringify(saved).includes('sk-or-test-123'), false, 'the key never reaches the repository config');
 

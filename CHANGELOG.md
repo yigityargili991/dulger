@@ -2,8 +2,140 @@
 
 ## Unreleased
 
+- Jev, TypeSafe's calibrated scoring model, can tag each task's difficulty instead of the planner.
+  `routing.router` is `planner` (the default), `jev-openrouter` (`OPENROUTER_API_KEY`),
+  `jev-typesafe` (`TYPESAFE_API_KEY`) or `jev-local` (a llama-server running clef-flash on
+  `http://127.0.0.1:8080`); `routing.jev` changes the endpoint, e.g. its port. The first interactive
+  `dulger`, `dulger run` or `dulger order` asks which and saves the answer in your own config file;
+  Router in Settings and `/router` change it later. When Jev fails, the run keeps the planner's tags
+  and logs a warning.
+- The default model tiers are current again. On Claude Code the high tier is the `fable` alias, not
+  `claude-fable-5-1`, so all three tiers (`haiku`, `sonnet`, `fable`) follow the newest model of their
+  family. The Codex tiers are `gpt-6-luna`, `gpt-6.1-sol` and `gpt-6-astra` (were `gpt-5.6-luna`,
+  `gpt-5.6-sol`, `gpt-6-astra`). A `routing.models` entry in `.dulger/config.json` still wins.
 - The README is now a short introduction. The full manual moved to `docs/manual.md`, and the
   documentation site is built from it.
+- `dulger` with no arguments opens the dulger app when stdin and stdout are terminals, the full-screen
+  view is on and `--quiet` is not given. Its tabs: Home (a Goal box with a Run / Plan switch, the
+  latest runs, and a Roles box with each role's backend, the settings that change a run and anything
+  that would stop one), Runs (every run with its state, facts and cards; review, resume, retry, edit
+  plan, merge, full report and clean leftovers are keys), Settings (every session setting in one form;
+  save to the repository, discard, profiles), Models (each role's backend and model, model sets, the
+  global pin), Providers (API providers, masked key entry, the models an endpoint lists), Memory (add,
+  remove and compact what agents learned) and Doctor (the readiness checks, each one jumping to its
+  fix). A result opens in a review: the report, the changed files with coloured diffs, verification,
+  and a merge that shows its source, destination and blockers and asks before merging. An unstarted
+  plan opens in a plan editor: cards, tasks, dependencies as checkboxes that cannot form a loop, verify
+  commands shown whole, a worker override, undo, and Ctrl-S that validates the whole plan before
+  saving; it holds the run's lock only while it is on screen.
+- The screens show state only: labels, values, glyphs and counts, in boxes sized to what they hold.
+  What a row means and what each key does are in Help (`?`, or F1 while typing), which starts with
+  the selected item; the footer is a short key bar ending in `? help`. Tab badges are a glyph and a
+  number (`▶2` unfinished runs, `✎2` unsaved settings, `!1`, `✗1`, `✓`), `✎` marks what this session
+  changed, `●` a switch that is on, `◌` an interrupted run, and the selection in a box without the
+  keyboard is `›`; with ASCII icons the whole frame is ASCII. An action that cannot run now says why
+  when you press it (`Resume: finished`). Dialogs are a title, the facts as rows and their buttons;
+  notices are a few words at the top right. Ctrl-P or `:` opens a command palette of names and keys.
+  Alt-1 to Alt-9 switch tabs everywhere; bare digits and `[` `]` only on a tab's own page. The mouse
+  and bracketed paste work throughout.
+- Changes in the app apply to the session. Nothing is written to the repository until Save to
+  repository (`s`), which shows the files and every change it writes (values the form has no field for
+  included), writes a role only when it differs, and never writes the session settings (Skip
+  approval, Quiet output, Allow dirty tree, Sandbox) or API keys. After a save, Commit settings…
+  offers to commit `.dulger/config.json` alone, with the message `dulger: save settings`, after a
+  confirmation that names the branch; Not now is the default and dulger never commits on its own.
+  Quitting does not ask about unsaved session settings; one line printed after the app closes names
+  them. A page with unsaved edits (the plan editor, a provider form) asks before it closes. `q` quits
+  from a tab's own page only; over a page opened on top of a tab, Ctrl-D quits.
+- The backend, the roles' backends and models, routing and API providers are saved to your own
+  `~/.config/dulger/config.json` (Save and `/config save`), no longer to `.dulger/config.json`, so they
+  and the keys stored for those providers follow you into every project, and they win over a
+  repository's own values. A provider that a saved role uses and only the repository defines is copied
+  there too. Saving only these leaves the repository's file as it was.
+- The app uses one name per thing: Docs agent, Skip approval, Run budget, Card budget, Routing and Full
+  screen in Settings and on Home, `default model` on Models, and the backend, `sandbox <mode>`,
+  `routing off` or `pin <model>` in the header.
+- The setup menu and the unfinished-runs question no longer come first: Home shows the session and
+  the unfinished runs. The line prompt opens instead of the app with `--quiet` or the full-screen view
+  off, without menus, and from the palette (Open the line prompt; `/quit` goes back to the app with the
+  same session). Its slash commands work as before, `/setup` opens the menu, and `/mouse on|off` is new.
+- A goal, resume or retry started from the app runs the readiness checks on the settings it will use
+  first: a failing check, uncommitted changes, a role without a model or a provider without a key stop
+  it in a dialog with a button for the page that fixes it, before any run record is made, and the goal
+  stays in its box. When `.dulger/config.json` is the only uncommitted change, Commit is the first
+  button and the launch carries on after the commit; Home lists the same as a short line, and Doctor
+  agrees with Home that uncommitted changes the session does not allow are an error.
+- The live run view is rebuilt on the same widgets. The plan pause is a review screen: the planner's
+  assumptions and what it left out, dulger's warnings, and every card with its tasks, dependencies and
+  verify commands shown whole (`verify —` when it has none), with Dispatch, Revise, Edit plan, Cancel
+  run and Keep in backlog. Enter still dispatches, typed text still revises the plan and Ctrl-C still
+  keeps it in the backlog; Edit plan opens the plan editor and comes back to the review, and Cancel run
+  now asks before it deletes the run. A reply typed and not sent is never taken as a go: Enter or
+  Dispatch goes back to it. Tab completes `go`, `cancel` and `/edit`. Enter and clicks are ignored for
+  300 ms after the review appears, after a revision and after a resize, and after a revision the plan
+  opens with your reply and what the planner did, marking cards `new` or `changed`. Stopping a card and
+  approving the new verify commands a replan brings are dialogs that still need the typed words `stop`
+  and `yes`; an approval waits while another dialog is open and ignores input for its first 300 ms.
+  Instructions for a card are a multi-line dialog. Tab cycles the board, the agents and the log, `z`
+  zooms a pane, help lists the keys that work now, the header keeps the goal in view, shows the cards
+  done as a bar and marks a paused run, and the log follows the newest lines until you scroll up.
+- Resuming from the app (Home, Runs or the review) asks once, in one dialog: the goal, what is done and
+  what resuming will build, and, when the run's saved settings differ from the session's, each
+  difference by its Settings name with Keep original or Use session (and Details for the rest). The run
+  then goes on without asking again. A retry from the app keeps the run's saved settings and its card
+  picker says so when the session's differ.
+- A run started from the app draws its live view on the app's screen and prints nothing on the normal
+  screen: no banner, no report underneath the app, no flash of the shell in between. The app shows
+  the outcome itself when the run ends.
+- Times in the run log, in the live view and in plain log lines, are local time instead of UTC, like
+  the other times dulger shows.
+- A new setting, `tui.mouse` (default `true`; Mouse in Settings, `/mouse`), turns wheel scrolling and
+  clicks in the full-screen views on or off; off leaves the mouse to the terminal for selecting text.
+  Mouse and Icons apply at once. `NO_COLOR` turns the colour off in the full-screen views too, which
+  then put the pointer before the focused box's title, bracket the active tab, buttons, labels and
+  typed fields, and put placeholders in parentheses.
+- "The latest run" is now the most recently started one everywhere: on Home and Runs, and for
+  `dulger resume`, `board`, `report` and `merge` without a run id; `dulger runs` lists by start time.
+- Clean leftovers, in the app and as `dulger clean`, leaves runs another dulger process is using alone
+  and says so, cleans the rest, and warns that the worktrees failed cards keep for a retry go too and
+  that the folders are shared by local clones of the repository.
+- A merge you started yourself is never aborted by dulger: the review names it as yours and blocks
+  merging the run until you finish or abort it. Abort is offered only for a merge dulger started for
+  that run, and its confirmation says what is lost.
+- A provider URL that contains credentials, a query or a fragment is refused: in the app, at
+  `/provider`, when settings are saved and from `--base-url`. Credentials already in a configured URL
+  are masked wherever the app or `/provider` shows it.
+- Text from the board and from agents is cleaned of terminal control sequences everywhere it is
+  printed, not only in the full-screen view: the plain table, log lines, the printed board and the
+  report. Piped output carries no escape sequences. Verify commands are spelled out the same way in
+  every view, invisible characters included, and the plan editor will not edit a command a text box
+  could silently change (a tab, a control or format character): remove it or type a new one.
+- A board whose `runId` does not match its folder, or whose branch or base names start with `-` and
+  could be read as git options, is refused with a message saying how to repair it, and dulger deletes or
+  merges a branch only when it is exactly `dulger/<runId>`.
+- A keys file that is not valid JSON is never overwritten: storing a key is refused with the file
+  named, and keys read from it show as unreadable.
+- Terminal input: a paste whose end marker, or an escape sequence, is split across two reads is put
+  back together instead of turning into typed keys, an unterminated paste is taken as it stands after
+  2 s, and keys are handled in the order they were typed. SIGTERM, SIGHUP and an outside SIGINT give the
+  terminal back (raw mode, mouse and paste modes, cursor) before the process ends.
+- The plain plan prompt asks before deleting a run on `cancel`, `abort`, `drop` or `discard`: only a
+  typed `yes` deletes. It completes `/edit`, and after a revision prints what you asked and what the
+  planner did. Ctrl-C while the planner plans or revises stops cleanly; `dulger run` prints how to plan
+  it again and exits with status 130.
+- The report says why a card did not land in plain words: stopped by you, its verify commands failed
+  and it never reached review, failed before its review, not started, or interrupted.
+- `/icons` and `/routing off` no longer reset the other `tui` and `routing` fields to their defaults,
+  which could overwrite a repository's tier models on `/config save`.
+- `dulger runs` lists a run whose board cannot be read as unreadable and carries on with the others
+  instead of stopping.
+- Merging a run whose result branch was deleted says that the branch no longer exists.
+- `/order` at the line prompt offers to review and merge the run it created when cards landed, not
+  the newest run in the list.
+- A `.dulger/profiles.json` that is not valid JSON, or not an object of profiles, gives an error that
+  names the file instead of a parser message.
+- `dulger --help` shows `dulger resume [runId]` (latest when omitted), and the line prompt's `/help`
+  describes `/setup`, `/runs` and how the full-screen view is turned off for good more accurately.
 
 ## 0.7.2 — 2026-11-14
 

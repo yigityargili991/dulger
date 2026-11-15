@@ -5,14 +5,14 @@ import { capabilities } from './adapters/capabilities.ts';
 import { getAdapter } from './adapters/index.ts';
 // A draft session: nothing is applied until Start, and nothing is written to repository config.
 import { harnessNames, roleConfig, type Config, type RoleConfig } from './config.ts';
-import { MODEL_ALIASES, MODEL_ROLES, sessionConfig } from './replModels.ts';
+import { MODEL_ROLES, MODEL_SETS, applyModelSet, candidateModels, sessionConfig, setupIssues, type ModelSetName } from './replModels.ts';
 import { listModels } from './adapters/models.ts';
 import { keySource } from './keys.ts';
 import { ask } from './ui/prompt.ts';
 import { plainText } from './tui/text.ts';
 import { select, type Choice, type SelectOptions, type Selection } from './tui/select.ts';
 import type { Session } from './repl.ts';
-import type { AgentRole, ModelTier } from './types.ts';
+import type { AgentRole } from './types.ts';
 
 export interface SetupPrompts {
   select(options: SelectOptions): Promise<Selection>;
@@ -21,35 +21,7 @@ export interface SetupPrompts {
   say(message: string): void;
 }
 const terminal: SetupPrompts = { select, ask, models: listModels, say: (message) => console.log(plainText(message)) };
-const SETS: Choice[] = [
-  { value: 'auto', label: 'Automatic tiers', description: 'Planner and reviewer use high; workers follow task difficulty and escalate on retries; docs and reporter use low.' },
-  { value: 'balanced', label: 'Balanced set', description: 'Pin workers to medium, planner and reviewer to high, docs and reporter to low. Ignores task difficulty.' },
-  { value: 'low', label: 'Low tier for every role', description: 'Pin every role to the configured low-tier model. Ignores task difficulty and retry escalation.' },
-  { value: 'high', label: 'High tier for every role', description: 'Pin every role to the configured high-tier model. Ignores task difficulty and retry escalation.' },
-];
-
-/** Apply a complete set, explicitly replacing old backend and model pins. */
-export function applyModelSet(draft: Session, config: Config, harness: string, set: string): void {
-  draft.overrides.harness = harness;
-  draft.overrides.routing = { ...config.routing, enabled: set === 'auto' };
-  draft.model = undefined;
-  draft.modelRoles = {};
-  for (const role of MODEL_ROLES) {
-    const tier: ModelTier = set === 'balanced' ? (role === 'worker' ? 'medium' : role === 'planner' || role === 'checker' ? 'high' : 'low') : set === 'high' ? 'high' : 'low';
-    const model = set === 'auto' ? undefined : config.routing.models[harness]?.[tier] ?? config.providers[harness]?.model;
-    draft.modelRoles[role] = { harness, model };
-  }
-}
-
-export function setupIssues(config: Config): string[] {
-  const issues: string[] = [];
-  for (const role of MODEL_ROLES) {
-    if ((role === 'docs' && !config.docs) || (role === 'reporter' && config.progressIntervalSec <= 0)) continue;
-    const rc = roleConfig(config, role);
-    if (config.providers[rc.harness] && !rc.model) issues.push(`${role} on ${rc.harness} needs a model; choose one for all roles or edit that role.`);
-  }
-  return issues;
-}
+const SETS: Choice[] = [...MODEL_SETS];
 
 function roleLabel(config: Config, role: AgentRole): string {
   const rc = roleConfig(config, role);
@@ -64,7 +36,7 @@ function harnessChoices(config: Config): Choice[] {
     description: name === 'fake' ? 'Local demo; no model calls.' : name === 'claude' ? 'Claude Code CLI.' : name === 'codex' ? 'Codex CLI. Progress reporting needs a separate Claude/API role.' : config.providers[name]!.baseUrl }));
 }
 
-/** Returns false on cancel. Existing flags and repository settings are the initial draft. */
+/** Returns false on cancel. Existing flags and saved settings are the initial draft. */
 export async function setupSession(repoRoot: string, session: Session, io: SetupPrompts = terminal): Promise<boolean> {
   const original = structuredClone(session);
   let draft = structuredClone(session);
@@ -85,11 +57,7 @@ export async function setupSession(repoRoot: string, session: Session, io: Setup
         catch (err) { note = `Could not load models: ${(err as Error).message}. Configured models and custom IDs are still available.`; }
       }
     }
-    const models = [...new Set([
-      ...(current ? [current] : []), ...Object.values(config.routing.models[harness] ?? {}),
-      ...MODEL_ALIASES.filter((a) => a.harness === harness).map((a) => a.model),
-      ...(provider?.model ? [provider.model] : []), ...(modelCache.get(harness) ?? []),
-    ])];
+    const models = candidateModels(config, harness, current, modelCache.get(harness));
     const picked = await io.select({ title: `Model for ${harness}`, description: note, selected: current ? `model:${current}` : undefined,
       choices: [...models.map((model) => ({ value: `model:${model}`, label: model })), { value: 'custom', label: 'Enter a model ID…', description: 'Use a model supported by this harness or provider.' }] });
     if (picked === null || picked === undefined) return picked;
@@ -111,7 +79,7 @@ export async function setupSession(repoRoot: string, session: Session, io: Setup
       { value: 'save-profile', label: 'Save these settings as a profile', description: 'Writes a named profile immediately; repository defaults stay unchanged.' },
       { value: 'limits', label: `Concurrency ${config.concurrency} · Run budget ${config.budgetUsd === undefined ? 'off' : '$' + config.budgetUsd}`, description: 'Set parallel cards and run/card dollar limits. Token-only harnesses cannot enforce dollar limits.' },
       { value: 'doctor', label: 'Check readiness', description: 'Check harness executables, credentials, Git and worktree prerequisites without a model call.' },
-      { value: 'harness', label: `Harness       ${config.harness}`, description: 'Choose the harness for all roles. Changing it resets role model overrides to automatic tiers.' },
+      { value: 'harness', label: `Backend       ${config.harness}`, description: 'Choose the backend for all roles. Changing it resets role model overrides to automatic tiers.' },
       { value: 'set', label: `Model set     ${setLabel}`, description: 'Automatic follows planner task difficulty. A pinned worker model overrides it, including retries.' },
       { value: 'model', label: 'Choose one model for all roles…', description: `Pin every role on ${config.harness} to the model you choose.` },
       ...MODEL_ROLES.map((role) => ({ value: `role:${role}`, label: roleLabel(config, role), description: `Override ${role}'s harness and model, or let its harness route automatically.` })),
@@ -165,13 +133,13 @@ export async function setupSession(repoRoot: string, session: Session, io: Setup
     }
     if (choice === 'restore') { draft = structuredClone(original); setLabel = 'Current settings'; continue; }
     if (choice === 'harness') {
-      const harness = await io.select({ title: 'Harness for all roles', description: 'Changing the harness resets role overrides to automatic tiers.', choices: harnessChoices(config), selected: config.harness });
+      const harness = await io.select({ title: 'Backend for all roles', description: 'Changing the backend resets role overrides to automatic tiers.', choices: harnessChoices(config), selected: config.harness });
       if (harness === null) return false;
       if (harness && harness !== config.harness) { applyModelSet(draft, config, harness, 'auto'); setLabel = 'Automatic tiers'; }
     } else if (choice === 'set') {
       const set = await io.select({ title: 'Model set', description: `Use the configured model tiers for ${config.harness}. Per-role overrides can be edited afterwards.`, choices: SETS, selected: SETS.find((s) => s.label === setLabel)?.value });
       if (set === null) return false;
-      if (set) { applyModelSet(draft, config, config.harness, set); setLabel = SETS.find((s) => s.value === set)!.label; }
+      if (set) { applyModelSet(draft, config, config.harness, set as ModelSetName); setLabel = SETS.find((s) => s.value === set)!.label; }
     } else if (choice === 'model') {
       const model = await chooseModel(config, config.harness, roleConfig(config, 'worker').model);
       if (model === null) return false;
@@ -183,11 +151,11 @@ export async function setupSession(repoRoot: string, session: Session, io: Setup
     } else if (choice.startsWith('role:')) {
       const role = choice.slice(5) as AgentRole;
       const current = roleConfig(config, role);
-      const harness = await io.select({ title: `Harness for ${role}`, choices: harnessChoices(config), selected: current.harness });
+      const harness = await io.select({ title: `Backend for ${role}`, choices: harnessChoices(config), selected: current.harness });
       if (harness === null) return false;
       if (!harness) continue;
       const mode = await io.select({ title: `Model for ${role}`, description: 'Automatic follows this harness’s routing settings. A pinned model takes precedence over task difficulty.', selected: config.roles[role]?.model ? 'pin' : 'auto', choices: [
-        { value: 'auto', label: config.routing.enabled ? 'Automatic tiers / harness default' : 'Harness default (routing is off)' }, { value: 'pin', label: 'Choose a model…' },
+        { value: 'auto', label: config.routing.enabled ? 'Automatic tiers / backend default' : 'Backend default (routing is off)' }, { value: 'pin', label: 'Choose a model…' },
       ] });
       if (mode === null) return false;
       if (!mode) continue;

@@ -6,7 +6,6 @@ import { cell, chop, fit, logLine, plainText, spread, width, wrap } from '../src
 import { createEditor, edit, submit } from '../src/tui/editor.ts';
 import { columns, render, type ViewState } from '../src/tui/view.ts';
 import { glyphs, resolveIcons } from '../src/tui/theme.ts';
-import type { PredictContext } from '../src/replCommands.ts';
 import type { AgentStatus, Board, Card } from '../src/types.ts';
 
 const plain = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
@@ -229,78 +228,72 @@ test('compact board keyboard navigation follows the displayed list across status
   } finally { tui.close(); }
 });
 
-test('the full-screen prompt draws the prediction, and Tab takes it', async () => {
+test('the plan review\'s reply completes go, cancel and /edit once something is typed, and Tab takes it', async () => {
   const { createTui } = await import('../src/tui/tui.ts');
-  const { suggestPlan } = await import('../src/replCommands.ts');
+  const { planAction, suggestReply } = await import('../src/commands.ts');
   const b = board([card('c1', 'backlog'), card('c2', 'done')]);
   let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
   let lines: string[] = [];
-  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
-    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  let now = 0;
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, now: () => (now += 1000), screen: {
+    rows: 16, cols: 60, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
   } });
   const promptLine = () => plain(lines.find((l) => l.includes('›')) ?? '');
   const bar = () => plain(lines[lines.length - 1]!);
   try {
-    const answer = tui.ask('plan', 'dispatch the plan?', suggestPlan);
-    assert.match(promptLine(), /plan › go /, 'Enter dispatches, so go is drawn after the cursor');
-    assert.match(bar(), /tab .*take/, 'and Tab is offered as the way to take it');
+    tui.setPhase('plan ready');
+    const answer = tui.reviewPlan({ read: planAction, suggest: suggestReply });
+    assert.match(promptLine(), /reply › ask for changes/, 'nothing typed, nothing predicted: Enter already dispatches');
 
     key({ name: 'char', ch: 'c' });
-    assert.match(promptLine(), /plan › cancel/, 'the ghost is what is left of the word');
-
+    assert.match(promptLine(), /reply › cancel/, 'the ghost is what is left of the word');
+    assert.match(bar(), /tab take/, 'and Tab is offered as the way to take it');
     key({ name: 'tab' });
-    assert.match(promptLine(), /plan › cancel/, 'Tab inserted the ghost, so it is text now');
-    assert.match(bar(), /tab .*board/, 'a word that is already complete leaves nothing to take');
-
+    assert.match(promptLine(), /reply › cancel/, 'Tab inserted the ghost, so it is text now');
     key({ name: 'enter' });
-    assert.equal(await answer, 'cancel');
+    assert.match(lines.map(plain).join('\n'), /Delete run/, 'a cancel asks first');
+    key({ name: 'escape' });
+
+    for (const ch of '/ed') key({ name: 'char', ch });
+    assert.match(promptLine(), /reply › \/edit/, '/edit is predicted too');
+    key({ name: 'tab' });
+    key({ name: 'enter' });
+    assert.equal(await answer, '/edit');
   } finally { tui.close(); }
 });
 
-test('a mid-line cursor leaves the prediction out, and Tab then changes focus', async () => {
+test('a reply typed and not sent is never dropped by Dispatch: Tab, Esc or a click away, then Enter, goes back to it', async () => {
   const { createTui } = await import('../src/tui/tui.ts');
-  const { suggestPlan } = await import('../src/replCommands.ts');
+  const { planAction, suggestReply } = await import('../src/commands.ts');
   const b = board([card('c1', 'backlog')]);
   let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
   let lines: string[] = [];
-  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
-    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
+  let now = 0;
+  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, now: () => (now += 1000), screen: {
+    rows: 16, cols: 80, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
   } });
   const promptLine = () => plain(lines.find((l) => l.includes('›')) ?? '');
   const bar = () => plain(lines[lines.length - 1]!);
+  let settled: string | undefined | null = null;
   try {
-    const answer = tui.ask('plan', 'dispatch the plan?', suggestPlan);
-    key({ name: 'char', ch: 'c' });
+    tui.setPhase('plan ready');
+    const answer = tui.reviewPlan({ read: planAction, suggest: suggestReply });
+    void answer.then((v) => { settled = v; });
+    for (const ch of 'split c2') key({ name: 'char', ch });
     key({ name: 'left' });
-    assert.equal(promptLine().trim(), 'plan › c', 'the ghost belongs after the cursor, which is not there');
-    assert.match(bar(), /tab .*board/, 'with nothing to take, Tab moves on');
-    key({ name: 'tab' });
-    assert.match(bar(), /select/, 'the board has the keys now');
-    key({ name: 'tab' });
-    assert.match(bar(), /tab .*board/, 'and Tab brings the prompt back');
-    key({ name: 'ctrl', ch: 'c' });
-    assert.equal(await answer, undefined, 'the prompt was never submitted');
-  } finally { tui.close(); }
-});
-
-test('the full-screen prompt completes commands the same way the plain one does', async () => {
-  const { createTui } = await import('../src/tui/tui.ts');
-  const { suggestCommand } = await import('../src/replCommands.ts');
-  const b = board([card('c1', 'backlog')]);
-  let key: (key: import('../src/tui/screen.ts').Key) => void = () => {};
-  let lines: string[] = [];
-  const tui = createTui({ getBoard: () => b, getAgents: () => [], icons: 'ascii', onInterrupt: () => {}, screen: {
-    rows: 12, cols: 40, paint: (frame) => { lines = frame; }, onKey: (fn) => { key = fn; }, onResize: () => {}, close: () => {},
-  } });
-  const ctx: PredictContext = { harnesses: ['claude', 'codex', 'fake'], providers: ['openai'], roles: ['planner', 'worker', 'checker', 'docs'],
-    aliases: [], runIds: ['r1'], cards: [], memory: [] };
-  try {
-    const answer = tui.ask('dulger', 'goal or command', (line) => suggestCommand(line, ctx));
-    for (const ch of '/mod') key({ name: 'char', ch });
-    assert.match(plain(lines.find((l) => l.includes('›')) ?? ''), /dulger › \/model/, 'the rest of the command is drawn');
-    key({ name: 'tab' });
+    assert.equal(promptLine().trim(), 'reply › split c2', 'mid-line, nothing is predicted');
+    for (const away of [{ name: 'tab' }, { name: 'escape' }] as const) {
+      key({ name: 'end' });
+      key(away);
+      assert.match(bar(), /(⏎|Enter) reply/, `${away.name}: the footer says what Enter does now`);
+      key({ name: 'enter' });
+      await new Promise((r) => setImmediate(r));
+      assert.equal(settled, null, `${away.name} then Enter did not dispatch`);
+      assert.ok(promptLine().includes('split c2'), 'the reply is still there');
+    }
+    // Back in the reply, Enter sends it.
     key({ name: 'enter' });
-    assert.equal(await answer, '/model');
+    assert.equal(await answer, 'split c2');
   } finally { tui.close(); }
 });
 

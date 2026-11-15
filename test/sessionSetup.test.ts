@@ -9,10 +9,14 @@ import { roleConfig } from '../src/config.ts';
 import type { Session } from '../src/repl.ts';
 import type { Selection, SelectOptions } from '../src/tui/select.ts';
 import type { Task } from '../src/types.ts';
+import { userConfigFile } from '../src/sandbox.ts';
+
+// Saves write roles into the user's config file: keep the real one out of these tests.
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'dulger-setup-home-'));
 
 function fixture(t: TestContext, stored: object = {}) {
   const repo = mkdtempSync(join(tmpdir(), 'dulger-setup-'));
-  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  t.after(() => { rmSync(repo, { recursive: true, force: true }); rmSync(userConfigFile(), { force: true }); });
   mkdirSync(join(repo, '.dulger'));
   const path = join(repo, '.dulger/config.json');
   writeFileSync(path, JSON.stringify(stored));
@@ -61,9 +65,9 @@ test('switching harness clears stale pins and automatic workers follow planner d
   const { io } = prompts(['harness', 'codex', 'start']);
   assert.equal(await setupSession(repo, session, io), true);
   const config = sessionConfig(repo, session);
-  assert.equal(roleConfig(config, 'worker', { task }).model, 'gpt-5.6-luna');
+  assert.equal(roleConfig(config, 'worker', { task }).model, 'gpt-6-luna');
   assert.equal(roleConfig(config, 'worker', { task: { ...task, complexity: 'high' } }).model, 'gpt-6-astra');
-  assert.equal(roleConfig(config, 'worker', { task: { ...task, attempts: 2 } }).model, 'gpt-5.6-sol');
+  assert.equal(roleConfig(config, 'worker', { task: { ...task, attempts: 2 } }).model, 'gpt-6.1-sol');
   assert.equal(roleConfig(config, 'worker').maxBudgetUsd, 8);
   assert.equal(roleConfig(config, 'checker').harness, 'codex');
 });
@@ -91,8 +95,8 @@ test('a custom model for every role overrides old role and global pins, and save
   assert.equal(messages.length, 1);
   assert.equal(readFileSync(path, 'utf8'), disk);
   saveSessionConfig(repo, session);
-  assert.equal(JSON.parse(readFileSync(path, 'utf8')).unrelated, 'keep');
-  assert.equal(JSON.parse(readFileSync(path, 'utf8')).roles.worker.model, 'custom-v2');
+  assert.equal(readFileSync(path, 'utf8'), disk, 'roles go to the user file only');
+  assert.equal(JSON.parse(readFileSync(userConfigFile(), 'utf8')).roles.worker.model, 'custom-v2');
 });
 
 test('cancel rolls back the whole draft, including after changing a harness', async (t) => {

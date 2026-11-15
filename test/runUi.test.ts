@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createTui } from '../src/tui/tui.ts';
+import { planAction } from '../src/commands.ts';
 import { pager } from '../src/tui/pager.ts';
 import type { Screen, Key } from '../src/tui/screen.ts';
 import { width } from '../src/tui/text.ts';
@@ -11,31 +12,37 @@ function mockScreen() {
   return { screen, key: (k: Key) => key(k), resize: () => resize(), get closed() { return closed; }, get lines() { return lines; } };
 }
 const board: Board = { runId: 'ui', goal: 'test', baseRef: 'abc', baseBranch: 'main', runBranch: 'dulger/ui', createdAt: new Date().toISOString(), costUsd: 0, cards: [{ id: 'c1', title: 'Card', description: '', dependsOn: [], acceptanceCriteria: [], verify: [], tasks: [], status: 'in_progress', attempts: 0, feedback: [], costUsd: 0 }] };
-test('live controls require stop confirmation, cancel independently and never consume prompt typing', async () => {
+const clock = () => { let t = 0; return () => (t += 1000); };
+const approval = { title: 'Approve new verify commands', message: 'm', items: [{ command: 'echo hi' }], word: 'yes', prompt: 'type yes to confirm', confirm: 'Run', cancel: 'Drop' };
+test('live controls require stop confirmation, cancel independently and never consume reply typing', async () => {
   const mock = mockScreen(); const stopped: string[] = []; const guidance: string[] = []; let pauses = 0; let interrupts = 0;
-  const tui = createTui({ screen: mock.screen, getBoard: () => board, getAgents: () => [], icons: 'ascii', onInterrupt() { interrupts++; }, controls: { togglePause() { pauses++; return true; }, stopCard(id) { stopped.push(id); }, guideCard(id, text) { guidance.push(`${id}:${text}`); } } });
+  const tui = createTui({ screen: mock.screen, getBoard: () => board, getAgents: () => [], icons: 'ascii', now: clock(), onInterrupt() { interrupts++; }, controls: { togglePause() { pauses++; return true; }, stopCard(id) { stopped.push(id); }, guideCard(id, text) { guidance.push(`${id}:${text}`); } } });
   try {
     tui.setPhase('running'); mock.key({ name: 'char', ch: 'p' }); assert.equal(pauses, 1);
     mock.key({ name: 'char', ch: 'x' }); mock.key({ name: 'ctrl', ch: 'c' }); assert.deepEqual(stopped, []); assert.equal(interrupts, 0);
     mock.key({ name: 'char', ch: 'x' }); for (const ch of 'stop') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.deepEqual(stopped, ['c1']);
     mock.key({ name: 'char', ch: 'i' }); for (const ch of 'keep API') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.deepEqual(guidance, ['c1:keep API']);
-    const answer = tui.ask('plan', 'reply'); for (const ch of 'pix') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.equal(await answer, 'pix'); assert.equal(pauses, 1);
+    // At the plan review the same letters are a reply to the planner, never controls.
+    tui.setPhase('plan ready');
+    const answer = tui.reviewPlan({ read: planAction }); for (const ch of 'pix') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.equal(await answer, 'pix'); assert.equal(pauses, 1);
   } finally { tui.close(); }
   assert.equal(mock.closed, 1);
 });
-test('a confirmation prompt recalls nothing typed earlier, and its signal closes it unanswered', async () => {
+test('the approval field recalls nothing typed earlier, and its signal closes it unanswered', async () => {
   const mock = mockScreen();
-  const tui = createTui({ screen: mock.screen, getBoard: () => board, getAgents: () => [], icons: 'ascii', onInterrupt() {} });
+  const tui = createTui({ screen: mock.screen, getBoard: () => board, getAgents: () => [], icons: 'ascii', now: clock(), onInterrupt() {} });
   try {
-    const plan = tui.ask('plan', 'reply'); for (const ch of 'yes') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.equal(await plan, 'yes');
-    const confirm = tui.ask('approve', 'type yes', undefined, { history: [] }); mock.key({ name: 'up' }); mock.key({ name: 'enter' });
-    assert.equal(await confirm, '', 'up finds no earlier yes, so Enter sends an empty line');
+    tui.setPhase('plan ready');
+    const plan = tui.reviewPlan({ read: planAction }); for (const ch of 'yes') mock.key({ name: 'char', ch }); mock.key({ name: 'enter' }); assert.equal(await plan, 'yes');
+    tui.setPhase('running');
+    const confirm = tui.approve(approval); mock.key({ name: 'up' }); mock.key({ name: 'enter' });
+    assert.equal(await confirm, false, 'up finds no earlier yes, so Enter refuses');
     const controller = new AbortController();
-    const pending = tui.ask('approve', 'type yes to confirm', undefined, { history: [], signal: controller.signal });
+    const pending = tui.approve({ ...approval, signal: controller.signal });
     assert.ok(mock.lines.join('\n').includes('type yes to confirm'));
     controller.abort();
-    assert.equal(await pending, undefined);
-    assert.ok(!mock.lines.join('\n').includes('type yes to confirm'), 'the prompt line is gone');
+    assert.equal(await pending, false);
+    assert.ok(!mock.lines.join('\n').includes('type yes to confirm'), 'the dialog is gone');
   } finally { tui.close(); }
 });
 test('pager scrolls and reflows long diffs, strips control sequences and restores terminal once', async () => {

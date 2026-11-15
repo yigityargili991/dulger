@@ -1,7 +1,7 @@
 // Shared keyboard listbox for session setup. Rendering and terminal ownership stay in the TUI.
 import { openScreen, type Screen } from './screen.ts';
 import { c } from './theme.ts';
-import { cell, plainText, wrap } from './text.ts';
+import { cell, pasteText, plainText, wrap } from './text.ts';
 
 export interface Choice { value: string; label: string; description?: string }
 export interface SelectOptions {
@@ -50,6 +50,7 @@ export function select(options: SelectOptions, suppliedScreen?: Screen): Promise
         case 'pageup': index = Math.max(0, index - Math.max(1, screen.rows - 10)); break;
         case 'pagedown': index = Math.min(choices.length - 1, index + Math.max(1, screen.rows - 10)); break;
         case 'char': query += key.ch; index = 0; break;
+        case 'paste': query += pasteText(key.text); index = 0; break;
         case 'backspace': query = [...query].slice(0, -1).join(''); index = 0; break;
       }
       index = Math.max(0, index);

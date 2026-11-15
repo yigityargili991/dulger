@@ -56,7 +56,7 @@ export function createDispatcher(rt: Runtime, replan: (failed: Card[]) => Promis
     const failed = board.cards.filter((card) => card.status === 'failed' && !handled.has(card.id));
     for (const card of failed) {
       handled.add(card.id);
-      if (card.failure === 'infrastructure') log(`card ${card.id} failed on dulger's side, not on its work; dulger resume retries it from its worktree`);
+      if (card.failure === 'infrastructure') log(`card ${card.id} failed on dulger's side, not on its work; resuming the run retries it from its worktree`);
     }
     const byWork = failed.filter((card) => card.failure !== 'infrastructure' && !card.stopped);
     if (byWork.length && (board.replans ?? 0) < config.maxReplans) await replan(byWork);

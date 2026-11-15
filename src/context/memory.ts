@@ -7,7 +7,8 @@
 import { createHash } from 'node:crypto';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { STATE_DIR, type MemoryConfig } from '../config.ts';
+import { CliError } from '../errors.ts';
+import { STATE_DIR, type Config, type MemoryConfig } from '../config.ts';
 import { projectDataDir } from '../paths.ts';
 import type { HarnessName } from '../types.ts';
 
@@ -241,6 +242,39 @@ export function openMemory(repoRoot: string, cfg: MemoryConfig): MemoryStore {
       return out;
     },
   };
+}
+
+// ---- curation: what /memory and `dulger memory` do, as data ----
+// The file is memoryPath(repoRoot, config.memory).
+
+/** Every learning, folded, oldest first, and the file they live in. */
+export function listMemory(repoRoot: string, config: Pick<Config, 'memory'>): { path: string; items: Learning[] } {
+  const memory = openMemory(repoRoot, config.memory);
+  return { path: memory.path, items: memory.load() };
+}
+
+/**
+ * Record a learning by hand, with the repository paths the text mentions. Returns it, or undefined when
+ * it is already known (as itself or in other words). Throws CliError for an empty text.
+ */
+export function addMemory(repoRoot: string, config: Pick<Config, 'memory' | 'harness'>, text: string): Learning | undefined {
+  if (!text.trim()) throw new CliError('memory add needs a text');
+  const [added] = openMemory(repoRoot, config.memory).add([{ text, files: extractPaths(text, repoRoot), runId: 'manual', cardId: 'manual', harness: config.harness }]);
+  return added;
+}
+
+/**
+ * Forget the learning `id`; every learning whose id starts with `id` goes with it. False when none
+ * matched. Throws CliError for an empty id.
+ */
+export function removeMemory(repoRoot: string, config: Pick<Config, 'memory'>, id: string): boolean {
+  if (!id) throw new CliError('memory rm needs an id');
+  return openMemory(repoRoot, config.memory).remove(id);
+}
+
+/** Drop learnings about files that are all gone and fold repeated sightings; see MemoryStore.compact. */
+export function compactMemory(repoRoot: string, config: Pick<Config, 'memory'>): { kept: number; dropped: Learning[]; merged: number } {
+  return openMemory(repoRoot, config.memory).compact(repoRoot);
 }
 
 export function renderLearnings(items: Learning[]): string {

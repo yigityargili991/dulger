@@ -151,7 +151,7 @@ test('mode semantics: off, auto and required, where the runtime works and where 
   const broken = () => { calls++; return { ok: false, reason: 'Sandbox dependencies not available: socat not installed', fix: 'install socat: sudo pacman -S socat' }; };
   const off = sandboxStatus('off', { probe: works });
   assert.deepEqual([off.active, calls], [false, 0], 'a run with the sandbox off asks the runtime nothing');
-  assert.deepEqual(sandboxNotice(off), ['sandbox off: agents and verify commands run with your privileges (dulger doctor explains the sandbox)']);
+  assert.deepEqual(sandboxNotice(off), ['sandbox off: agents and verify commands run with your privileges (Doctor explains the sandbox)']);
   assert.equal(sandboxCheck(off).status, 'warning');
   assert.match(sandboxCheck(sandboxStatus('off', { probe: works, probeOff: true })).detail, /^off: .*The runtime works here\./);
   assert.match(sandboxCheck(sandboxStatus('off', { probe: broken, probeOff: true })).detail, /When enabled, the runtime does not work here: Sandbox dependencies not available: socat not installed\. Fix: install socat/);
@@ -180,10 +180,10 @@ test('mode semantics: off, auto and required, where the runtime works and where 
 test('the policy comes from defaults, then the user\'s own file, then the flag or the session; never from the repository', (t) => {
   const root = repo(t);
   assert.deepEqual(loadConfig(root).sandbox, SANDBOX_DEFAULTS);
-  userConfig(t, { sandbox: { mode: 'auto', allowWrite: ['~/.cargo/registry'], denyRead: ['/srv/secrets'], domains: { verify: ['index.crates.io', '*.npmjs.org', 'localhost:8080'] } }, harness: 'ignored for now' });
+  userConfig(t, { sandbox: { mode: 'auto', allowWrite: ['~/.cargo/registry'], denyRead: ['/srv/secrets'], domains: { verify: ['index.crates.io', '*.npmjs.org', 'localhost:8080'] } }, concurrency: 9 });
   const fromFile = loadConfig(root).sandbox;
   assert.deepEqual(fromFile, { mode: 'auto', allowWrite: [join(homedir(), '.cargo/registry')], allowRead: [], denyRead: ['/srv/secrets'], domains: { setup: [], verify: ['index.crates.io', '*.npmjs.org', 'localhost:8080'], agent: [] } });
-  assert.equal(loadConfig(root).harness, 'claude', 'only the sandbox key is read from the user file');
+  assert.equal(loadConfig(root).concurrency, 3, 'only the sandbox and the USER_KEYS are read from the user file');
   assert.deepEqual(loadConfig(root, {}, 'required').sandbox, { ...fromFile, mode: 'required' }, 'the flag sets the mode, the file the rest');
   const session: Session = { overrides: {}, yes: false, quiet: false, allowDirty: false, sandbox: 'off' };
   assert.equal(sessionConfig(root, session).sandbox.mode, 'off');

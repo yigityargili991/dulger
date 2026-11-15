@@ -5,7 +5,22 @@ import { STATE_DIR } from '../config.ts';
 import { worktreesDir } from '../paths.ts';
 import type { Board, BoardEvent, Card, PlannerResult, Task } from '../types.ts';
 
+/**
+ * A run id is a single directory name under .dulger/runs, never a path. dulger makes them as
+ * `<date>-<time>-<hex>`, so a plain name starting with a letter or digit. Anything with a path
+ * separator, `..`, or a leading dot/dash is refused, so a run id (from a board, the command line or a
+ * run directory) can never escape the runs directory into a traversal.
+ */
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function assertRunId(runId: string): void {
+  if (typeof runId !== 'string' || !RUN_ID.test(runId) || runId.includes('..')) {
+    throw new Error(`invalid run id ${JSON.stringify(runId)}: a run id is a plain name (letters, digits, dot, dash, underscore), not a path.`);
+  }
+}
+
 export function runDir(repoRoot: string, runId: string): string {
+  assertRunId(runId);
   return join(repoRoot, STATE_DIR, 'runs', runId);
 }
 
@@ -18,6 +33,7 @@ export function logDir(repoRoot: string, runId: string): string {
 }
 
 export function worktreeDir(repoRoot: string, runId: string, cardId: string): string {
+  assertRunId(runId);
   return join(worktreesDir(repoRoot), runId, cardId);
 }
 
@@ -36,6 +52,11 @@ export function loadBoard(repoRoot: string, runId: string): Board {
   const board = JSON.parse(readFileSync(boardPath(repoRoot, runId), 'utf8')) as Board;
   for (const c of board.cards) migrate(c);
   validateBoard(board);
+  // The directory a board is read from decides which run it is; a board.json whose runId says otherwise
+  // (a hand-edit, a mis-moved file) is refused, so it cannot stand in for, delete or merge another run.
+  if (board.runId !== runId) {
+    throw new Error(`run ${runId}'s board.json has runId ${JSON.stringify(board.runId)}; they must match. Set runId to ${JSON.stringify(runId)} in the file, or move it to runs/${board.runId}/.`);
+  }
   return board;
 }
 
@@ -129,6 +150,12 @@ export function applyReplan(board: Board, plan: PlannerResult): { replaced: Card
 
 /** Throws with a readable message when the board is structurally broken (e.g. after hand edits). */
 export function validateBoard(board: Board): void {
+  // A board's refs become git arguments (diff, rev-parse, merge, branch -D). A valid board's baseRef is a
+  // commit hash and its runBranch is `dulger/<id>`, so neither starts with "-"; refuse one that does, so a
+  // crafted or corrupt board can never slip a ref in as a git option. Absent/older fields are left alone.
+  for (const [field, value] of [['baseRef', board.baseRef], ['runBranch', board.runBranch]] as const) {
+    if (typeof value === 'string' && value.startsWith('-')) throw new Error(`board ${field} must not start with "-": ${JSON.stringify(value)}`);
+  }
   const ids = new Set<string>();
   // Claude Code names a transcript directory after the cwd with every `_` made `-`, and some filesystems
   // ignore case: cards whose ids differ only so would share one.

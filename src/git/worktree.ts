@@ -106,6 +106,47 @@ export function commitAll(cwd: string, message: string): boolean {
   return true;
 }
 
+/**
+ * Paths of tracked files with uncommitted changes, staged or not, relative to the repository root. The same
+ * test as isClean: files git does not track do not count (they do not stop a run either).
+ */
+export function dirtyPaths(cwd: string): string[] {
+  const entries = git(cwd, ['status', '--porcelain', '--untracked-files=no', '-z']).split('\0').filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i]!;
+    out.push(e.slice(3));
+    // A rename or copy lists its old path as the next entry.
+    if (/^[RC]/.test(e) || /^.[RC]/.test(e)) i++;
+  }
+  return out;
+}
+
+/** Whether `path` (relative to the root) has something to commit: changed, staged, or new and untracked. */
+export function hasChanges(cwd: string, path: string): boolean {
+  return git(cwd, ['status', '--porcelain', '--untracked-files=all', '--', path]) !== '';
+}
+
+/**
+ * Commit `path` alone, as the person's own commit (their identity, their hooks): whatever else is staged
+ * stays staged and out of the commit, and nothing else in the tree is touched. Returns the new commit's
+ * short id. A refused commit (a failing hook, no identity) throws a GitError with git's whole output and
+ * leaves `path` as it was, untracked again if it was new.
+ */
+export function commitOnly(cwd: string, path: string, message: string): string {
+  const tracked = git(cwd, ['ls-files', '--error-unmatch', '--', path], { allowFail: true }) !== '';
+  // A new file must be known to git before `--only` can take it; `--only` then commits its working-tree
+  // contents and nothing that is staged for other paths.
+  if (!tracked) git(cwd, ['add', '--intent-to-add', '--', path]);
+  try {
+    git(cwd, ['commit', '--quiet', '--only', '-m', message, '--', path]);
+  } catch (e) {
+    if (!tracked) git(cwd, ['rm', '--cached', '--quiet', '--', path], { allowFail: true });
+    throw e;
+  }
+  return git(cwd, ['rev-parse', '--short', 'HEAD']);
+}
+
 export interface ReviewDiff {
   /** Absent when over the limit; the reviewer reads it file by file instead. */
   text?: string;

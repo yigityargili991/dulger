@@ -1,11 +1,20 @@
 // Tiny ANSI helpers. No dependencies.
 import type { RateLimits, Usage } from '../types.ts';
 import { cachedShare, usageTokens } from '../usage.ts';
+import { plainText } from '../tui/text.ts';
 
 const enabled = process.stdout.isTTY && !process.env.NO_COLOR;
 
 function wrap(code: number): (s: string) => string {
   return (s) => (enabled ? `\x1b[${code}m${s}\x1b[0m` : s);
+}
+
+/**
+ * `s` as it may be printed. Without colour (a pipe, NO_COLOR) nothing styles the output, so a reset
+ * that cutting a line to the width left in it is taken out too: a log or a pipe gets text only.
+ */
+export function printable(s: string): string {
+  return enabled ? s : s.replace(/\x1b\[[0-9;:]*m/g, '');
 }
 
 export const bold = wrap(1);
@@ -45,6 +54,12 @@ export function pad(s: string, width: number): string {
   return len >= width ? s : s + ' '.repeat(width - len);
 }
 
+/** "14:03:07", the time a log line carries: local, like every other time dulger shows. */
+export function clockTime(at: Date = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(at.getHours())}:${p(at.getMinutes())}:${p(at.getSeconds())}`;
+}
+
 export function fmtDuration(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(total / 3600);
@@ -75,7 +90,7 @@ const WINDOW_NAMES: Record<string, string> = { five_hour: '5h', seven_day: '7d' 
 
 /** "5h 35% · 7d 23%": how much of each plan window is used, per the harness's last report. */
 export function fmtWindows(rl: RateLimits): string {
-  return rl.windows.map((w) => `${WINDOW_NAMES[w.name] ?? w.name} ${Math.round(w.utilization * 100)}%`).join(' · ');
+  return rl.windows.map((w) => `${WINDOW_NAMES[w.name] ?? plainText(String(w.name))} ${Math.round(w.utilization * 100)}%`).join(' · ');
 }
 
 /** "$1.23 · 45k tokens (91% cached, 2k out)": the spend with the usage split that explains it. */

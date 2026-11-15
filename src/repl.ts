@@ -1,31 +1,32 @@
-import { browseRuns, recoverableRuns, reviewRun } from './runViews.ts';
+import { browseRuns, reviewRun } from './runViews.ts';
 import { preflight, preflightText } from './preflight.ts';
 import { editPlan } from './planEditor.ts';
 import { acquireRunLock } from './board/lock.ts';
 import { originalSettings } from './runSettings.ts';
 import { pager } from './tui/pager.ts';
-import { select } from './tui/select.ts';
 // The interactive prompt: type a goal to run it, slash-commands for everything else. The run itself
 // looks exactly like `dulger run`; between runs you decide whether the result merges into your branch.
-import { DEFAULT_CONFIG, harnessNames, type Config, type RoleConfig } from './config.ts';
+import { harnessNames, type Config, type RoleConfig } from './config.ts';
 import * as store from './board/store.ts';
-import { createBoard } from './board/create.ts';
 import * as git from './git/worktree.ts';
 import { ask } from './ui/prompt.ts';
 import { bold, cyan, dim, green, red, yellow } from './ui/ansi.ts';
-import { CliError, clean, latestRun, memoryCommand, mergeRun, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
+import { CliError, clean, latestRun, memoryCommand, mergeRun, showBoard, showReport, showRuns } from './commands.ts';
 import { MODEL_ALIASES, MODEL_ROLES, configureModel, modelOverview, saveSessionConfig, sessionConfig } from './replModels.ts';
 import { KNOWN_PROVIDERS, ensureKeys, providerCommand } from './replProviders.ts';
 import { SETTING_KEYS, suggestCommand, type PredictContext } from './replCommands.ts';
+import { SESSION_SETTINGS, applySetting, findSetting, formatSetting, parseSetting } from './settings.ts';
+import { failedCards, runsByStart } from './runs.ts';
+import { runGoal, runOrder, runResume, runRetry } from './sessionRuns.ts';
 import { openMemory } from './context/memory.ts';
 import { setupSession } from './sessionSetup.ts';
-import { SANDBOX_MODES, type SandboxMode } from './sandbox.ts';
-import type { AgentRole, HarnessName } from './types.ts';
+import type { SandboxMode } from './sandbox.ts';
+import type { AgentRole } from './types.ts';
 
 export interface Session {
   overrides: Partial<Config>;
   model?: string;
-  /** Explicit role choices override a global pin; reset restores the repository role. */
+  /** Explicit role choices override a global pin; reset restores the saved role. */
   modelRoles?: Partial<Record<AgentRole, RoleConfig | 'reset'>>;
   yes: boolean;
   quiet: boolean;
@@ -34,12 +35,15 @@ export interface Session {
   sandbox?: SandboxMode;
 }
 
-const HELP = `Type a goal to plan and run it. Commands:
-  /setup              choose harness, model set and per-role overrides in a menu
+const HELP = `This is dulger's line prompt: dulger opens it instead of the full-screen app with --quiet or
+when the full-screen view is off in the settings (/tui off, then /config save, keeps it off for the next
+start), and the app opens it from its command palette.
+Type a goal to plan and run it. Commands:
+  /setup              choose the backend, a model set and per-role overrides in a menu
   /order [goal]       plan with the planner in a conversation, then dispatch
   /board [runId]      print a run's board (latest when omitted)
   /report [runId] [full]  print what a run landed (full: every summary, review and note)
-  /runs               browse runs, recovery actions and diffs
+  /runs               list runs (with the full-screen view on, a browser with recovery actions and diffs)
   /review [runId]     review changes and verification before merging
   /edit [runId]       edit an unstarted plan
   /doctor             check readiness without a model call
@@ -53,11 +57,11 @@ const HELP = `Type a goal to plan and run it. Commands:
   /model <role>       show one role: planner | worker | checker | docs | reporter
   /model <role> <choice>             e.g. planner fable, worker deepseek, checker sonnet
   /model <role> <harness> [model]    e.g. worker ollama qwen3:8b
-  /model <role> auto|reset           unpin on its backend | restore repository settings
+  /model <role> auto|reset           unpin on its backend | restore saved settings
   /provider           list the API providers and where their keys come from
   /provider <name>    define or edit one: base URL, the key (not echoed), then pick a model from the endpoint's list
   /provider <name> key   enter or replace just the key      /provider <name> model   re-pick the model
-  /config save        persist settings to .dulger/config.json (endpoints, never keys)
+  /config save        persist settings (endpoints, never keys)
 Model shorthand: fable, opus, sonnet, haiku, astra, sol, luna.
 Role choices override global /model pins. Changes are session-only until /config save.
 Settings (each shows its current value when given no argument):
@@ -65,28 +69,29 @@ Settings (each shows its current value when given no argument):
   /concurrency <n>                  /attempts <n>                 /replans <n>
   /docs on|off                      /yes on|off                   /quiet on|off
   /progress on|off|<sec>            /dirty on|off                 /routing on|off
-  /tui on|off                       /icons nerd|unicode|ascii|auto /budget <usd>|off
-  /card-budget <usd>|off            /sandbox off|auto|required (this session; never saved to the repository)
+  /router planner|jev-openrouter|jev-typesafe|jev-local
+  /tui on|off                       /icons nerd|unicode|ascii|auto /mouse on|off
+  /budget <usd>|off                 /card-budget <usd>|off
+  /sandbox off|auto|required (this session; never saved to the repository)
   /set <key> <value>  the same settings in one command
   /help               this text
-  /quit               leave (Ctrl-D too; Ctrl-C during a run stops the agents and comes back here)
+  /quit               leave (Ctrl-D too), back to the app when it opened this prompt;
+                      Ctrl-C during a run stops the agents and comes back here
 What the next word can be is shown dim after the cursor; Tab takes it, and when several fit they are listed.`;
 
-export async function repl(repoRoot: string, session: Session, version: string): Promise<void> {
-  const config = () => sessionConfig(repoRoot, session);
-  if (process.stdin.isTTY && process.stdout.isTTY && !session.yes && !session.quiet && config().tui.enabled) {
-    if (!await setupSession(repoRoot, session)) return;
-  }
-  console.log(`${bold(cyan('dulger'))} ${dim(version)}  ${dim(repoRoot)} ${dim('on')} ${git.currentBranch(repoRoot)}`);
-  console.log(dim(`${settingsLine(session, config())}\ntype a goal, or /help`));
+export interface ReplOptions {
+  /** Opened from the full-screen app with its session: no startup menus, and quitting goes back to the app. */
+  nested?: boolean;
+}
 
-  if (process.stdin.isTTY && process.stdout.isTTY && !session.yes && !session.quiet && config().tui.enabled) {
-    const unfinished = recoverableRuns(repoRoot);
-    if (unfinished.length) {
-      const next = await select({ title: 'Unfinished runs', description: `${unfinished.length} run(s) can be recovered.`, choices: [{ value: 'new', label: 'Start a new goal' }, { value: 'runs', label: 'Browse runs and recovery actions' }] });
-      if (next === 'runs') await command('/runs', repoRoot, session, config);
-    }
-  }
+export async function repl(repoRoot: string, session: Session, version: string, o: ReplOptions = {}): Promise<void> {
+  const config = () => sessionConfig(repoRoot, session);
+  // No startup menus: on an interactive terminal with the full-screen view on, dulger opens the app,
+  // which shows the session and the unfinished runs; the prompt is reached without it (piped, quiet,
+  // the view off) or nested in the app, and in none of those would a menu help.
+  console.log(`${bold(cyan('dulger'))} ${dim(version)}  ${dim(repoRoot)} ${dim('on')} ${git.currentBranch(repoRoot)}`);
+  console.log(dim(`${settingsLine(session, config())}\ntype a goal, or /help${o.nested ? '; /quit or Ctrl-D goes back to the app' : ''}`));
+
   while (true) {
     const ctx = predictContext(repoRoot, config());
     const line = await ask(`\n${bold(cyan('dulger'))} ${dim('›')} `, { suggest: (text) => suggestCommand(text, ctx) });
@@ -101,21 +106,19 @@ export async function repl(repoRoot: string, session: Session, version: string):
           const a = await ask(`Run ${JSON.stringify(text)} as a goal? ${dim('[y/N]')} `);
           if (!a || !/^\s*y/i.test(a)) continue;
         }
-        await goal(text, repoRoot, session, config());
+        await goal(text, repoRoot, session);
       }
     } catch (err) {
       console.error(red('error: ') + (err instanceof CliError ? err.message : ((err as Error).stack ?? String(err))));
     }
   }
-  console.log(dim('bye'));
+  console.log(dim(o.nested ? 'back to the app' : 'bye'));
 }
 
-async function goal(text: string, repoRoot: string, session: Session, config: Config): Promise<void> {
-  if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
-  const board = createBoard(repoRoot, text);
-  const r = await runBoard(repoRoot, board, config, { yes: session.yes, assumeYes: session.yes, quiet: session.quiet, merge: false, fresh: true, interactive: true });
-  if (r.aborted) { console.log(dim(`run ${board.runId} stopped; /resume continues it`)); return; }
-  if (r.landed > 0) await offerMerge(repoRoot, board.runId, board.runBranch);
+async function goal(text: string, repoRoot: string, session: Session): Promise<void> {
+  const r = await runGoal(repoRoot, session, text);
+  if (r.aborted) { console.log(dim(`run ${r.runId} stopped; /resume continues it`)); return; }
+  if (r.landed > 0) await offerMerge(repoRoot, r.runId, r.runBranch);
 }
 
 async function offerMerge(repoRoot: string, runId: string, runBranch: string): Promise<void> {
@@ -143,7 +146,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
       return false;
     case 'config':
       if (rest !== 'save') throw new CliError('use /config save to persist the current session settings');
-      console.log(green(`saved ${saveSessionConfig(repoRoot, session)} (yes, quiet, dirty and sandbox remain session-only)`));
+      console.log(green(`saved ${saveSessionConfig(repoRoot, session).join(', ') || 'nothing new'} (${SESSION_ONLY} remain session-only)`));
       return false;
     case 'board': showBoard(repoRoot, args[0]); return false;
     case 'report': {
@@ -151,7 +154,7 @@ export async function command(text: string, repoRoot: string, session: Session, 
       showReport(repoRoot, args.find((a) => a !== 'full' && a !== '--full'), { full });
       return false;
     }
-    case 'doctor': await pager('Readiness checks', preflightText(preflight(repoRoot, config()))); return false;
+    case 'doctor': await pager('Readiness checks', preflightText(preflight(repoRoot, config(), { allowDirty: session.allowDirty }))); return false;
     case 'review':
       if (!(process.stdin.isTTY && process.stdout.isTTY)) { showReport(repoRoot, args[0], { full: true }); return false; }
       await reviewRun(repoRoot, latestRun(repoRoot, args[0]), (id) => mergeRun(repoRoot, id)); return false;
@@ -172,19 +175,13 @@ export async function command(text: string, repoRoot: string, session: Session, 
       });
       return false;
     case 'resume': {
-      const r = await resumeRun(repoRoot, config(), args[0] === 'current' ? undefined : args[0], { currentSettings: args.includes('current'), assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
-      if (!r.aborted && r.landed > 0) {
-        const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[0] === 'current' ? undefined : args[0]));
-        await offerMerge(repoRoot, board.runId, board.runBranch);
-      }
+      const r = await runResume(repoRoot, session, args[0] === 'current' ? undefined : args[0], { currentSettings: args.includes('current') });
+      if (!r.aborted && r.landed > 0) await offerMerge(repoRoot, r.runId, r.runBranch);
       return false;
     }
     case 'retry': {
-      const r = await retryRun(repoRoot, config(), args[0], args[1], { assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
-      if (!r.aborted && r.landed > 0) {
-        const board = store.loadBoard(repoRoot, latestRun(repoRoot, args[1]));
-        await offerMerge(repoRoot, board.runId, board.runBranch);
-      }
+      const r = await runRetry(repoRoot, session, args[0] ?? '', args[1]);
+      if (!r.aborted && r.landed > 0) await offerMerge(repoRoot, r.runId, r.runBranch);
       return false;
     }
     case 'order': {
@@ -194,12 +191,8 @@ export async function command(text: string, repoRoot: string, session: Session, 
         if (!a?.trim()) return false;
         text = a.trim();
       }
-      if (!session.allowDirty && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them, or /dirty on)');
-      const r = await orderRun(repoRoot, text, config(), { assumeYes: session.yes, quiet: session.quiet, merge: false, interactive: true });
-      if (!r.aborted && r.landed > 0) {
-        const board = store.loadBoard(repoRoot, latestRun(repoRoot));
-        await offerMerge(repoRoot, board.runId, board.runBranch);
-      }
+      const r = await runOrder(repoRoot, session, text);
+      if (!r.aborted && r.landed > 0) await offerMerge(repoRoot, r.runId, r.runBranch);
       return false;
     }
     case 'merge': mergeRun(repoRoot, args[0]); return false;
@@ -225,17 +218,18 @@ export async function command(text: string, repoRoot: string, session: Session, 
 function predictContext(repoRoot: string, config: Config): PredictContext {
   const providers = [...Object.keys(config.providers), ...KNOWN_PROVIDERS.filter((p) => !(p in config.providers))]
     .filter((p) => !['claude', 'codex', 'fake'].includes(p));
-  const runIds = store.listRuns(repoRoot);
+  // By start time, so "the latest run" the prompt predicts is the one a command without an id acts on.
+  const runIds = runsByStart(repoRoot);
   return {
     harnesses: harnessNames(config), providers, aliases: MODEL_ALIASES, roles: MODEL_ROLES,
-    runIds, cards: failedCards(repoRoot, runIds.at(-1)), memory: memoryIds(repoRoot, config),
+    runIds, cards: failedCardIds(repoRoot, runIds.at(-1)), memory: memoryIds(repoRoot, config),
   };
 }
 
 /** Predicted ids come from files that can be missing or half-written; the prompt must work all the same. */
-function failedCards(repoRoot: string, runId: string | undefined): string[] {
+function failedCardIds(repoRoot: string, runId: string | undefined): string[] {
   try {
-    return runId ? store.loadBoard(repoRoot, runId).cards.filter((c) => c.status === 'failed').map((c) => c.id) : [];
+    return runId ? failedCards(store.loadBoard(repoRoot, runId)).map((c) => c.id) : [];
   } catch {
     return [];
   }
@@ -249,81 +243,33 @@ function memoryIds(repoRoot: string, config: Config): string[] {
   }
 }
 
+/** The settings /config save leaves out, as the confirmation names them: "yes, quiet, dirty and sandbox". */
+const SESSION_ONLY = ((keys: string[]) => `${keys.slice(0, -1).join(', ')} and ${keys.at(-1)}`)(SESSION_SETTINGS.filter((s) => s.scope === 'session').map((s) => s.key));
+
 /** Change a setting, or show its current value when no value is given. */
 async function setting(repoRoot: string, session: Session, config: () => Config, key: string, value: string): Promise<void> {
   if (key === 'model') { console.log(configureModel(repoRoot, session, value)); if (process.stdin.isTTY) await ensureKeys(config()); return; }
-  if (key === 'harness' && value && !harnessNames(config()).includes(value)) throw new CliError(`harness is one of ${harnessNames(config()).join(', ')}`);
   if (!value) {
     if (!SETTING_KEYS.includes(key)) throw new CliError(`unknown setting "${key}" (see /help)`);
     console.log(`${key} ${bold(currentValue(session, config(), key))}`);
     return;
   }
-  set(session, key, value);
+  set(session, config(), key, value);
   console.log(dim(settingsLine(session, config())));
   if (key === 'harness' && process.stdin.isTTY) await ensureKeys(config());
 }
 
 function currentValue(s: Session, c: Config, key: string): string {
-  const onOff = (b: boolean) => (b ? 'on' : 'off');
-  switch (key) {
-    case 'harness': return c.harness;
-    case 'concurrency': return String(c.concurrency);
-    case 'attempts': return String(c.maxAttempts);
-    case 'replans': return String(c.maxReplans);
-    case 'model': return s.model ?? (c.routing.enabled ? 'auto tiers' : 'default');
-    case 'docs': return onOff(c.docs);
-    case 'progress': return c.progressIntervalSec === 0 ? 'off' : `${c.progressIntervalSec}s`;
-    case 'yes': return onOff(s.yes);
-    case 'quiet': return onOff(s.quiet);
-    case 'dirty': return onOff(s.allowDirty);
-    case 'routing': return onOff(c.routing.enabled);
-    case 'budget': return c.budgetUsd === undefined ? 'off' : `$${c.budgetUsd}`;
-    case 'card-budget': return c.cardBudgetUsd === undefined ? 'off' : `$${c.cardBudgetUsd}`;
-    case 'tui': return onOff(c.tui.enabled);
-    case 'icons': return c.tui.icons;
-    case 'sandbox': return c.sandbox.mode;
-    default: return '?';
-  }
+  if (key === 'model') return s.model ?? (c.routing.enabled ? 'auto tiers' : 'default');
+  const spec = findSetting(key);
+  return spec ? formatSetting(spec.key, spec.read(s, c)) : '?';
 }
 
-function set(session: Session, key = '', value = ''): void {
-  const on = (v: string) => { if (!/^(on|off|true|false|yes|no)$/i.test(v)) throw new CliError(`${key} takes on or off`); return /^(on|true|yes)$/i.test(v); };
-  const num = (v: string) => { const n = Number(v); if (!Number.isInteger(n) || n < 0) throw new CliError(`${key} takes a whole number`); return n; };
-  switch (key) {
-    case 'harness':
-      session.overrides.harness = value as HarnessName; return;
-    case 'concurrency': session.overrides.concurrency = Math.max(1, num(value)); return;
-    case 'attempts': session.overrides.maxAttempts = Math.max(1, num(value)); return;
-    case 'replans': session.overrides.maxReplans = num(value); return;
-    case 'docs': session.overrides.docs = on(value); return;
-    case 'progress':
-      // on restores the default interval; off stops the reporter; a number is seconds between notes.
-      session.overrides.progressIntervalSec = /^(on|true|yes)$/i.test(value)
-        ? DEFAULT_CONFIG.progressIntervalSec
-        : /^(off|false|no)$/i.test(value) ? 0 : Math.max(0, num(value));
-      return;
-    case 'yes': session.yes = on(value); return;
-    case 'quiet': session.quiet = on(value); return;
-    case 'dirty': session.allowDirty = on(value); return;
-    case 'routing': session.overrides.routing = { ...(session.overrides.routing ?? DEFAULT_CONFIG.routing), enabled: on(value) }; return;
-    case 'budget': case 'card-budget': {
-      const usd = value === 'off' ? undefined : Number(value);
-      if (usd !== undefined && !(usd > 0)) throw new CliError(`${key} takes dollars or off`);
-      session.overrides[key === 'budget' ? 'budgetUsd' : 'cardBudgetUsd'] = usd;
-      return;
-    }
-    case 'tui': session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), enabled: on(value) }; return;
-    case 'icons':
-      if (!['nerd', 'unicode', 'ascii', 'auto'].includes(value)) throw new CliError('icons is nerd, unicode, ascii or auto');
-      session.overrides.tui = { ...(session.overrides.tui ?? DEFAULT_CONFIG.tui), icons: value as Config['tui']['icons'] };
-      return;
-    case 'sandbox':
-      // Kept apart from overrides, which /config save writes into the repository's file.
-      if (!SANDBOX_MODES.includes(value as SandboxMode)) throw new CliError('sandbox is off, auto or required');
-      session.sandbox = value as SandboxMode;
-      return;
-    default: throw new CliError(`unknown setting "${key}" (see /help)`);
-  }
+/** A setting from the words typed after it, through the settings table every other surface uses too. */
+function set(session: Session, config: Config, key: string, value: string): void {
+  const spec = findSetting(key);
+  if (!spec) throw new CliError(`unknown setting "${key}" (see /help)`);
+  applySetting(session, config, spec.key, parseSetting(spec.key, value));
 }
 
 function settingsLine(s: Session, c: Config): string {

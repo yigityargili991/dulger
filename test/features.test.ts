@@ -26,6 +26,7 @@ import type { PlannerResult } from '../src/types.ts';
 import type { Selection, SelectOptions } from '../src/tui/select.ts';
 
 process.env.DULGER_DATA_DIR = mkdtempSync(join(tmpdir(), 'dulger-feature-data-'));
+process.env.XDG_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'dulger-feature-home-'));
 const config: Config = { ...structuredClone(DEFAULT_CONFIG), harness: 'fake', docs: false, progressIntervalSec: 0, concurrency: 1, maxReplans: 0 };
 function fixture(t: TestContext) {
   const root = mkdtempSync(join(tmpdir(), 'dulger-features-'));
@@ -321,4 +322,40 @@ test('aborting a paused dispatcher wakes it without starting cards or documentat
   assert.equal(board.checkpoint?.phase, 'stopped');
   assert.ok([...orch.registry.statuses.values()].every((agent) => agent.role === 'planner'));
   assert.equal(store.loadBoard(root, board.runId).checkpoint?.phase, 'stopped');
+});
+
+test('profiles: a malformed profiles file is a CliError naming the file; the name rule is shared', async (t) => {
+  const root = fixture(t);
+  const { profileNameError } = await import('../src/profiles.ts');
+  const { CliError } = await import('../src/errors.ts');
+  mkdirSync(join(root, '.dulger'), { recursive: true });
+  writeFileSync(join(root, '.dulger', 'profiles.json'), '{ not json');
+  assert.throws(() => readProfiles(root), (e: unknown) => e instanceof CliError && /profiles\.json is not valid JSON/.test((e as Error).message));
+  writeFileSync(join(root, '.dulger', 'profiles.json'), '[]');
+  assert.throws(() => readProfiles(root), /must contain a JSON object/);
+  assert.equal(profileNameError('fast and cheap'), undefined);
+  assert.match(profileNameError('a/b')!, /letters, numbers/);
+  assert.throws(() => saveProfile(root, 'a/b', config), /letters, numbers/);
+});
+
+test('lockOwner reads who holds a run lock without touching it', async (t) => {
+  const root = fixture(t);
+  const { lockOwner } = await import('../src/board/lock.ts');
+  const b = createBoard(root, 'goal', 'r-lock');
+  store.saveBoard(root, b);
+  assert.equal(lockOwner(root, b.runId), undefined);
+  const release = acquireRunLock(root, b.runId);
+  assert.deepEqual(lockOwner(root, b.runId), { pid: process.pid, host: hostname() });
+  assert.deepEqual(lockOwner(root, b.runId), { pid: process.pid, host: hostname() }, 'reading twice changes nothing');
+  release();
+  assert.equal(lockOwner(root, b.runId), undefined);
+});
+
+test('preflight: a dirty tree the session allows passes; without it, the warning the CLI prints stays', (t) => {
+  const root = fixture(t);
+  writeFileSync(join(root, 'README.md'), 'changed\n');
+  const tree = (o?: { allowDirty?: boolean }) => preflight(root, config, o).find((c) => c.label === 'Working tree');
+  assert.deepEqual(tree(), { label: 'Working tree', status: 'warning', detail: 'Uncommitted edits are excluded from agent worktrees. Commit them or explicitly allow a dirty checkout.' });
+  assert.equal(tree({ allowDirty: true })?.status, 'pass');
+  assert.match(tree({ allowDirty: true })!.detail, /allowed for this session/);
 });

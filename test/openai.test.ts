@@ -148,7 +148,7 @@ test('API backend plans, routes tasks, edits a worktree, reviews and lands a com
     }
     return Response.json(final(JSON.stringify({ pass: true, feedback: [], notes: [], summary: 'Greeting is correct' })));
   });
-  const config = { ...DEFAULT_CONFIG, harness: 'ollama' as const, docs: false, providers: { ollama: provider }, routing: { enabled: true, models: { ollama: { low: 'small', medium: 'medium', high: 'strong' } } } };
+  const config = { ...DEFAULT_CONFIG, harness: 'ollama' as const, docs: false, providers: { ollama: provider }, routing: { ...DEFAULT_CONFIG.routing, models: { ollama: { low: 'small', medium: 'medium', high: 'strong' } } } };
   const board = createBoard(cwd, 'Add greeting', 'api-run');
   const orch = createOrchestrator(cwd, board, config);
   await orch.plan();

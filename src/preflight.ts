@@ -7,20 +7,28 @@ import { sandboxCheck, sandboxStatus, userConfigFile } from './sandbox.ts';
 import { getAdapter } from './adapters/index.ts';
 import { capabilities } from './adapters/capabilities.ts';
 import { keySource } from './keys.ts';
+import { jevEndpoint } from './router.ts';
 import * as git from './git/worktree.ts';
 import { worktreesDir } from './paths.ts';
 import { snapshotSettings } from './runSettings.ts';
 import type { AgentRole } from './types.ts';
 
 export interface PreflightCheck { label: string; status: 'pass' | 'warning' | 'error'; detail: string }
-/** `forRun`: the checks before a run, which asks the sandbox runtime nothing when the sandbox is off. */
-export function preflight(root: string, config: Config, o: { forRun?: boolean } = {}): PreflightCheck[] {
+/**
+ * `forRun`: the checks before a run, which asks the sandbox runtime nothing when the sandbox is off.
+ * `allowDirty`: the session allows uncommitted changes, so a dirty tree passes (still named, since the
+ * edits stay out of the agents' worktrees).
+ */
+export function preflight(root: string, config: Config, o: { forRun?: boolean; allowDirty?: boolean } = {}): PreflightCheck[] {
   const checks: PreflightCheck[] = [];
   const add = (label: string, status: PreflightCheck['status'], detail: string) => checks.push({ label, status, detail });
   const check = (label: string, fn: () => string) => { try { add(label, 'pass', fn()); } catch (e) { add(label, 'error', (e as Error).message); } };
   check('Git repository', () => { if (!git.hasCommits(root)) throw new CliError('Create an initial commit with dulger init.'); return `Branch ${git.currentBranch(root)}`; });
   check('Git identity', () => { git.git(root, ['var', 'GIT_COMMITTER_IDENT']); return 'Commit identity available'; });
-  if (!git.isClean(root)) add('Working tree', 'warning', 'Uncommitted edits are excluded from agent worktrees. Commit them or explicitly allow a dirty checkout.');
+  if (!git.isClean(root)) {
+    if (o.allowDirty) add('Working tree', 'pass', 'Uncommitted edits are allowed for this session; they are excluded from agent worktrees.');
+    else add('Working tree', 'warning', 'Uncommitted edits are excluded from agent worktrees. Commit them or explicitly allow a dirty checkout.');
+  }
   check('Worktree directory', () => {
     let path = worktreesDir(root);
     while (!existsSync(path) && dirname(path) !== path) path = dirname(path);
@@ -50,6 +58,12 @@ export function preflight(root: string, config: Config, o: { forRun?: boolean } 
     });
     if (provider?.apiKeyEnv) add(`${rc.harness} credentials`, keySource(provider.apiKeyEnv) === 'missing' ? 'error' : 'pass', keySource(provider.apiKeyEnv) === 'missing' ? `Set ${provider.apiKeyEnv} or use /provider ${rc.harness} key.` : `Available through ${provider.apiKeyEnv}; validity is checked on the first call`);
     if (!caps.costReporting && (config.budgetUsd !== undefined || config.cardBudgetUsd !== undefined)) add(`${rc.harness} spend`, 'warning', 'Dollar limits cannot account for this harness. Tokens are still recorded.');
+  }
+  const jev = jevEndpoint(config.routing);
+  if (jev) {
+    const where = `${config.routing.router} at ${jev.baseUrl}${jev.model ? `, model ${jev.model}` : ''}`;
+    if (jev.apiKeyEnv && keySource(jev.apiKeyEnv) === 'missing') add('Router', 'warning', `Set ${jev.apiKeyEnv}; without it runs keep the planner's difficulty tags. ${where}`);
+    else add('Router', 'pass', where);
   }
   if (config.worktreeSetup) add('Worktree setup', 'warning', `Will run in each new worktree: ${config.worktreeSetup}`);
   const sandbox = sandboxCheck(sandboxStatus(config.sandbox.mode, { probeOff: !o.forRun }));

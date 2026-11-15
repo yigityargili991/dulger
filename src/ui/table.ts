@@ -1,7 +1,8 @@
 // Live terminal view: kanban columns on top, one row per agent below.
-// Redraws in place on a TTY; prints one log line per change otherwise.
-import { bold, dim, red, green, yellow, cyan, magenta, cursor, pad, truncate, fmtDuration, fmtSpend, fmtWindows } from './ansi.ts';
-import { logLine } from '../tui/text.ts';
+// Redraws in place on a TTY; prints one log line per change otherwise. Titles, agent messages and log
+// lines come from agents and board files: they are made plain before anything is drawn.
+import { bold, dim, red, green, yellow, cyan, magenta, cursor, pad, printable, truncate, clockTime, fmtDuration, fmtSpend, fmtWindows } from './ansi.ts';
+import { logLine, plainText } from '../tui/text.ts';
 import type { AgentStatus, Board, Card, CardStatus } from '../types.ts';
 
 const COLUMNS: Array<{ title: string; statuses: CardStatus[] }> = [
@@ -20,7 +21,7 @@ function cardLabel(c: Card): string {
   const done = c.tasks.filter((t) => t.status === 'done').length;
   const progress = c.status === 'in_progress' ? ` ${done}/${c.tasks.length}` : '';
   const attempts = c.attempts > 0 ? ` (#${c.attempts + 1})` : '';
-  return `${c.id} ${c.title}${progress}${attempts}`;
+  return `${plainText(c.id)} ${plainText(c.title)}${progress}${attempts}`;
 }
 
 export function renderBoard(board: Board, width: number): string[] {
@@ -59,7 +60,7 @@ export function renderAgents(statuses: Iterable<AgentStatus>, width: number, now
   for (const s of rowsToShow) {
     const elapsed = fmtDuration((s.endedAt ?? now) - s.startedAt);
     const where = s.cardId ? (s.taskId ? `${s.cardId}/${s.taskId}` : s.cardId) : '-';
-    const cells = [s.id, s.role, where, s.state, String(s.turns), elapsed, s.currentTool ?? '', s.lastMessage ?? ''];
+    const cells = [s.id, s.role, where, s.state, String(s.turns), elapsed, s.currentTool ?? '', s.lastMessage ?? ''].map((x) => plainText(String(x)));
     lines.push(cells.map((c, i) => {
       const cell = pad(truncate(c, widths[i]! - 1), widths[i]!);
       return i === 3 ? stateColour[s.state](cell) : cell;
@@ -69,10 +70,10 @@ export function renderAgents(statuses: Iterable<AgentStatus>, width: number, now
 }
 
 export function renderHeader(board: Board, startedAt: number, width: number, now = Date.now()): string {
-  const left = `${bold(cyan('dulger'))}  run ${board.runId}   goal: `;
+  const left = `${bold(cyan('dulger'))}  run ${plainText(board.runId)}   goal: `;
   const right = `   elapsed ${fmtDuration(now - startedAt)}   ${fmtSpend(board)}${board.rateLimits ? `   ${fmtWindows(board.rateLimits)}` : ''}`;
   const goalWidth = Math.max(10, width - (left.length - 12) - right.length);
-  return left + truncate(board.goal, goalWidth) + right;
+  return left + truncate(plainText(board.goal), goalWidth) + right;
 }
 
 export interface LiveView {
@@ -125,8 +126,8 @@ export function createLiveView(getBoard: () => Board, getAgents: () => Iterable<
       if (isTTY) { draw(); out.write(cursor.show); }
     },
     note(msg) {
-      const line = `${dim(new Date().toISOString().slice(11, 19))} ${msg}`;
-      if (isTTY) { notes.push(line); draw(); } else out.write(logLine(line, 200) + '\n');
+      const line = `${dim(clockTime())} ${msg.split(/\r?\n/).map((l) => plainText(l)).join('\n')}`;
+      if (isTTY) { notes.push(line); draw(); } else out.write(printable(logLine(line, 200)) + '\n');
     },
   };
 }

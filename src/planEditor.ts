@@ -6,8 +6,16 @@ import { select, type SelectOptions, type Selection } from './tui/select.ts';
 import { ask } from './ui/prompt.ts';
 
 interface EditorIO { select(o: SelectOptions): Promise<Selection>; ask(text: string): Promise<string | undefined> }
+
+/** Why the board's plan can no longer be edited (a card has started), or undefined while it can. */
+export function planEditBlocker(board: Board): string | undefined {
+  if (board.cards.some((c) => c.status !== 'backlog' || c.tasks.some((t) => t.attempts > 0))) return 'Only an unstarted plan can be edited. Add instructions or retry a card after execution starts.';
+  return undefined;
+}
+
+/** Throws CliError naming the first problem: the board's structure (ids, dependencies, cycles), empty fields, an unknown harness or a bad model ID. */
 export function validatePlanDraft(board: Board, config: Config): void {
-  validateBoard(board);
+  try { validateBoard(board); } catch (e) { throw new CliError((e as Error).message); }
   if (!board.cards.length) throw new CliError('The plan needs at least one card.');
   for (const card of board.cards) {
     if (!card.title.trim() || !card.description.trim() || card.tasks.some((t) => !t.instructions.trim())) throw new CliError(`${card.id}: title, description and task instructions cannot be empty.`);
@@ -15,8 +23,25 @@ export function validatePlanDraft(board: Board, config: Config): void {
     if (card.worker?.model && /[\s\p{Cc}]/u.test(card.worker.model)) throw new CliError(`${card.id}: model IDs cannot contain spaces or control characters.`);
   }
 }
+
+/**
+ * Validate `draft` (a structuredClone of `board` with its cards edited) and make its cards the board's:
+ * saves board.json and logs a plan_edited event. Changes nothing when it throws (CliError: the plan has
+ * started, or the draft is invalid). Hold the run's lock (acquireRunLock) around loading and saving, as
+ * /edit does; inside a run that is planning, runBoard already holds it.
+ */
+export function savePlanDraft(root: string, board: Board, draft: Board, config: Config): void {
+  const blocker = planEditBlocker(board);
+  if (blocker) throw new CliError(blocker);
+  validatePlanDraft(draft, config);
+  board.cards = draft.cards;
+  saveBoard(root, board);
+  appendEvent(root, board.runId, { type: 'plan_edited' });
+}
+
 export async function editPlan(root: string, board: Board, config: Config, io: EditorIO = { select, ask }): Promise<boolean> {
-  if (board.cards.some((c) => c.status !== 'backlog' || c.tasks.some((t) => t.attempts > 0))) throw new CliError('Only an unstarted plan can be edited. Add instructions or retry a card after execution starts.');
+  const blocker = planEditBlocker(board);
+  if (blocker) throw new CliError(blocker);
   const draft = structuredClone(board);
   let message = 'Edit the plan before dispatch. Save applies all edits; Escape discards them.';
   for (;;) {
@@ -26,10 +51,7 @@ export async function editPlan(root: string, board: Board, config: Config, io: E
     ] });
     if (choice == null) return false;
     if (choice === ':save') {
-      try { validatePlanDraft(draft, config); } catch (e) { message = (e as Error).message; continue; }
-      board.cards = draft.cards;
-      saveBoard(root, board);
-      appendEvent(root, board.runId, { type: 'plan_edited' });
+      try { savePlanDraft(root, board, draft, config); } catch (e) { if (!(e instanceof CliError)) throw e; message = e.message; continue; }
       return true;
     }
     const card = draft.cards.find((c) => c.id === choice)!;

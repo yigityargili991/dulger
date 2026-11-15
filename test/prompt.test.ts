@@ -15,7 +15,7 @@ const ctx: PredictContext = {
   providers: ['openai', 'deepseek'],
   roles: ['planner', 'worker', 'checker', 'docs', 'reporter'],
   aliases: [
-    { name: 'fable', harness: 'claude', model: 'claude-fable-5-1' },
+    { name: 'fable', harness: 'claude', model: 'fable' },
     { name: 'sonnet', harness: 'claude', model: 'sonnet' },
   ],
   runIds: ['run-a', 'run-b'],
@@ -69,9 +69,10 @@ async function session(keys: string[], suggest?: (line: string) => Suggestion, c
 
 test('the rest of the word is drawn dim after the cursor, and Tab takes it', async () => {
   const s = await session(['/', 'm', 'o', 'd', '\t', '\r'], commands);
-  assert.equal(plain(s.steps[0]!), '/\n  35 matches · keep typing to narrow them\x1b[1A\x1b[11G', 'too many to list, so they are counted');
+  assert.equal(plain(s.steps[0]!), '/\n  37 matches · keep typing to narrow them\x1b[1A\x1b[11G', 'too many to list, so they are counted');
   assert.ok(plain(s.steps[1]!).includes('\n  /memory  what agents learned: list, add, rm, compact, path'), 'each match says what it does');
-  assert.equal(plain(s.steps[2]!), '\x1b[Jodel\x1b[3D', 'clear the old prediction before echoing the key');
+  assert.ok(plain(s.steps[2]!).startsWith('\x1b[Jo\n  /model  '), 'clear the old prediction before echoing the key');
+  assert.ok(plain(s.steps[2]!).includes('\n  /mouse  '), '/mo fits /model and /mouse, so both are listed');
   assert.equal(plain(s.steps[3]!), '\x1b[Jdel\x1b[2D');
   assert.equal(plain(s.steps[4]!), '\x1b[Jel', 'clear the ghost before readline inserts the accepted text');
   assert.equal(s.answer, '/model', 'Tab inserted exactly what the ghost showed');

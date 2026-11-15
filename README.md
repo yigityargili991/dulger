@@ -21,9 +21,34 @@ dulger run "Add CSV export to the reports page"
 ```
 
 dulger shows you the plan and waits. Press Enter to start it, or type a reply to change it. Your
-checkout is never touched: the result arrives on a branch named `dulger/<runId>`. Running `dulger`
-with no arguments opens a prompt where you pick the backend and models first. To try it without
+checkout is never touched: the result arrives on a branch named `dulger/<runId>`. To try it without
 spending anything, add `--harness fake`: the whole pipeline runs with no model.
+
+Running `dulger` with no arguments opens the dulger app. On Home you type a goal and see which backend
+each role will use, with its model when you have pinned one; the other tabs list your runs (review,
+resume, retry, merge) and change settings, models, API providers and keys, the agents' memory and the
+readiness checks. Changes last for the session until you save them, and dulger commits the
+repository's settings file only when you ask; after you quit, one line names anything you did not save. The
+screens show values only: `?` (F1 while you type) explains the selected item and the keys, and Ctrl-P
+lists every command.
+
+```text
+ ⎇ dulger  shop  ⎇ main                                                        claude · sandbox off
+  1 Home   2 Runs ▶1   3 Settings   4 Models   5 Providers   6 Memory   7 Doctor
+╭─ Goal ─────────────────────────────────────────  Run  Plan  ─╮ ╭─ Roles ───────────────╮
+│ What should the agents build?                                │ │ › ✦ Planner  claude   │
+╰──────────────────────────────────────────────────────────────╯ │   ⚒ Worker   claude   │
+╭─ Runs ────────────────────────────────────────────────── ▶1 ─╮ │   ◎ Reviewer claude   │
+│ › ▶  Show a health check on the status page  0/3  $0.01  15h │ │   ≡ Docs     claude   │
+│   ✓  Add CSV export to the reports page      3/3  $0.11  15h │ │   ◔ Reporter claude   │
+╰──────────────────────────────────────────────────────────────╯ │                       │
+                                                                 │   Parallel cards  3   │
+                                                                 │   Review rounds   2   │
+                                                                 │   Sandbox         off │
+                                                                 ╰───────────────────────╯
+
+ ⏎ start  ^t plan  tab next  F1 help
+```
 
 ## What happens in a run
 
@@ -40,7 +65,7 @@ spending anything, add `--harness fake`: the whole pipeline runs with no model.
 
 | Command | What it does |
 | --- | --- |
-| `dulger` | Interactive prompt. Type a goal, or `/help` for the commands |
+| `dulger` | The app: goals, runs, review and merge, settings, models, providers. With `--quiet` or the full-screen view off, a line prompt (`/help` lists its commands) |
 | `dulger run "<goal>"` | Plan, wait for your approval, then build |
 | `dulger order "<goal>"` | Talk the plan through with the planner first |
 | `dulger resume [runId]` | Continue a run that was stopped |
@@ -63,11 +88,16 @@ spending anything, add `--harness fake`: the whole pipeline runs with no model.
 | Other OpenAI-compatible API | `--harness openai --base-url <url> --api-key-env <NAME> --model <model>` | The key in that variable |
 
 Each role (planner, worker, reviewer, docs) can use its own backend and model. By default dulger picks
-a cheaper or stronger model for each task, based on how hard the planner says it is.
+a cheaper or stronger model for each task, based on how hard the planner says it is. Jev, TypeSafe's
+calibrated scoring model, can rate the tasks instead, through OpenRouter, TypeSafe's API or a local
+llama-server: dulger asks which on its first start, and Settings changes it.
 
 ## Configuration
 
-Settings live in `<repo>/.dulger/config.json`. All are optional, and flags override the file.
+Settings live in `<repo>/.dulger/config.json`. All are optional, flags override the file, and the
+app's Save to repository writes the session's changes into it. The backend, role models, routing and
+API providers you save go to your own `~/.config/dulger/config.json` instead, and apply in every
+project.
 
 ```json
 { "harness": "claude", "concurrency": 3, "worktreeSetup": "npm ci" }

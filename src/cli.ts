@@ -3,11 +3,16 @@ import { preflight, preflightText } from './preflight.ts';
 // dulger — command line entry point.
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
-import { BUILTIN_HARNESSES, DEFAULT_CONFIG, PROVIDER_DEFAULTS, loadConfig, type Config } from './config.ts';
+import { BUILTIN_HARNESSES, PROVIDER_DEFAULTS, loadConfig, roleConfig, type Config, type Router } from './config.ts';
 import * as git from './git/worktree.ts';
 import { createBoard } from './board/create.ts';
 import { CliError, clean, initRepo, memoryCommand, orderRun, resumeRun, retryRun, runBoard, showBoard, showReport, showRuns } from './commands.ts';
-import { repl } from './repl.ts';
+import { repl, type Session } from './repl.ts';
+import { saveUserConfig } from './replModels.ts';
+import { providerUrlError } from './replProviders.ts';
+import { routerOptions, routerUnset } from './settings.ts';
+import { select } from './tui/select.ts';
+import { runApp } from './app/index.ts';
 import { SANDBOX_MODES, type SandboxMode } from './sandbox.ts';
 import { red, cursor } from './ui/ansi.ts';
 import type { HarnessName } from './types.ts';
@@ -15,11 +20,13 @@ import type { HarnessName } from './types.ts';
 const USAGE = `dulger — multi-agent kanban orchestrator (wraps Claude Code / Codex)
 
 Usage:
-  dulger                          choose harness and models, then enter goals (/help for commands)
+  dulger                          open the app: type a goal, see what will run, browse runs and change
+                                  settings, models and providers; with --quiet or the full-screen view
+                                  off, the line prompt instead (/help there lists its commands)
   dulger init [path]              create a git repository with a first commit, ready for runs
   dulger run "<goal>" [options]   plan a board for the goal, then execute it
   dulger order "<goal>" [options] plan in a conversation with the planner, then execute
-  dulger resume <runId> [options] continue an interrupted run
+  dulger resume [runId] [options] continue an interrupted run (latest when omitted)
   dulger retry <card> [runId]     give a failed card one more review round, then continue the run
                                   (--max-attempts <n> for more rounds)
   dulger board [runId]            print a run's board (latest when omitted)
@@ -30,7 +37,8 @@ Usage:
   dulger memory [list]            show what agents learned about this repo
   dulger memory add "<text>"      record a learning by hand
   dulger memory rm <id>           delete a learning
-  dulger memory compact           drop learnings about files that no longer exist
+  dulger memory compact           merge repeated sightings of a learning, and drop learnings about
+                                  files that are no longer in this checkout
   dulger memory path              print the memory file's location
 
 Options:
@@ -58,12 +66,15 @@ Options:
                                   ~/.config/dulger/config.json, else off; dulger doctor says whether it
                                   works here)
   --repo <path>                   repository to work in (default: cwd)
-  --quiet                         no full-screen view or live table, log lines only
+  --quiet                         no full-screen view or live table, log lines only (dulger alone opens
+                                  the line prompt)
   --version                       print dulger's version
 
-Per-role overrides live in <repo>/.dulger/config.json, e.g.
+The backend, per-role overrides, routing and providers are saved in your own
+~/.config/dulger/config.json ($XDG_CONFIG_HOME), which wins over <repo>/.dulger/config.json for them, e.g.
   { "roles": { "planner": { "harness": "claude", "model": "opus" }, "worker": { "harness": "codex" } } }
-The sandbox policy lives only in your own ~/.config/dulger/config.json ($XDG_CONFIG_HOME), e.g.
+  { "routing": { "router": "jev-local" } }  planner, jev-openrouter, jev-typesafe or jev-local
+The sandbox policy lives only in that file, e.g.
   { "sandbox": { "mode": "auto", "domains": { "setup": ["registry.npmjs.org"] } } }`;
 
 function packageVersion(): string {
@@ -79,6 +90,11 @@ function findRepoRoot(dir: string): string {
     }
     throw err;
   }
+}
+
+/** `dulger` alone: the full-screen app on a terminal with the view on and without --quiet, else the line prompt. */
+function useApp(session: Pick<Session, 'quiet'>, config: Pick<Config, 'tui'>): boolean {
+  return Boolean(process.stdin.isTTY && process.stdout.isTTY) && !session.quiet && config.tui.enabled;
 }
 
 function readConfig(repoRoot: string, overrides: Partial<Config>, sandbox?: SandboxMode): Config {
@@ -123,7 +139,8 @@ async function main(argv: string[]): Promise<void> {
   if (v['progress-interval']) overrides.progressIntervalSec = Number(v['progress-interval']);
   if (v.budget) overrides.budgetUsd = Number(v.budget);
   if (v['card-budget']) overrides.cardBudgetUsd = Number(v['card-budget']);
-  if (v['no-routing']) overrides.routing = { ...DEFAULT_CONFIG.routing, enabled: false };
+  // Off from what the files set, so the session keeps their router and tiers for when routing is switched back on.
+  if (v['no-routing']) overrides.routing = { ...readConfig(repoRoot, {}).routing, enabled: false };
   if (v['base-url'] || v['api-key-env']) {
     // The harness may be a name this repo has never configured: --base-url defines it on the spot.
     const { harness: _named, ...rest } = overrides;
@@ -133,16 +150,28 @@ async function main(argv: string[]): Promise<void> {
     if (!provider && !v['base-url']) throw new CliError(`${name} is not a configured API provider; give --base-url to define it`);
     if (!provider && BUILTIN_HARNESSES.includes(name)) throw new CliError(`${name} is a CLI backend; --base-url and --api-key-env apply to API providers`);
     const baseUrl = v['base-url'] ?? provider!.baseUrl;
+    // The endpoint is saved into a config file, so credentials, queries and fragments are
+    // refused here too (the key belongs in its environment variable, never the URL).
+    if (v['base-url']) { const bad = providerUrlError(baseUrl); if (bad) throw new CliError(`--base-url: ${bad}`); }
     overrides.providers = { [name]: { ...PROVIDER_DEFAULTS, ...provider, baseUrl, ...(v['api-key-env'] ? { apiKeyEnv: v['api-key-env'] } : {}) } };
   }
   const config = readConfig(repoRoot, overrides, sandbox);
+  // Who tags task difficulty is asked on the first interactive start; dismissed, it is asked again next time.
+  if ((cmd === undefined || cmd === 'run' || cmd === 'order') && process.stdin.isTTY && process.stdout.isTTY && routerUnset()) {
+    const router = await select({ title: 'Task difficulty', backLabel: 'later', choices: routerOptions(roleConfig(config, 'planner').harness) }) as Router | null | undefined;
+    if (router) { saveUserConfig({ routing: { router } }); config.routing.router = router; }
+  }
   if (v.model) for (const role of ['planner', 'worker', 'checker', 'docs', 'reporter'] as const) config.roles[role] = { ...config.roles[role], model: v.model };
   const runOpts = { currentSettings: Boolean(v['current-settings']), quiet: Boolean(v.quiet), merge: Boolean(v.merge), assumeYes: Boolean(v.yes) };
 
   switch (cmd) {
-    case undefined:
-      await repl(repoRoot, { overrides, model: v.model, yes: Boolean(v.yes), quiet: Boolean(v.quiet), allowDirty: Boolean(v['allow-dirty']), sandbox }, packageVersion());
+    case undefined: {
+      // The flags seed the session either way; --yes only skips the plan approval in it.
+      const session: Session = { overrides, model: v.model, yes: Boolean(v.yes), quiet: Boolean(v.quiet), allowDirty: Boolean(v['allow-dirty']), sandbox };
+      if (useApp(session, config)) await runApp(repoRoot, session, packageVersion());
+      else await repl(repoRoot, session, packageVersion());
       break;
+    }
     case 'run': {
       if (!arg) throw new CliError('dulger run needs a goal, e.g. dulger run "add a /health endpoint"');
       if (!v['allow-dirty'] && !git.isClean(repoRoot)) throw new CliError('working tree has uncommitted changes (commit them or pass --allow-dirty)');

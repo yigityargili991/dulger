@@ -46,20 +46,22 @@ const COVERS = `Claude Code agents, ${COMMANDS}`;
 
 // ---- the policy: the user's own config file -----------------------------------------------------
 
-/** $XDG_CONFIG_HOME/dulger/config.json, next to the keys file. Only its `sandbox` key is read for now. */
+/** $XDG_CONFIG_HOME/dulger/config.json, next to the keys file: the `sandbox` policy and the USER_KEYS of src/config.ts. */
 export function userConfigFile(): string {
   return join(dirname(keysFile()), 'config.json');
 }
 
+/** The user's config file as parsed, undefined when there is none; invalid JSON throws `<file>: <reason>`. */
+export function userConfig(): Record<string, unknown> | undefined {
+  const file = userConfigFile();
+  if (!existsSync(file)) return undefined;
+  try { return JSON.parse(readFileSync(file, 'utf8')) ?? undefined; } catch (err) { throw new Error(`${file}: ${(err as Error).message}`); }
+}
+
 /** The machine owner's policy: defaults <- the `sandbox` key of the user's config file <- `mode` (--sandbox or the session). */
 export function machineSandbox(mode?: SandboxMode): SandboxConfig {
-  const file = userConfigFile();
-  let raw: unknown;
-  if (existsSync(file)) {
-    try { raw = (JSON.parse(readFileSync(file, 'utf8')) as { sandbox?: unknown } | null)?.sandbox; }
-    catch (err) { throw new Error(`${file}: ${(err as Error).message}`); }
-  }
-  const config = raw === undefined ? structuredClone(SANDBOX_DEFAULTS) : parseSandbox(raw, file);
+  const raw = userConfig()?.sandbox;
+  const config = raw === undefined ? structuredClone(SANDBOX_DEFAULTS) : parseSandbox(raw, userConfigFile());
   if (mode !== undefined) config.mode = mode;
   return config;
 }
@@ -182,7 +184,7 @@ export function sandboxStatus(mode: SandboxMode, o: { probe?: () => SandboxProbe
 /** What a run starts with: one line, and the fix on a second when the runtime does not work. Short, since log panes cut lines. */
 export function sandboxNotice(s: SandboxStatus): string[] {
   if (s.active) return [`sandbox ${s.mode}: Claude Code agents and verify, setup and API tool commands are confined to their worktree and granted hosts`];
-  if (s.mode === 'off') return ['sandbox off: agents and verify commands run with your privileges (dulger doctor explains the sandbox)'];
+  if (s.mode === 'off') return ['sandbox off: agents and verify commands run with your privileges (Doctor explains the sandbox)'];
   return [`sandbox unavailable (${s.reason}): agents and verify, setup and API tool commands run with your privileges`, `sandbox fix: ${s.fix}`];
 }
 
